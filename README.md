@@ -65,6 +65,112 @@ You can turn this web application into a standalone desktop application for Wind
     ```
     Once the build finishes, check the newly created **`release`** folder in your project directory to find the installer (e.g., `.exe`, `.dmg`, or `.AppImage`).
 
+### Running as a PWA (Progressive Web App)
+
+You can deploy OpenAI Studio as a PWA for access on mobile devices (iPhone, Android) or any browser. The PWA version includes:
+- Installable home screen app on iOS/Android
+- Offline caching for faster loads
+- Responsive mobile layout
+- IndexedDB storage fallback for iOS Safari (which doesn't support OPFS)
+
+#### 1. Build for Web
+
+```bash
+npm run build:web
+```
+
+This creates a production build in the `dist/` folder with:
+- Service worker for offline caching
+- Web app manifest for installation
+- Optimized assets
+
+#### 2. Test Locally
+
+Preview the production build locally:
+
+```bash
+npm run preview
+```
+
+Opens at `http://localhost:4173`. For full PWA testing (service worker, install prompt), you need HTTPS - deploy to a hosting service or use:
+
+```bash
+npx serve dist
+```
+
+#### 3. Deploy to GitHub Pages
+
+**Step 1: Update Vite config for GitHub Pages**
+
+Edit `vite.config.ts` and update the base path for your repository name:
+
+```typescript
+// In the web mode section, change base from '/' to your repo name:
+const base = isElectron ? './' : '/openai-studio/';  // Replace 'openai-studio' with your repo name
+```
+
+**Step 2: Install gh-pages**
+
+```bash
+npm install -D gh-pages
+```
+
+**Step 3: Add deploy script to package.json**
+
+Add this to your `scripts` section:
+
+```json
+"deploy": "npm run build:web && gh-pages -d dist"
+```
+
+**Step 4: Deploy**
+
+```bash
+npm run deploy
+```
+
+**Step 5: Enable GitHub Pages**
+
+1. Go to your repository on GitHub
+2. Navigate to **Settings** > **Pages**
+3. Under "Build and deployment", set:
+   - Source: **Deploy from a branch**
+   - Branch: **gh-pages** / **(root)**
+4. Click Save
+
+**Step 6: Access your PWA**
+
+Your app will be available at:
+```
+https://<your-username>.github.io/<repo-name>/
+```
+
+#### 4. Install on iPhone
+
+1. Open your deployed URL in Safari on iPhone
+2. Tap the **Share** button (square with arrow)
+3. Scroll down and tap **"Add to Home Screen"**
+4. Tap **Add**
+
+The app will now appear on your home screen and open without browser chrome.
+
+#### Alternative Deployment Options
+
+**Vercel (Recommended - easiest)**
+```bash
+npx vercel --prod
+```
+
+**Netlify**
+```bash
+npx netlify deploy --prod --dir=dist
+```
+
+**Cloudflare Pages**
+1. Connect your GitHub repo at dash.cloudflare.com
+2. Set build command: `npm run build:web`
+3. Set output directory: `dist`
+
 ## Data Structure & Location
 
 The application uses the **Origin Private File System (OPFS)**. While the app internally reads and writes to `sessions.json`, these are stored in a sandboxed, virtual file system managed by the operating system's web engine.

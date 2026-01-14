@@ -15,6 +15,7 @@ interface SidebarProps {
   onExportData: () => void;
   onImportData: (file: File) => void;
   processingSessionIds?: Set<string>;
+  isMobile?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -29,7 +30,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onApiKeyChange,
   onExportData,
   onImportData,
-  processingSessionIds
+  processingSessionIds,
+  isMobile = false
 }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -47,7 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .sort((a, b) => b.lastModified - a.lastModified);
 
   return (
-    <div className="w-64 bg-gray-50 dark:bg-[#0d1117] border-r border-gray-200 dark:border-gray-800 flex flex-col h-full flex-shrink-0 transition-colors duration-200">
+    <div className={`${isMobile ? 'flex-1' : 'w-64 border-r border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full transition-colors duration-200`}>
       {/* Top section */}
       <div className="p-4">
         <button

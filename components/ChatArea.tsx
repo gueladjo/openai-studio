@@ -8,6 +8,7 @@ interface ChatAreaProps {
   session: Session | null;
   onSendMessage: (content: string, attachments: File[]) => void;
   isLoading: boolean;
+  isMobile?: boolean;
 }
 
 const formatDuration = (ms: number): string => {
@@ -87,7 +88,7 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
     );
 };
 
-export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLoading }) => {
+export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLoading, isMobile = false }) => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -168,13 +169,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
 
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
-      {/* Header */}
-      <div className="h-14 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 justify-between flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors">
-        <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text">{session.title || 'Untitled Chat'}</h2>
-        <div className="text-xs text-gray-500 font-mono">
-            {session.config.model} • {session.config.reasoningEffort} effort
+      {/* Header - hidden on mobile since App.tsx has mobile header */}
+      {!isMobile && (
+        <div className="h-14 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 justify-between flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors">
+          <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text">{session.title || 'Untitled Chat'}</h2>
+          <div className="text-xs text-gray-500 font-mono">
+              {session.config.model} • {session.config.reasoningEffort} effort
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-8 scroll-smooth">
@@ -325,7 +328,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
       </div>
 
       {/* Input Area */}
-      <div className="p-4 bg-white dark:bg-[#0d1117] transition-colors">
+      <div className={`p-4 bg-white dark:bg-[#0d1117] transition-colors ${isMobile ? 'safe-area-bottom' : ''}`}>
         <div className="max-w-4xl mx-auto">
           {attachments.length > 0 && (
               <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">

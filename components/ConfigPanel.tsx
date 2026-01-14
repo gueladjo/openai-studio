@@ -11,15 +11,17 @@ interface ConfigPanelProps {
   onUpdateSystemInstruction: (instruction: SystemInstruction) => void;
   onCreateSystemInstruction: () => void;
   onDeleteSystemInstruction: (id: string) => void;
+  isMobile?: boolean;
 }
 
-export const ConfigPanel: React.FC<ConfigPanelProps> = ({ 
-  config, 
+export const ConfigPanel: React.FC<ConfigPanelProps> = ({
+  config,
   onChange,
   systemInstructions,
   onUpdateSystemInstruction,
   onCreateSystemInstruction,
-  onDeleteSystemInstruction
+  onDeleteSystemInstruction,
+  isMobile = false
 }) => {
   const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(true);
 
@@ -58,11 +60,13 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const supportsVerbosity = config.model !== ModelId.GPT_O3;
 
   return (
-    <div className="w-80 bg-gray-50 dark:bg-[#0d1117] border-l border-gray-200 dark:border-gray-800 flex flex-col h-full flex-shrink-0 overflow-y-auto transition-colors duration-200">
-      <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center gap-2 text-gray-700 dark:text-gray-200">
-        <Sliders size={18} />
-        <h2 className="font-semibold text-sm">Configuration</h2>
-      </div>
+    <div className={`${isMobile ? 'w-full' : 'w-80 border-l border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full overflow-y-auto transition-colors duration-200`}>
+      {!isMobile && (
+        <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center gap-2 text-gray-700 dark:text-gray-200">
+          <Sliders size={18} />
+          <h2 className="font-semibold text-sm">Configuration</h2>
+        </div>
+      )}
 
       <div className="p-6 space-y-8">
 

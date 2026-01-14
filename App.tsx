@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
@@ -17,7 +17,22 @@ import {
   AppSettings,
   WorkspaceBackup
 } from './services/storage';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Menu, Settings, X } from 'lucide-react';
+
+// Hook for detecting mobile viewport
+const useIsMobile = (breakpoint = 768) => {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false
+  );
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [breakpoint]);
+
+  return isMobile;
+};
 
 // Add global declaration for Electron API
 declare global {
@@ -35,18 +50,37 @@ declare global {
 function App() {
   // Storage State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  
+
   // App State
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  
+
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
-  
+
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [apiKey, setApiKey] = useState('');
   const [systemInstructions, setSystemInstructions] = useState<SystemInstruction[]>([]);
+
+  // Mobile responsive state
+  const isMobile = useIsMobile();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+
+  // Close mobile panels when switching to desktop
+  useEffect(() => {
+    if (!isMobile) {
+      setIsSidebarOpen(false);
+      setIsConfigOpen(false);
+    }
+  }, [isMobile]);
+
+  // Close sidebar when selecting a session on mobile
+  const handleSelectSession = useCallback((id: string) => {
+    setCurrentSessionId(id);
+    if (isMobile) setIsSidebarOpen(false);
+  }, [isMobile]);
 
   // Refs for debouncing writes
   const saveTimeoutRef = useRef<{ [key: string]: number }>({});
@@ -386,34 +420,106 @@ function App() {
   return (
     <div className={isDarkMode ? 'dark' : ''}>
       <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
-        {/* Custom Title Bar */}
-        <TitleBar isDarkMode={isDarkMode} />
+        {/* Custom Title Bar - Desktop only */}
+        {!isMobile && <TitleBar isDarkMode={isDarkMode} />}
+
+        {/* Mobile Header */}
+        {isMobile && (
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0d1117] safe-area-top">
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              aria-label="Open menu"
+            >
+              <Menu size={24} />
+            </button>
+            <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate max-w-[200px]">
+              {currentSession?.title || 'OpenAI Studio'}
+            </h1>
+            <button
+              onClick={() => setIsConfigOpen(true)}
+              className="p-2 -mr-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              aria-label="Open settings"
+              disabled={!currentSession}
+            >
+              <Settings size={24} className={!currentSession ? 'opacity-40' : ''} />
+            </button>
+          </div>
+        )}
 
         {/* Main App Content */}
         <div className="flex flex-1 min-h-0">
-          <Sidebar
-            sessions={sessions}
-            currentSessionId={currentSessionId}
-            onSelectSession={setCurrentSessionId}
-            onNewSession={createNewSession}
-            onDeleteSession={deleteSession}
-            isDarkMode={isDarkMode}
-            toggleTheme={() => setIsDarkMode(!isDarkMode)}
-            apiKey={apiKey}
-            onApiKeyChange={setApiKey}
-            onExportData={handleExportData}
-            onImportData={handleImportData}
-            processingSessionIds={processingSessionIds}
-          />
+          {/* Sidebar - Desktop: always visible, Mobile: slide-out drawer */}
+          {!isMobile ? (
+            <Sidebar
+              sessions={sessions}
+              currentSessionId={currentSessionId}
+              onSelectSession={setCurrentSessionId}
+              onNewSession={createNewSession}
+              onDeleteSession={deleteSession}
+              isDarkMode={isDarkMode}
+              toggleTheme={() => setIsDarkMode(!isDarkMode)}
+              apiKey={apiKey}
+              onApiKeyChange={setApiKey}
+              onExportData={handleExportData}
+              onImportData={handleImportData}
+              processingSessionIds={processingSessionIds}
+            />
+          ) : (
+            <>
+              {/* Mobile Sidebar Overlay */}
+              {isSidebarOpen && (
+                <div
+                  className="fixed inset-0 bg-black/50 z-40 animate-in fade-in duration-200"
+                  onClick={() => setIsSidebarOpen(false)}
+                />
+              )}
+              {/* Mobile Sidebar Drawer */}
+              <div
+                className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] transform transition-transform duration-300 ease-out ${
+                  isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+                }`}
+              >
+                <div className="h-full flex flex-col bg-gray-50 dark:bg-[#0d1117] safe-area-left">
+                  <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800">
+                    <span className="font-semibold text-gray-800 dark:text-gray-200">Chats</span>
+                    <button
+                      onClick={() => setIsSidebarOpen(false)}
+                      className="p-2 -mr-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <Sidebar
+                    sessions={sessions}
+                    currentSessionId={currentSessionId}
+                    onSelectSession={handleSelectSession}
+                    onNewSession={() => { createNewSession(); setIsSidebarOpen(false); }}
+                    onDeleteSession={deleteSession}
+                    isDarkMode={isDarkMode}
+                    toggleTheme={() => setIsDarkMode(!isDarkMode)}
+                    apiKey={apiKey}
+                    onApiKeyChange={setApiKey}
+                    onExportData={handleExportData}
+                    onImportData={handleImportData}
+                    processingSessionIds={processingSessionIds}
+                    isMobile={true}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           <main className="flex-1 flex min-w-0">
             <ChatArea
               session={currentSession}
               onSendMessage={handleSendMessage}
               isLoading={isCurrentSessionProcessing}
+              isMobile={isMobile}
             />
 
-            {currentSession && (
+            {/* ConfigPanel - Desktop: always visible when session selected, Mobile: modal */}
+            {!isMobile && currentSession && (
               <ConfigPanel
                 config={currentSession.config}
                 onChange={updateConfig}
@@ -425,6 +531,38 @@ function App() {
             )}
           </main>
         </div>
+
+        {/* Mobile Config Modal */}
+        {isMobile && isConfigOpen && currentSession && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-40 animate-in fade-in duration-200"
+              onClick={() => setIsConfigOpen(false)}
+            />
+            <div className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] bg-gray-50 dark:bg-[#0d1117] rounded-t-2xl animate-in slide-in-from-bottom duration-300 safe-area-bottom overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+                <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
+                <button
+                  onClick={() => setIsConfigOpen(false)}
+                  className="p-2 -mr-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <ConfigPanel
+                  config={currentSession.config}
+                  onChange={updateConfig}
+                  systemInstructions={systemInstructions}
+                  onCreateSystemInstruction={handleCreateSystemInstruction}
+                  onUpdateSystemInstruction={handleUpdateSystemInstruction}
+                  onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                  isMobile={true}
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
