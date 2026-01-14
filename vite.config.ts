@@ -27,15 +27,16 @@ export default defineConfig(({ mode }) => {
           theme_color: '#0d1117',
           background_color: '#0d1117',
           display: 'standalone',
-          start_url: '/',
+          scope: base,
+          start_url: base,
           icons: [
             {
-              src: '/icons/icon-192.png',
+              src: `${base}icons/icon-192.png`,
               sizes: '192x192',
               type: 'image/png'
             },
             {
-              src: '/icons/icon-512.png',
+              src: `${base}icons/icon-512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any maskable'
