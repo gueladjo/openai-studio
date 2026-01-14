@@ -420,8 +420,8 @@ function App() {
   return (
     <div className={isDarkMode ? 'dark' : ''}>
       <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
-        {/* Custom Title Bar - Desktop only */}
-        {!isMobile && <TitleBar isDarkMode={isDarkMode} />}
+        {/* Custom Title Bar - Electron desktop only */}
+        {!isMobile && window.electronAPI && <TitleBar isDarkMode={isDarkMode} />}
 
         {/* Mobile Header */}
         {isMobile && (
