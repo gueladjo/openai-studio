@@ -1,0 +1,5 @@
+{
+  "name": "OpenAI Studio",
+  "description": "A powerful chat interface for OpenAI's next-gen models (GPT-5 series) featuring advanced configuration, local persistence, and tool integration.",
+  "requestFramePermissions": []
+}
