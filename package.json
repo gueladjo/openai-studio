@@ -13,7 +13,8 @@
     "build:electron": "tsc && vite build --mode electron",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite --mode electron\" \"wait-on tcp:5173 && electron .\"",
-    "dist": "npm run build:electron && electron-builder"
+    "dist": "npm run build:electron && electron-builder",
+    "deploy": "npm run build:web && gh-pages -d dist"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
@@ -31,6 +32,7 @@
     "concurrently": "^8.2.2",
     "electron": "^29.1.0",
     "electron-builder": "^24.13.3",
+    "gh-pages": "^6.3.0",
     "sharp": "^0.34.5",
     "typescript": "^5.2.2",
     "vite": "^5.1.4",

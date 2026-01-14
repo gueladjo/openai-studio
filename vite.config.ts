@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
 
   // Use relative paths for Electron, absolute for web
   const isElectron = mode === 'electron';
-  const base = isElectron ? './' : '/';
+  const base = isElectron ? './' : '/openai-studio/';
 
   return {
     base,
@@ -78,7 +78,13 @@ export default defineConfig(({ mode }) => {
       })
     ].filter(Boolean),
     define: {
-      'process.env': JSON.stringify(env)
+      // For local/Electron builds: include API key from .env for convenience
+      // For web builds (GitHub Pages): exclude secrets - users enter via settings UI
+      'process.env': JSON.stringify(
+        isElectron || mode === 'development'
+          ? { NODE_ENV: env.NODE_ENV || mode, OPENAI_API_KEY: env.OPENAI_API_KEY }
+          : { NODE_ENV: env.NODE_ENV || mode }
+      )
     }
   };
 });
