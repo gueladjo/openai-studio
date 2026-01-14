@@ -10,6 +10,16 @@ interface ChatAreaProps {
   isLoading: boolean;
 }
 
+const formatDuration = (ms: number): string => {
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${seconds}s`;
+};
+
 const ThinkingBlock = ({ text, duration }: { text: string; duration?: number }) => {
   const [isOpen, setIsOpen] = useState(true);
 
@@ -26,7 +36,7 @@ const ThinkingBlock = ({ text, duration }: { text: string; duration?: number }) 
             <span>Reasoning Process</span>
             {duration && (
                <span className="text-gray-400 font-normal ml-1">
-                 ({(duration / 1000).toFixed(1)}s)
+                 ({formatDuration(duration)})
                </span>
             )}
         </button>
@@ -50,11 +60,12 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
             </div>
             <div className="flex flex-wrap gap-2">
                 {sources.map((source, idx) => (
-                    <a 
+                    <a
                         key={idx}
                         href={source.url}
                         target="_blank"
                         rel="noopener noreferrer"
+                        title={source.url}
                         className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f2937] hover:bg-gray-200 dark:hover:bg-[#2d3748] border border-gray-200 dark:border-gray-700 rounded-full px-3 py-1.5 transition-colors max-w-[200px]"
                     >
                         {/* Try to get favicon, fallback to globe */}
@@ -79,6 +90,7 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
 export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLoading }) => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [fileInputKey, setFileInputKey] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -108,7 +120,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
     if (e.target.files && e.target.files.length > 0) {
       setAttachments(prev => [...prev, ...Array.from(e.target.files!)]);
     }
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    setFileInputKey(prev => prev + 1);
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          // For pasted images without a proper name, generate one
+          if (file.type.startsWith('image/') && file.name === 'image.png') {
+            const ext = file.type.split('/')[1] || 'png';
+            const namedFile = new File([file], `pasted-image-${Date.now()}.${ext}`, { type: file.type });
+            files.push(namedFile);
+          } else {
+            files.push(file);
+          }
+        }
+      }
+    }
+
+    if (files.length > 0) {
+      setAttachments(prev => [...prev, ...files]);
+    }
   };
 
   const removeAttachment = (index: number) => {
@@ -223,10 +262,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
                                     a: ({node, href, children, ...props}: any) => {
                                         const isFootnote = /^\[\d+\]$/.test(String(children));
                                         return (
-                                            <a 
-                                                href={href} 
-                                                target="_blank" 
+                                            <a
+                                                href={href}
+                                                target="_blank"
                                                 rel="noopener noreferrer"
+                                                title={href}
                                                 className={`${isFootnote ? "text-blue-500 hover:text-blue-600 font-bold no-underline ml-0.5" : "text-blue-600 dark:text-blue-400 hover:underline"}`}
                                                 {...props}
                                             >
@@ -265,7 +305,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
                             {(!msg.thinking && msg.thinkingDuration) && (
                                 <div className="text-[10px] text-gray-400 dark:text-gray-600 flex items-center gap-1 border-l border-gray-200 dark:border-gray-800 pl-2">
                                     <Clock size={10} />
-                                    <span>{(msg.thinkingDuration / 1000).toFixed(1)}s</span>
+                                    <span>{formatDuration(msg.thinkingDuration)}</span>
                                 </div>
                             )}
                         </div>
@@ -288,15 +328,40 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
       <div className="p-4 bg-white dark:bg-[#0d1117] transition-colors">
         <div className="max-w-4xl mx-auto">
           {attachments.length > 0 && (
-              <div className="flex gap-2 mb-2 overflow-x-auto pb-2">
-                  {attachments.map((file, index) => (
-                      <div key={index} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f2937] text-gray-700 dark:text-gray-300 px-3 py-1.5 rounded-full text-xs border border-gray-200 dark:border-gray-700 transition-colors">
-                          <span className="max-w-[100px] truncate">{file.name}</span>
-                          <button onClick={() => removeAttachment(index)} className="hover:text-red-500 dark:hover:text-white">
-                              <X size={12} />
-                          </button>
-                      </div>
-                  ))}
+              <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">
+                  {attachments.map((file, index) => {
+                      const isImage = file.type.startsWith('image/');
+                      const imageUrl = isImage ? URL.createObjectURL(file) : null;
+
+                      return isImage ? (
+                          <div key={index} className="relative group" title={file.name}>
+                              <img
+                                  src={imageUrl!}
+                                  alt={file.name}
+                                  className="w-16 h-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                                  onLoad={() => URL.revokeObjectURL(imageUrl!)}
+                              />
+                              <button
+                                  onClick={() => removeAttachment(index)}
+                                  className="absolute -top-1.5 -right-1.5 bg-gray-800 dark:bg-gray-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                              >
+                                  <X size={12} />
+                              </button>
+                          </div>
+                      ) : (
+                          <div
+                              key={index}
+                              className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f2937] text-gray-700 dark:text-gray-300 px-3 py-1.5 rounded-full text-xs border border-gray-200 dark:border-gray-700 transition-colors"
+                              title={file.name}
+                          >
+                              <FileText size={12} />
+                              <span className="max-w-[100px] truncate">{file.name}</span>
+                              <button onClick={() => removeAttachment(index)} className="hover:text-red-500 dark:hover:text-white">
+                                  <X size={12} />
+                              </button>
+                          </div>
+                      );
+                  })}
               </div>
           )}
           <div className="relative bg-gray-50 dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg focus-within:ring-1 focus-within:ring-blue-500/50 focus-within:border-blue-500 transition-all">
@@ -304,6 +369,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder="Ask anything..."
               className="w-full bg-transparent text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 text-sm px-4 py-3 pr-24 rounded-xl focus:outline-none resize-none max-h-48 min-h-[52px]"
               rows={1}
@@ -323,12 +389,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
                >
                   <Paperclip size={18} />
                </button>
-               <input 
-                  type="file" 
-                  multiple 
-                  className="hidden" 
-                  ref={fileInputRef} 
+               <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  ref={fileInputRef}
                   onChange={handleFileSelect}
+                  key={fileInputKey}
                />
                <button
                   onClick={handleSend}

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Menu, clipboard } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -60,11 +60,87 @@ function createWindow() {
   // Remove the menu bar (optional, makes it look more like a native tool)
   win.setMenuBarVisibility(false);
 
+  // Check if we're in development mode
+  const isDev = !app.isPackaged;
+
+  // Open external links in default browser instead of in the app
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  // Handle navigation to external URLs
+  win.webContents.on('will-navigate', (event, url) => {
+    const appUrl = isDev ? 'http://localhost:5173' : 'file://';
+    if (!url.startsWith(appUrl)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
+  // Context menu handling
+  win.webContents.on('context-menu', (event, params) => {
+    const menuItems = [];
+
+    // If there's a link, add "Copy URL" option
+    if (params.linkURL) {
+      menuItems.push({
+        label: 'Copy URL',
+        click: () => clipboard.writeText(params.linkURL)
+      });
+      menuItems.push({
+        label: 'Open in Browser',
+        click: () => shell.openExternal(params.linkURL)
+      });
+      menuItems.push({ type: 'separator' });
+    }
+
+    // If text is selected, add Copy option
+    if (params.selectionText) {
+      menuItems.push({
+        label: 'Copy',
+        role: 'copy',
+        accelerator: 'CmdOrCtrl+C'
+      });
+    }
+
+    // If it's an editable field (input, textarea, contenteditable)
+    if (params.isEditable) {
+      // Add Cut if there's selected text in an editable field
+      if (params.selectionText) {
+        menuItems.push({
+          label: 'Cut',
+          role: 'cut',
+          accelerator: 'CmdOrCtrl+X'
+        });
+      }
+      menuItems.push({
+        label: 'Paste',
+        role: 'paste',
+        accelerator: 'CmdOrCtrl+V'
+      });
+      menuItems.push({ type: 'separator' });
+      menuItems.push({
+        label: 'Select All',
+        role: 'selectAll',
+        accelerator: 'CmdOrCtrl+A'
+      });
+    }
+
+    // Only show menu if there are items
+    if (menuItems.length > 0) {
+      // Remove trailing separator if present
+      if (menuItems[menuItems.length - 1].type === 'separator') {
+        menuItems.pop();
+      }
+      const contextMenu = Menu.buildFromTemplate(menuItems);
+      contextMenu.popup();
+    }
+  });
+
   // Load the app
   // In development, we load from the Vite dev server
   // In production, we load the index.html file
-  const isDev = !app.isPackaged;
-
   if (isDev) {
     // You might need to adjust the port if Vite uses something other than 5173
     win.loadURL('http://localhost:5173');
