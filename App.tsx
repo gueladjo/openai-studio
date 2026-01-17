@@ -58,6 +58,7 @@ function App() {
 
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
+  const processingSessionIdsRef = useRef<Set<string>>(new Set());
 
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [apiKey, setApiKey] = useState('');
@@ -85,6 +86,42 @@ function App() {
   // Refs for debouncing writes
   const saveTimeoutRef = useRef<{ [key: string]: number }>({});
 
+  const addProcessingSession = (sessionId: string) => {
+    processingSessionIdsRef.current.add(sessionId);
+    setProcessingSessionIds(new Set(processingSessionIdsRef.current));
+  };
+
+  const removeProcessingSession = (sessionId: string) => {
+    processingSessionIdsRef.current.delete(sessionId);
+    setProcessingSessionIds(new Set(processingSessionIdsRef.current));
+  };
+
+  const markPendingRequestsFailed = (loadedSessions: Session[]): Session[] => {
+    const now = Date.now();
+    let hasChanges = false;
+
+    const updatedSessions = loadedSessions.map(session => {
+      if (!session.pendingRequest) return session;
+
+      hasChanges = true;
+      const failureMessage: Message = {
+        id: uuidv4(),
+        role: 'assistant',
+        content: 'Error: Previous request was interrupted and has been marked as failed. Please resend manually if needed.',
+        timestamp: now
+      };
+
+      return {
+        ...session,
+        pendingRequest: undefined,
+        messages: [...session.messages, failureMessage],
+        lastModified: now
+      };
+    });
+
+    return hasChanges ? updatedSessions : loadedSessions;
+  };
+
   // Helper: Load all data from disk
   const loadWorkspaceData = async (handle: FileSystemDirectoryHandle) => {
     try {
@@ -95,7 +132,8 @@ function App() {
         readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
       ]);
 
-      if (loadedSessions) setSessions(loadedSessions);
+      const cleanedSessions = loadedSessions ? markPendingRequestsFailed(loadedSessions) : null;
+      if (cleanedSessions) setSessions(cleanedSessions);
       if (loadedInstructions) setSystemInstructions(loadedInstructions);
       
       if (loadedSettings) {
@@ -103,10 +141,10 @@ function App() {
         setApiKey(loadedSettings.apiKey || '');
         if (loadedSettings.lastActiveSessionId) {
           // Verify ID exists
-          if (loadedSessions && loadedSessions.find(s => s.id === loadedSettings.lastActiveSessionId)) {
+          if (cleanedSessions && cleanedSessions.find(s => s.id === loadedSettings.lastActiveSessionId)) {
             setCurrentSessionId(loadedSettings.lastActiveSessionId);
-          } else if (loadedSessions && loadedSessions.length > 0) {
-            setCurrentSessionId(loadedSessions[0].id);
+          } else if (cleanedSessions && cleanedSessions.length > 0) {
+            setCurrentSessionId(cleanedSessions[0].id);
           }
         }
       }
@@ -242,74 +280,83 @@ function App() {
 
     // Capture the session ID to allow context switching while processing
     const targetSessionId = currentSessionId;
+    if (processingSessionIdsRef.current.has(targetSessionId)) return;
+    addProcessingSession(targetSessionId);
 
-    const processedAttachments = await Promise.all(attachments.map(async (file) => {
-        let fileContent: string | undefined = undefined;
-        
-        // Convert images to Base64 for API usage
-        if (file.type.startsWith('image/')) {
-            try {
-                fileContent = await new Promise<string>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        if (typeof reader.result === 'string') resolve(reader.result);
-                        else reject(new Error('Failed to read file'));
-                    };
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                });
-            } catch (e) {
-                console.error("Failed to read image file", e);
-            }
-        }
-
-        return {
-            name: file.name,
-            type: file.type,
-            content: fileContent
-        };
-    }));
-
-    const newUserMessage: Message = {
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      attachments: processedAttachments
-    };
-
-    const session = sessions.find(s => s.id === targetSessionId);
-    
-    // Trigger background title generation for new sessions
-    if (session && session.messages.length === 0) {
-      // Use the content or a placeholder if only attachments exist
-      const titlePrompt = content || (attachments.length > 0 ? `File analysis of ${attachments[0].name}` : "New Chat");
-      generateChatTitle(titlePrompt, apiKey).then(newTitle => {
-        setSessions(prev => prev.map(s => 
-          s.id === targetSessionId ? { ...s, title: newTitle } : s
-        ));
-      });
-    }
-
-    // 1. Optimistically update UI with user message
-    setSessions(prev => prev.map(s => {
-      if (s.id === targetSessionId) {
-        return {
-          ...s,
-          messages: [...s.messages, newUserMessage],
-          lastModified: Date.now(),
-          title: s.messages.length === 0 ? (content.slice(0, 30) + (content.length > 30 ? '...' : '')) : s.title
-        };
-      }
-      return s;
-    }));
-
-    // 2. Mark this session as processing
-    setProcessingSessionIds(prev => new Set(prev).add(targetSessionId));
-
-    // 3. Perform API Call Detached from current UI State
     try {
+      const session = sessions.find(s => s.id === targetSessionId);
       if (!session) throw new Error("Session lost");
-      
+
+      const processedAttachments = await Promise.all(attachments.map(async (file) => {
+          let fileContent: string | undefined = undefined;
+          
+          // Convert images to Base64 for API usage
+          if (file.type.startsWith('image/')) {
+              try {
+                  fileContent = await new Promise<string>((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => {
+                          if (typeof reader.result === 'string') resolve(reader.result);
+                          else reject(new Error('Failed to read file'));
+                      };
+                      reader.onerror = reject;
+                      reader.readAsDataURL(file);
+                  });
+              } catch (e) {
+                  console.error("Failed to read image file", e);
+              }
+          }
+
+          return {
+              name: file.name,
+              type: file.type,
+              content: fileContent
+          };
+      }));
+
+      const requestId = uuidv4();
+      const userMessageId = uuidv4();
+      const requestTimestamp = Date.now();
+
+      const newUserMessage: Message = {
+        id: userMessageId,
+        requestId,
+        role: 'user',
+        content,
+        timestamp: requestTimestamp,
+        attachments: processedAttachments
+      };
+
+      // Trigger background title generation for new sessions
+      if (session.messages.length === 0) {
+        // Use the content or a placeholder if only attachments exist
+        const titlePrompt = content || (attachments.length > 0 ? `File analysis of ${attachments[0].name}` : "New Chat");
+        generateChatTitle(titlePrompt, apiKey).then(newTitle => {
+          setSessions(prev => prev.map(s => 
+            s.id === targetSessionId ? { ...s, title: newTitle } : s
+          ));
+        });
+      }
+
+      // 1. Optimistically update UI with user message + pending request marker
+      setSessions(prev => prev.map(s => {
+        if (s.id === targetSessionId) {
+          return {
+            ...s,
+            messages: [...s.messages, newUserMessage],
+            lastModified: requestTimestamp,
+            pendingRequest: {
+              id: requestId,
+              userMessageId,
+              createdAt: requestTimestamp
+            },
+            title: s.messages.length === 0 ? (content.slice(0, 30) + (content.length > 30 ? '...' : '')) : s.title
+          };
+        }
+        return s;
+      }));
+
+      // 2. Perform API Call Detached from current UI State
       const messagesForApi = [...session.messages, newUserMessage];
       const selectedInstruction = systemInstructions.find(si => si.id === session.config.systemInstructionId);
       const systemInstructionContent = selectedInstruction ? selectedInstruction.content : undefined;
@@ -317,6 +364,7 @@ function App() {
       const { content: responseText, thinking, sources, thinkingDuration } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
 
       const newBotMessage: Message = {
+        id: uuidv4(),
         role: 'assistant',
         content: responseText,
         thinking,
@@ -332,7 +380,8 @@ function App() {
           return {
             ...s,
             messages: [...s.messages, newBotMessage],
-            lastModified: Date.now()
+            lastModified: Date.now(),
+            pendingRequest: undefined
           };
         }
         return s;
@@ -340,6 +389,7 @@ function App() {
 
     } catch (error) {
       const errorMessage: Message = {
+        id: uuidv4(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
         timestamp: Date.now()
@@ -349,18 +399,15 @@ function App() {
           return {
             ...s,
             messages: [...s.messages, errorMessage],
-            lastModified: Date.now()
+            lastModified: Date.now(),
+            pendingRequest: undefined
           };
         }
         return s;
       }));
     } finally {
       // 4. Remove session from processing set
-      setProcessingSessionIds(prev => {
-        const next = new Set(prev);
-        next.delete(targetSessionId);
-        return next;
-      });
+      removeProcessingSession(targetSessionId);
     }
   };
 

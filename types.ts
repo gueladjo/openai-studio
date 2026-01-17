@@ -34,8 +34,10 @@ export interface Source {
 }
 
 export interface Message {
+  id?: string;
   role: 'user' | 'assistant';
   content: string;
+  requestId?: string;
   thinking?: string;
   thinkingDuration?: number; // Duration in milliseconds
   sources?: Source[];
@@ -57,6 +59,13 @@ export interface Session {
   messages: Message[];
   config: ChatConfig;
   lastModified: number;
+  pendingRequest?: PendingRequest;
+}
+
+export interface PendingRequest {
+  id: string;
+  userMessageId: string;
+  createdAt: number;
 }
 
 // Experimental API Types based on the prompt
