@@ -24,7 +24,9 @@ export const generateResponse = async (
   // Initialize OpenAI Client per request to support dynamic keys
   const openai = new OpenAI({
     apiKey: apiKey,
-    dangerouslyAllowBrowser: true // Required for client-side usage
+    dangerouslyAllowBrowser: true, // Required for client-side usage
+    maxRetries: 0,                 // Disable auto-retries to prevent duplicate API calls
+    timeout: 60 * 60 * 1000        // 1 hour timeout for long-running reasoning requests
   });
 
   // Map internal messages to API input format
