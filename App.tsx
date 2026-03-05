@@ -17,6 +17,11 @@ import {
   AppSettings,
   WorkspaceBackup
 } from './services/storage';
+import {
+  buildConversationFilename,
+  downloadTextFile,
+  formatConversationMarkdown
+} from './utils/conversationExport';
 import { Loader2, Menu, Settings, X } from 'lucide-react';
 
 // Hook for detecting mobile viewport
@@ -417,16 +422,27 @@ function App() {
     if (!dirHandle) return;
     try {
       const backup = await getWorkspaceBackup(dirHandle);
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `openai-studio-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadTextFile(
+        `openai-studio-backup-${new Date().toISOString().slice(0, 10)}.json`,
+        JSON.stringify(backup, null, 2),
+        'application/json;charset=utf-8'
+      );
     } catch (e) {
       console.error("Export failed", e);
       alert("Failed to export workspace data.");
+    }
+  };
+
+  const handleShareConversation = () => {
+    if (!currentSession || currentSession.messages.length === 0) return;
+
+    try {
+      const markdown = formatConversationMarkdown(currentSession);
+      const filename = buildConversationFilename(currentSession.title);
+      downloadTextFile(filename, markdown);
+    } catch (e) {
+      console.error("Conversation export failed", e);
+      alert("Failed to export conversation.");
     }
   };
 
@@ -482,7 +498,7 @@ function App() {
               <Menu size={24} />
             </button>
             <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate max-w-[200px]">
-              {currentSession?.title || 'OpenAI Studio'}
+              OpenAI Studio
             </h1>
             <button
               onClick={() => setIsConfigOpen(true)}
@@ -562,6 +578,7 @@ function App() {
             <ChatArea
               session={currentSession}
               onSendMessage={handleSendMessage}
+              onShareConversation={handleShareConversation}
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
             />

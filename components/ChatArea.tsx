@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
@@ -9,6 +9,7 @@ import { getSourcePresentation } from '../utils/sourceUrls';
 interface ChatAreaProps {
   session: Session | null;
   onSendMessage: (content: string, attachments: File[]) => void;
+  onShareConversation: () => void;
   isLoading: boolean;
   isMobile?: boolean;
 }
@@ -344,7 +345,50 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
     );
 };
 
-export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLoading, isMobile = false }) => {
+const ConversationHeader = ({
+  title,
+  isMobile,
+  canShareConversation,
+  onShareConversation
+}: {
+  title: string;
+  isMobile: boolean;
+  canShareConversation: boolean;
+  onShareConversation: () => void;
+}) => {
+  const containerClassName = isMobile
+    ? 'h-14 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-3 px-4 flex-shrink-0 bg-gray-50 dark:bg-[#0d1117] sticky top-0 z-10 transition-colors'
+    : 'h-14 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-4 px-6 flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors';
+
+  return (
+    <div className={containerClassName}>
+      <div className="min-w-0 flex-1">
+        <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text truncate">
+          {title || 'Untitled Chat'}
+        </h2>
+      </div>
+      <button
+        type="button"
+        onClick={onShareConversation}
+        aria-label="Share conversation"
+        title="Share conversation"
+        disabled={!canShareConversation}
+        className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 transition-colors hover:bg-gray-100 dark:hover:bg-[#161b22] disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Upload size={18} />
+        <span>Share</span>
+      </button>
+    </div>
+  );
+};
+
+export const ChatArea: React.FC<ChatAreaProps> = ({
+  session,
+  onSendMessage,
+  onShareConversation,
+  isLoading,
+  isMobile = false
+}) => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -423,14 +467,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
     );
   }
 
+  const canShareConversation = session.messages.length > 0;
+
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
-      {/* Header - hidden on mobile since App.tsx has mobile header */}
-      {!isMobile && (
-        <div className="h-14 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors">
-          <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text">{session.title || 'Untitled Chat'}</h2>
-        </div>
-      )}
+      <ConversationHeader
+        title={session.title}
+        isMobile={isMobile}
+        canShareConversation={canShareConversation}
+        onShareConversation={onShareConversation}
+      />
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-8 scroll-smooth">
