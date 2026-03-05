@@ -2,6 +2,12 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'fs';
+
+const packageJson = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf-8')
+);
+const appVersion = packageJson.version;
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
@@ -79,6 +85,7 @@ export default defineConfig(({ mode }) => {
       })
     ].filter(Boolean),
     define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
       // For local/Electron builds: include API key from .env for convenience
       // For web builds (GitHub Pages): exclude secrets - users enter via settings UI
       'process.env': JSON.stringify(
