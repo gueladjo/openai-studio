@@ -58,7 +58,15 @@ You can turn this web application into a standalone desktop application for Wind
     npm run electron:dev
     ```
 
-3.  **Build for Production:**
+3.  **Advance the release version:**
+    The desktop app version shown in Settings comes from `package.json`.
+    Before cutting a new desktop release, bump the package version:
+    ```bash
+    npm version patch
+    ```
+    Use `minor` or `major` instead of `patch` when appropriate. This updates `package.json` and `package-lock.json`.
+
+4.  **Build for Production:**
     To generate the executable file (installer):
     ```bash
     npm run dist
@@ -73,7 +81,17 @@ You can deploy OpenAI Studio as a PWA for access on mobile devices (iPhone, Andr
 - Responsive mobile layout
 - IndexedDB storage fallback for iOS Safari (which doesn't support OPFS)
 
-#### 1. Build for Web
+#### 1. Advance the Web Release Version
+
+The web app version shown in Settings also comes from `package.json`. Before deploying a new web release, bump the package version:
+
+```bash
+npm version patch
+```
+
+Use `minor` or `major` instead of `patch` when appropriate. This updates `package.json` and `package-lock.json`.
+
+#### 2. Build for Web
 
 ```bash
 npm run build:web
@@ -84,7 +102,7 @@ This creates a production build in the `dist/` folder with:
 - Web app manifest for installation
 - Optimized assets
 
-#### 2. Test Locally
+#### 3. Test Locally
 
 Preview the production build locally:
 
@@ -98,7 +116,7 @@ Opens at `http://localhost:4173`. For full PWA testing (service worker, install 
 npx serve dist
 ```
 
-#### 3. Deploy to GitHub Pages
+#### 4. Deploy to GitHub Pages
 
 **Step 1: Update Vite config for GitHub Pages**
 
@@ -145,7 +163,7 @@ Your app will be available at:
 https://<your-username>.github.io/<repo-name>/
 ```
 
-#### 4. Install on iPhone
+#### 5. Install on iPhone
 
 1. Open your deployed URL in Safari on iPhone
 2. Tap the **Share** button (square with arrow)
