@@ -1,8 +1,9 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
 
 interface ChatAreaProps {
@@ -22,7 +23,28 @@ const formatDuration = (ms: number): string => {
   return `${minutes}m ${seconds}s`;
 };
 
-const ThinkingBlock = ({ text, duration }: { text: string; duration?: number }) => {
+const formatMessageTimestamp = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const timeLabel = new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+
+  if (date.toDateString() === now.toDateString()) {
+    return `Today, ${timeLabel}`;
+  }
+
+  const dateLabel = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() !== now.getFullYear() ? { year: 'numeric' as const } : {})
+  }).format(date);
+
+  return `${dateLabel}, ${timeLabel}`;
+};
+
+const ThinkingBlock = ({ text }: { text: string }) => {
   const [isOpen, setIsOpen] = useState(true);
 
   if (!text) return null;
@@ -36,11 +58,6 @@ const ThinkingBlock = ({ text, duration }: { text: string; duration?: number }) 
             {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <BrainCircuit size={14} />
             <span>Reasoning Process</span>
-            {duration && (
-               <span className="text-gray-400 font-normal ml-1">
-                 ({formatDuration(duration)})
-               </span>
-            )}
         </button>
         {isOpen && (
             <div className="p-3 pt-0 text-gray-600 dark:text-gray-400 text-sm font-mono leading-relaxed border-t border-transparent whitespace-pre-wrap">
@@ -48,7 +65,91 @@ const ThinkingBlock = ({ text, duration }: { text: string; duration?: number }) 
             </div>
         )}
     </div>
-  );
+    );
+};
+
+const ResponseDetailsMenu = ({ message }: { message: Message }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const menuRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleClickOutside = (event: MouseEvent) => {
+            if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+                setIsOpen(false);
+            }
+        };
+
+        const handleEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsOpen(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleClickOutside);
+        document.addEventListener('keydown', handleEscape);
+
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleEscape);
+        };
+    }, [isOpen]);
+
+    const modelName = message.model ? getModelConfig(message.model).name : null;
+    const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
+
+    return (
+        <div ref={menuRef} className="relative">
+            {isOpen && (
+                <div className="absolute bottom-full right-0 z-10 mb-2 w-64 rounded-[28px] border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#161b22] px-4 py-3 shadow-xl shadow-gray-300/30 dark:shadow-black/30 animate-in slide-in-from-top-2">
+                    <div className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                        {formatMessageTimestamp(message.timestamp)}
+                    </div>
+
+                    <div className="mt-3 space-y-3">
+                        {modelName && (
+                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
+                                <Bot size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
+                                <div>
+                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
+                                        Model
+                                    </div>
+                                    <div className="text-sm font-medium">
+                                        {modelName}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {hasThinkingDuration && (
+                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
+                                <Clock size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
+                                <div>
+                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
+                                        Thinking Time
+                                    </div>
+                                    <div className="text-sm font-medium">
+                                        {formatDuration(message.thinkingDuration!)}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            <button
+                type="button"
+                onClick={() => setIsOpen(prev => !prev)}
+                aria-label={isOpen ? 'Hide response details' : 'Show response details'}
+                aria-expanded={isOpen}
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-700 dark:hover:text-gray-200"
+            >
+                <MoreHorizontal size={18} />
+            </button>
+        </div>
+    );
 };
 
 const SourcesBlock = ({ sources }: { sources: Source[] }) => {
@@ -264,7 +365,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
                     
                     {/* Thinking/Reasoning Section */}
                     {msg.role === 'assistant' && msg.thinking && (
-                        <ThinkingBlock text={msg.thinking} duration={msg.thinkingDuration} />
+                        <ThinkingBlock text={msg.thinking} />
                     )}
 
                     {/* Main Content */}
@@ -323,25 +424,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
                         <SourcesBlock sources={msg.sources} />
                     )}
 
-                    {/* Message Metadata Footer (Model, Effort, Time) */}
+                    {/* Message Metadata Footer */}
                     {msg.role === 'assistant' && (
-                        <div className="flex justify-end mt-1.5 gap-3 items-center select-none">
-                            {/* Model & Effort */}
-                            {(msg.model || msg.reasoningEffort) && (
-                                <div className="text-[10px] text-gray-400 dark:text-gray-600 font-mono">
-                                    {msg.model}
-                                    {msg.reasoningEffort && <span className="mx-1 text-gray-300 dark:text-gray-700">•</span>}
-                                    {msg.reasoningEffort}
-                                </div>
-                            )}
-
-                            {/* Duration (only if not in ThinkingBlock) */}
-                            {(!msg.thinking && msg.thinkingDuration) && (
-                                <div className="text-[10px] text-gray-400 dark:text-gray-600 flex items-center gap-1 border-l border-gray-200 dark:border-gray-800 pl-2">
-                                    <Clock size={10} />
-                                    <span>{formatDuration(msg.thinkingDuration)}</span>
-                                </div>
-                            )}
+                        <div className="flex justify-end mt-1.5 items-center select-none">
+                            <ResponseDetailsMenu message={msg} />
                         </div>
                     )}
                   </div>
