@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
@@ -44,6 +44,71 @@ const formatMessageTimestamp = (timestamp: number): string => {
   return `${dateLabel}, ${timeLabel}`;
 };
 
+const copyTextWithExecCommandFallback = (text: string): void => {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+
+  const selection = document.getSelection();
+  const existingRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  const didCopy = document.execCommand('copy');
+  document.body.removeChild(textarea);
+
+  if (selection) {
+    selection.removeAllRanges();
+    if (existingRange) {
+      selection.addRange(existingRange);
+    }
+  }
+
+  if (!didCopy) {
+    throw new Error('Copy command was unsuccessful.');
+  }
+};
+
+const copyTextToClipboard = async (text: string): Promise<void> => {
+  const clipboardWriters: Array<() => Promise<void>> = [
+    async () => {
+      if (!window.electronAPI?.writeClipboardText) {
+        throw new Error('Electron clipboard API is unavailable.');
+      }
+      await window.electronAPI.writeClipboardText(text);
+    },
+    async () => {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Navigator clipboard API is unavailable.');
+      }
+      await navigator.clipboard.writeText(text);
+    },
+    async () => {
+      copyTextWithExecCommandFallback(text);
+    }
+  ];
+
+  let lastError: unknown;
+
+  for (const writeClipboardText of clipboardWriters) {
+    try {
+      await writeClipboardText();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error('Unable to copy response.');
+};
+
 const ThinkingBlock = ({ text }: { text: string }) => {
   const [isOpen, setIsOpen] = useState(true);
 
@@ -70,7 +135,9 @@ const ThinkingBlock = ({ text }: { text: string }) => {
 
 const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     const [isOpen, setIsOpen] = useState(false);
+    const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
     const menuRef = useRef<HTMLDivElement>(null);
+    const copyFeedbackTimeoutRef = useRef<number | null>(null);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -96,8 +163,42 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         };
     }, [isOpen]);
 
+    useEffect(() => {
+        return () => {
+            if (copyFeedbackTimeoutRef.current) {
+                window.clearTimeout(copyFeedbackTimeoutRef.current);
+            }
+        };
+    }, []);
+
     const modelName = message.model ? getModelConfig(message.model).name : null;
     const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
+    const canCopyResponse = message.content.length > 0;
+
+    const setCopyFeedback = (state: 'copied' | 'error') => {
+        setCopyState(state);
+
+        if (copyFeedbackTimeoutRef.current) {
+            window.clearTimeout(copyFeedbackTimeoutRef.current);
+        }
+
+        copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+            setCopyState('idle');
+            copyFeedbackTimeoutRef.current = null;
+        }, 2000);
+    };
+
+    const handleCopyResponse = async () => {
+        if (!canCopyResponse) return;
+
+        try {
+            await copyTextToClipboard(message.content);
+            setCopyFeedback('copied');
+        } catch (error) {
+            console.error('Failed to copy response.', error);
+            setCopyFeedback('error');
+        }
+    };
 
     return (
         <div ref={menuRef} className="relative">
@@ -136,6 +237,26 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                             </div>
                         )}
                     </div>
+
+                    <div className="my-3 border-t border-gray-200 dark:border-gray-800" />
+
+                    <button
+                        type="button"
+                        onClick={handleCopyResponse}
+                        disabled={!canCopyResponse}
+                        className="flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-[#1f2937] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {copyState === 'copied' ? (
+                            <Check size={16} className="flex-shrink-0 text-green-600 dark:text-green-400" />
+                        ) : copyState === 'error' ? (
+                            <AlertCircle size={16} className="flex-shrink-0 text-red-600 dark:text-red-400" />
+                        ) : (
+                            <Copy size={16} className="flex-shrink-0 text-gray-500 dark:text-gray-400" />
+                        )}
+                        <div className="text-sm font-medium text-gray-800 dark:text-gray-100">
+                            {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+                        </div>
+                    </button>
                 </div>
             )}
 

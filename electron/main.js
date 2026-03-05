@@ -33,6 +33,10 @@ ipcMain.handle('window-is-maximized', (event) => {
   return win ? win.isMaximized() : false;
 });
 
+ipcMain.handle('clipboard-write-text', (_event, text) => {
+  clipboard.writeText(String(text ?? ''));
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,

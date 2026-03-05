@@ -43,6 +43,7 @@ declare global {
       close: () => void;
       isMaximized: () => Promise<boolean>;
       onMaximizedChange: (callback: (isMaximized: boolean) => void) => void;
+      writeClipboardText: (text: string) => Promise<void>;
     }
   }
 }
