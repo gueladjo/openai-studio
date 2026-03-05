@@ -1,15 +1,29 @@
 
 export enum ModelId {
+  GPT_5_4 = 'gpt-5.4',
   GPT_5_2 = 'gpt-5.2',
   GPT_5_MINI = 'gpt-5-mini',
   GPT_5_NANO = 'gpt-5-nano',
   GPT_O3 = 'o3',
 }
 
-export type ReasoningEffort52 = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ReasoningEffortFlagship = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export type ReasoningEffortMiniNano = 'minimal' | 'low' | 'medium' | 'high';
 export type ReasoningEffortO3 = 'low' | 'medium' | 'high';
+export type ReasoningEffort =
+  | ReasoningEffortFlagship
+  | ReasoningEffortMiniNano
+  | ReasoningEffortO3;
 export type TextVerbosity = 'low' | 'medium' | 'high';
+
+export interface ModelConfig {
+  id: ModelId;
+  name: string;
+  supportsVerbosity: boolean;
+  reasoningOptions: ReasoningEffort[];
+  defaultReasoningEffort: ReasoningEffort;
+  isLegacy?: boolean;
+}
 
 export interface SystemInstruction {
   id: string;
@@ -69,10 +83,45 @@ export interface PendingRequest {
 }
 
 // Experimental API Types based on the prompt
+export interface OpenAIResponsesInputText {
+  type: 'input_text';
+  text: string;
+}
+
+export interface OpenAIResponsesInputImage {
+  type: 'input_image';
+  image_url: string;
+}
+
+export type OpenAIResponsesContentPart =
+  | OpenAIResponsesInputText
+  | OpenAIResponsesInputImage;
+
 export interface OpenAIResponsesInput {
   role: string;
-  content: string | any[];
+  content: string | OpenAIResponsesContentPart[];
 }
+
+export interface OpenAIWebSearchTool {
+  type: 'web_search';
+  user_location: {
+    type: 'approximate';
+    country: string;
+    region: string;
+    city: string;
+  };
+  search_context_size: 'medium';
+}
+
+export interface OpenAICodeInterpreterTool {
+  type: 'code_interpreter';
+  container: {
+    type: 'auto';
+    file_ids: string[];
+  };
+}
+
+export type OpenAIResponsesTool = OpenAIWebSearchTool | OpenAICodeInterpreterTool;
 
 export interface OpenAIResponsesConfig {
   model: string;
@@ -84,13 +133,13 @@ export interface OpenAIResponsesConfig {
   reasoning?: {
     effort: string;
   };
-  tools?: any[];
+  tools?: OpenAIResponsesTool[];
   store: boolean;
   include?: string[];
 }
 
 export const DEFAULT_CONFIG: ChatConfig = {
-  model: ModelId.GPT_5_2,
+  model: ModelId.GPT_5_4,
   reasoningEffort: 'medium',
   textVerbosity: 'medium',
   tools: {

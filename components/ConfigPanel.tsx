@@ -1,8 +1,8 @@
 
 import React, { useState } from 'react';
 import { ChatConfig, ModelId, SystemInstruction } from '../types';
-import { MODELS, REASONING_EFFORT_5_2, REASONING_EFFORT_MINI_NANO, REASONING_EFFORT_O3, TEXT_VERBOSITY } from '../constants';
-import { Sliders, Globe, Terminal, Trash2, Plus, ChevronDown, ChevronUp } from 'lucide-react';
+import { MODELS, TEXT_VERBOSITY, getModelConfig, getNormalizedReasoningEffort } from '../constants';
+import { Sliders, Globe, Terminal, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ConfigPanelProps {
   config: ChatConfig;
@@ -27,16 +27,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newModel = e.target.value as ModelId;
-    let newReasoning = config.reasoningEffort;
-    
-    // Reset reasoning if not compatible with the new model
-    if (newModel === ModelId.GPT_5_2) {
-        if (!REASONING_EFFORT_5_2.includes(newReasoning as any)) newReasoning = 'medium';
-    } else if (newModel === ModelId.GPT_O3) {
-        if (!REASONING_EFFORT_O3.includes(newReasoning as any)) newReasoning = 'medium';
-    } else {
-        if (!REASONING_EFFORT_MINI_NANO.includes(newReasoning as any)) newReasoning = 'medium';
-    }
+    const newReasoning = getNormalizedReasoningEffort(newModel, config.reasoningEffort);
 
     onChange({
       ...config,
@@ -46,18 +37,10 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   };
 
   const selectedInstruction = systemInstructions.find(si => si.id === config.systemInstructionId);
-
-  let availableReasoningOptions: string[] = [];
-  if (config.model === ModelId.GPT_5_2) {
-      availableReasoningOptions = REASONING_EFFORT_5_2;
-  } else if (config.model === ModelId.GPT_O3) {
-      availableReasoningOptions = REASONING_EFFORT_O3;
-  } else {
-      availableReasoningOptions = REASONING_EFFORT_MINI_NANO;
-  }
-
-  // o3 does not support text verbosity configuration
-  const supportsVerbosity = config.model !== ModelId.GPT_O3;
+  const modelConfig = getModelConfig(config.model);
+  const availableReasoningOptions = modelConfig.reasoningOptions;
+  const selectedReasoningEffort = getNormalizedReasoningEffort(config.model, config.reasoningEffort);
+  const supportsVerbosity = modelConfig.supportsVerbosity;
 
   return (
     <div className={`${isMobile ? 'w-full' : 'w-80 border-l border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full overflow-y-auto transition-colors duration-200`}>
@@ -161,7 +144,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
         <div className="space-y-3">
           <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center justify-between">
             Reasoning Effort
-            <span className="text-[10px] bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-700">{config.reasoningEffort}</span>
+            <span className="text-[10px] bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-700">{selectedReasoningEffort}</span>
           </label>
           <div className="grid grid-cols-1 gap-1 bg-gray-200 dark:bg-[#161b22] p-1 rounded-md border border-gray-300 dark:border-gray-800">
             {availableReasoningOptions.map(option => (
@@ -169,7 +152,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                     key={option}
                     onClick={() => onChange({ ...config, reasoningEffort: option })}
                     className={`text-xs text-left px-3 py-2 rounded capitalize transition-all ${
-                        config.reasoningEffort === option 
+                        selectedReasoningEffort === option 
                         ? 'bg-white dark:bg-blue-600/20 text-blue-600 dark:text-blue-400 border border-gray-300 dark:border-blue-600/30 font-medium shadow-sm dark:shadow-none' 
                         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-200'
                     }`}
@@ -191,7 +174,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                 {TEXT_VERBOSITY.map(v => (
                     <button
                         key={v}
-                        onClick={() => onChange({...config, textVerbosity: v as any})}
+                        onClick={() => onChange({...config, textVerbosity: v})}
                         className={`flex-1 text-xs py-1.5 rounded capitalize transition-all ${
                             config.textVerbosity === v
                             ? 'bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm'

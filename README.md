@@ -14,8 +14,8 @@ It uses OpenAI new Responses API: https://platform.openai.com/docs/api-reference
     *   **No Setup:** Just open the app and start chatting. Your history is saved instantly.
     *   **Privacy:** Data is stored locally in your browser's sandboxed file system.
 *   **Advanced Configuration:**
-    *   **Model Selection:** Switch between ChatGPT o3, GPT-5.2 (Flagship), Mini, and Nano models.
-    *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to XHigh for GPT-5).
+    *   **Model Selection:** Switch between GPT-5.4 (Latest), GPT-5.2 (Legacy), GPT-5 Mini, GPT-5 Nano, and o3.
+    *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to XHigh for GPT-5 flagship models).
     *   **Text Verbosity:** Control the length and detail of generated responses (GPT-5 series only).
 *   **System Instructions:** Create and manage a library of system prompts to steer model behavior.
 *   **Tool Integration:** Toggle Web Search and Code Interpreter capabilities.
