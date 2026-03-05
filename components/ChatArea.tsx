@@ -172,6 +172,9 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     }, []);
 
     const modelName = message.model ? getModelConfig(message.model).name : null;
+    const modelLabel = modelName
+        ? `${modelName}${message.reasoningEffort ? ` ${message.reasoningEffort}` : ''}`
+        : null;
     const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
     const canCopyResponse = message.content.length > 0;
 
@@ -209,7 +212,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                     </div>
 
                     <div className="mt-3 space-y-3">
-                        {modelName && (
+                        {modelLabel && (
                             <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
                                 <Bot size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
                                 <div>
@@ -217,7 +220,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                                         Model
                                     </div>
                                     <div className="text-sm font-medium">
-                                        {modelName}
+                                        {modelLabel}
                                     </div>
                                 </div>
                             </div>
