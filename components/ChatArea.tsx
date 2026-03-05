@@ -427,11 +427,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ session, onSendMessage, isLo
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
       {/* Header - hidden on mobile since App.tsx has mobile header */}
       {!isMobile && (
-        <div className="h-14 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 justify-between flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors">
+        <div className="h-14 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors">
           <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text">{session.title || 'Untitled Chat'}</h2>
-          <div className="text-xs text-gray-500 font-mono">
-              {session.config.model} • {session.config.reasoningEffort} effort
-          </div>
         </div>
       )}
 
