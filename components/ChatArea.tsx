@@ -3,6 +3,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import { Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { getSourcePresentation } from '../utils/sourceUrls';
 
 interface ChatAreaProps {
   session: Session | null;
@@ -60,29 +61,59 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
                 Sources
             </div>
             <div className="flex flex-wrap gap-2">
-                {sources.map((source, idx) => (
-                    <a
-                        key={idx}
-                        href={source.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={source.url}
-                        className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f2937] hover:bg-gray-200 dark:hover:bg-[#2d3748] border border-gray-200 dark:border-gray-700 rounded-full px-3 py-1.5 transition-colors max-w-[200px]"
-                    >
-                        {/* Try to get favicon, fallback to globe */}
-                        <img 
-                            src={`https://www.google.com/s2/favicons?domain=${new URL(source.url).hostname}&sz=32`} 
-                            alt="" 
-                            className="w-3.5 h-3.5 opacity-70"
-                            onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                        />
-                        <span className="text-xs text-gray-700 dark:text-gray-300 truncate font-medium">
-                            {source.title || new URL(source.url).hostname}
-                        </span>
-                    </a>
-                ))}
+                {sources.map((source, idx) => {
+                    const sourcePresentation = getSourcePresentation(source);
+                    const chipContent = (
+                        <>
+                            {sourcePresentation.hostname ? (
+                                <img
+                                    src={`https://www.google.com/s2/favicons?domain=${sourcePresentation.hostname}&sz=32`}
+                                    alt=""
+                                    className="w-3.5 h-3.5 opacity-70"
+                                    onError={(e) => {
+                                        (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
+                                />
+                            ) : (
+                                <Globe size={12} className="text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                            )}
+                            <span className="text-xs text-gray-700 dark:text-gray-300 truncate font-medium">
+                                {sourcePresentation.label}
+                            </span>
+                        </>
+                    );
+
+                    const className = `flex items-center gap-2 bg-gray-100 dark:bg-[#1f2937] border border-gray-200 dark:border-gray-700 rounded-full px-3 py-1.5 max-w-[200px] ${
+                        sourcePresentation.href
+                            ? 'hover:bg-gray-200 dark:hover:bg-[#2d3748] transition-colors'
+                            : 'cursor-default'
+                    }`;
+
+                    if (!sourcePresentation.href) {
+                        return (
+                            <div
+                                key={idx}
+                                title={sourcePresentation.rawUrl}
+                                className={className}
+                            >
+                                {chipContent}
+                            </div>
+                        );
+                    }
+
+                    return (
+                        <a
+                            key={idx}
+                            href={sourcePresentation.href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={sourcePresentation.rawUrl}
+                            className={className}
+                        >
+                            {chipContent}
+                        </a>
+                    );
+                })}
             </div>
         </div>
     );

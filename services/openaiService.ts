@@ -10,6 +10,7 @@ import {
   OpenAIResponsesInput,
   Source
 } from '../types';
+import { createSourceRecord } from '../utils/sourceUrls';
 
 // System prompt restricted to citations only.
 // We have removed instructions regarding <think> tags.
@@ -63,15 +64,13 @@ const isWebSearchResponseItem = (
 
 const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
   return sources
-    .map(source => {
-      const url = source.uri || source.url;
-      if (!url) return null;
-
-      return {
-        title: source.title || new URL(url).hostname,
-        url
-      };
-    })
+    .map((source, index) =>
+      createSourceRecord(
+        source.title,
+        source.uri || source.url,
+        `OpenAI response source #${index + 1}`
+      )
+    )
     .filter((source): source is Source => source !== null);
 };
 
@@ -208,7 +207,7 @@ export const generateResponse = async (
 
     let thinking = '';
     let content = '';
-    let sources: Source[] = [];
+    const rawSources: OpenAIResponseSource[] = [];
 
     if (response.output && Array.isArray(response.output)) {
       for (const item of response.output) {
@@ -219,25 +218,36 @@ export const generateResponse = async (
             content += item.content.map(part => part.text || '').join('');
           }
         } else if (isWebSearchResponseItem(item)) {
-          sources.push(...mapSources(item.action?.sources));
+          rawSources.push(...(item.action?.sources || []));
         }
       }
     } else {
       if (response.output_text) content = response.output_text;
       else if (response.content) content = response.content;
 
-      if (sources.length === 0 && response.web_search_call?.action?.sources) {
-        sources = mapSources(response.web_search_call.action.sources);
+      if (rawSources.length === 0 && response.web_search_call?.action?.sources) {
+        rawSources.push(...response.web_search_call.action.sources);
       }
     }
+
+    let sources = mapSources(rawSources);
 
     const linkRegex = /\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
     const extractedSources: Source[] = [];
     let counter = 1;
 
     content = content.replace(linkRegex, (match, title, url) => {
-      extractedSources.push({ title, url });
-      return `[[${counter++}]](${url})`;
+      const extractedSource = createSourceRecord(
+        title,
+        url,
+        `Assistant citation #${counter}`
+      );
+
+      if (extractedSource) {
+        extractedSources.push(extractedSource);
+      }
+
+      return `[[${counter++}]](${url.trim()})`;
     });
 
     if (extractedSources.length > 0) {
