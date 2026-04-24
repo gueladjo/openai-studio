@@ -1,5 +1,6 @@
 
 export enum ModelId {
+  GPT_5_5 = 'gpt-5.5',
   GPT_5_4 = 'gpt-5.4',
   GPT_5_2 = 'gpt-5.2',
   GPT_5_MINI = 'gpt-5-mini',
@@ -22,7 +23,6 @@ export interface ModelConfig {
   supportsVerbosity: boolean;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;
-  isLegacy?: boolean;
 }
 
 export interface SystemInstruction {
@@ -139,7 +139,7 @@ export interface OpenAIResponsesConfig {
 }
 
 export const DEFAULT_CONFIG: ChatConfig = {
-  model: ModelId.GPT_5_4,
+  model: ModelId.GPT_5_5,
   reasoningEffort: 'medium',
   textVerbosity: 'medium',
   tools: {

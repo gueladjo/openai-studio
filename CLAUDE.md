@@ -45,7 +45,7 @@ User Input (ChatArea) → App.tsx (state) → openaiService.ts (API) → OpenAI 
 ## Key Types (types.ts)
 
 ```typescript
-enum ModelId { GPT_5_2, GPT_5_MINI, GPT_5_NANO, GPT_O3 }
+enum ModelId { GPT_5_5, GPT_5_4, GPT_5_2, GPT_5_MINI, GPT_5_NANO, GPT_O3 }
 
 interface ChatConfig {
   model: ModelId;

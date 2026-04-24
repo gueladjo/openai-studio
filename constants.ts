@@ -16,9 +16,16 @@ export const REASONING_EFFORT_MINI_NANO: ReasoningEffortMiniNano[] = ['minimal',
 export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'];
 
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
+  [ModelId.GPT_5_5]: {
+    id: ModelId.GPT_5_5,
+    name: 'GPT-5.5 (Flagship)',
+    supportsVerbosity: true,
+    reasoningOptions: REASONING_EFFORT_FLAGSHIP,
+    defaultReasoningEffort: 'medium'
+  },
   [ModelId.GPT_5_4]: {
     id: ModelId.GPT_5_4,
-    name: 'GPT-5.4 (Flagship)',
+    name: 'GPT-5.4',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
@@ -28,8 +35,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     name: 'GPT-5.2',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
-    defaultReasoningEffort: 'medium',
-    isLegacy: true
+    defaultReasoningEffort: 'medium'
   },
   [ModelId.GPT_5_MINI]: {
     id: ModelId.GPT_5_MINI,
@@ -55,6 +61,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
 };
 
 export const MODELS = [
+  MODEL_CONFIGS[ModelId.GPT_5_5],
   MODEL_CONFIGS[ModelId.GPT_5_4],
   MODEL_CONFIGS[ModelId.GPT_5_2],
   MODEL_CONFIGS[ModelId.GPT_5_MINI],
@@ -65,7 +72,7 @@ export const MODELS = [
 export const TEXT_VERBOSITY: TextVerbosity[] = ['low', 'medium', 'high'];
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
-  return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_4];
+  return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_5];
 };
 
 export const getNormalizedReasoningEffort = (
