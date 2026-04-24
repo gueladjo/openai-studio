@@ -3,6 +3,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import { Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
 
@@ -537,15 +538,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                     {/* Main Content */}
                     <div
-                        className={`rounded-2xl px-5 py-3.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${
+                        className={`rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm min-w-0 ${
                         msg.role === 'user'
-                            ? 'bg-[#2d3748] text-white rounded-br-none'
+                            ? 'bg-[#2d3748] text-white rounded-br-none whitespace-pre-wrap'
                             : 'bg-white dark:bg-transparent text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-800 rounded-bl-none shadow-sm dark:shadow-none'
                         }`}
                     >
                         {msg.role === 'assistant' ? (
                         <div className="markdown-content">
                             <ReactMarkdown 
+                                remarkPlugins={[remarkGfm]}
                                 components={{
                                     code: ({node, inline, className, children, ...props}: any) => {
                                         return !inline ? (
@@ -561,6 +563,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                             </code>
                                         )
                                     },
+                                    table: ({node, children, ...props}: any) => (
+                                        <div className="markdown-table-wrapper">
+                                            <table {...props}>{children}</table>
+                                        </div>
+                                    ),
                                     a: ({node, href, children, ...props}: any) => {
                                         const isFootnote = /^\[\d+\]$/.test(String(children));
                                         return (
