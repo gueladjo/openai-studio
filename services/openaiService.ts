@@ -18,6 +18,8 @@ const CITATION_SYSTEM_PROMPT = `
 CITATIONS: If you have access to web search or external knowledge, cite your sources using the Markdown format [Title](URL).
 `;
 
+const TITLE_GENERATION_INSTRUCTIONS = 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.';
+
 interface OpenAIResponseSource {
   title?: string;
   uri?: string;
@@ -316,8 +318,8 @@ export const generateChatTitle = async (
   try {
     const payload: OpenAIResponsesConfig = {
       model: ModelId.GPT_5_NANO,
+      instructions: TITLE_GENERATION_INSTRUCTIONS,
       input: [
-        { role: 'system', content: 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.' },
         { role: 'user', content: content || 'Analysis request' }
       ],
       text: {

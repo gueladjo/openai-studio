@@ -105,8 +105,10 @@ export type OpenAIResponsesContentPart =
   | OpenAIResponsesInputImage
   | OpenAIResponsesInputFile;
 
+export type OpenAIResponsesInputRole = 'user' | 'assistant' | 'developer';
+
 export interface OpenAIResponsesInput {
-  role: string;
+  role: OpenAIResponsesInputRole;
   content: string | OpenAIResponsesContentPart[];
 }
 
