@@ -52,6 +52,7 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   requestId?: string;
+  openaiResponseId?: string;
   thinking?: string;
   thinkingDuration?: number; // Duration in milliseconds
   sources?: Source[];
@@ -126,6 +127,8 @@ export type OpenAIResponsesTool = OpenAIWebSearchTool | OpenAICodeInterpreterToo
 export interface OpenAIResponsesConfig {
   model: string;
   input: OpenAIResponsesInput[];
+  instructions?: string;
+  previous_response_id?: string;
   text?: {
     format: { type: 'text' };
     verbosity?: string;

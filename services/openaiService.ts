@@ -42,6 +42,7 @@ type OpenAIResponseOutputItem =
   | { type: string; [key: string]: unknown };
 
 interface OpenAIResponsePayload {
+  id?: string;
   output?: OpenAIResponseOutputItem[];
   output_text?: string;
   content?: string;
@@ -56,6 +57,14 @@ interface OpenAIResponsesClient {
   responses: {
     create: (payload: OpenAIResponsesConfig) => Promise<OpenAIResponsePayload>;
   };
+}
+
+interface GenerateResponseResult {
+  content: string;
+  thinking?: string;
+  sources?: Source[];
+  thinkingDuration: number;
+  responseId?: string;
 }
 
 const isWebSearchResponseItem = (
@@ -74,16 +83,71 @@ const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
     .filter((source): source is Source => source !== null);
 };
 
+const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
+  const images = message.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
+  const otherAttachments = message.attachments?.filter(a => !a.type.startsWith('image/')) || [];
+
+  if (images.length === 0) {
+    return {
+      role: message.role,
+      content: message.content + (otherAttachments.length > 0 ? `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]` : '')
+    };
+  }
+
+  const contentParts: OpenAIResponsesContentPart[] = [];
+
+  if (message.content) {
+    contentParts.push({ type: 'input_text', text: message.content });
+  }
+
+  images.forEach(img => {
+    contentParts.push({
+      type: 'input_image',
+      image_url: img.content as string
+    });
+  });
+
+  if (otherAttachments.length > 0) {
+    contentParts.push({
+      type: 'input_text',
+      text: `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]`
+    });
+  }
+
+  return {
+    role: message.role,
+    content: contentParts
+  };
+};
+
+const getPreviousResponseId = (messages: Message[]): string | undefined => {
+  const previousMessage = messages[messages.length - 2];
+
+  // Only thread when the stored server state exactly matches the local transcript
+  // immediately before the newest user turn.
+  if (previousMessage?.role === 'assistant' && previousMessage.openaiResponseId) {
+    return previousMessage.openaiResponseId;
+  }
+
+  return undefined;
+};
+
 export const generateResponse = async (
   messages: Message[],
   config: ChatConfig,
   providedApiKey?: string,
   systemInstruction?: string
-): Promise<{ content: string; thinking?: string; sources?: Source[]; thinkingDuration: number }> => {
+): Promise<GenerateResponseResult> => {
   const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
 
   if (!apiKey) {
     throw new Error('OpenAI API Key is missing. Please set OPENAI_API_KEY in your environment or enter it in the settings.');
+  }
+
+  const latestMessage = messages[messages.length - 1];
+
+  if (!latestMessage || latestMessage.role !== 'user') {
+    throw new Error('A user message is required to generate a response.');
   }
 
   // Initialize OpenAI Client per request to support dynamic keys
@@ -96,53 +160,13 @@ export const generateResponse = async (
   const normalizedConfig = normalizeChatConfig(config);
   const modelConfig = getModelConfig(normalizedConfig.model);
   const responsesClient = openai as unknown as OpenAIResponsesClient;
-
-  // Map internal messages to API input format
-  const apiInput: OpenAIResponsesInput[] = messages.map(m => {
-    const images = m.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
-    const otherAttachments = m.attachments?.filter(a => !a.type.startsWith('image/')) || [];
-
-    if (images.length === 0) {
-      return {
-        role: m.role,
-        content: m.content + (otherAttachments.length > 0 ? `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]` : '')
-      };
-    }
-
-    const contentParts: OpenAIResponsesContentPart[] = [];
-
-    if (m.content) {
-      contentParts.push({ type: 'input_text', text: m.content });
-    }
-
-    images.forEach(img => {
-      contentParts.push({
-        type: 'input_image',
-        image_url: img.content as string
-      });
-    });
-
-    if (otherAttachments.length > 0) {
-      contentParts.push({
-        type: 'input_text',
-        text: `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]`
-      });
-    }
-
-    return {
-      role: m.role,
-      content: contentParts
-    };
-  });
+  const previousResponseId = getPreviousResponseId(messages);
+  const inputMessages = previousResponseId ? [latestMessage] : messages;
+  const apiInput: OpenAIResponsesInput[] = inputMessages.map(mapMessageToResponseInput);
 
   const fullSystemInstruction = systemInstruction
     ? `${CITATION_SYSTEM_PROMPT}\n\n${systemInstruction}`
     : CITATION_SYSTEM_PROMPT;
-
-  apiInput.unshift({
-    role: 'system',
-    content: fullSystemInstruction
-  });
 
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 
@@ -180,6 +204,7 @@ export const generateResponse = async (
   const payload: OpenAIResponsesConfig = {
     model: normalizedConfig.model,
     input: apiInput,
+    instructions: fullSystemInstruction,
     tools: tools,
     store: true,
     include: [
@@ -188,6 +213,10 @@ export const generateResponse = async (
     ],
     text: textConfig
   };
+
+  if (previousResponseId) {
+    payload.previous_response_id = previousResponseId;
+  }
 
   if (normalizedConfig.reasoningEffort !== 'none') {
     payload.reasoning = {
@@ -254,7 +283,7 @@ export const generateResponse = async (
       sources = extractedSources;
     }
 
-    return { content, thinking, sources, thinkingDuration };
+    return { content, thinking, sources, thinkingDuration, responseId: response.id };
   } catch (error: unknown) {
     console.error('OpenAI API Error:', error);
     throw new Error(error instanceof Error ? error.message : 'Failed to generate response');

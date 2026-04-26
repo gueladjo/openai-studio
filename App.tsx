@@ -367,12 +367,13 @@ function App() {
       const selectedInstruction = systemInstructions.find(si => si.id === session.config.systemInstructionId);
       const systemInstructionContent = selectedInstruction ? selectedInstruction.content : undefined;
 
-      const { content: responseText, thinking, sources, thinkingDuration } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
+      const { content: responseText, thinking, sources, thinkingDuration, responseId } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
 
       const newBotMessage: Message = {
         id: uuidv4(),
         role: 'assistant',
         content: responseText,
+        openaiResponseId: responseId,
         thinking,
         thinkingDuration,
         sources,
