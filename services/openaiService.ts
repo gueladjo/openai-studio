@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { getModelConfig, normalizeChatConfig } from '../constants';
 import {
   ChatConfig,
+  GeneratedFile,
   Message,
   ModelId,
   OpenAIResponsesConfig,
@@ -29,8 +30,19 @@ interface OpenAIResponseUrlCitationAnnotation {
   [key: string]: unknown;
 }
 
+interface OpenAIResponseContainerFileCitationAnnotation {
+  type: 'container_file_citation';
+  start_index?: number;
+  end_index?: number;
+  container_id?: string;
+  file_id?: string;
+  filename?: string;
+  [key: string]: unknown;
+}
+
 type OpenAIResponseAnnotation =
   | OpenAIResponseUrlCitationAnnotation
+  | OpenAIResponseContainerFileCitationAnnotation
   | { type?: string; [key: string]: unknown };
 
 interface OpenAIResponseMessageContentPart {
@@ -52,9 +64,17 @@ interface OpenAIResponseWebSearchItem {
   };
 }
 
+interface OpenAIResponseCodeInterpreterItem {
+  type: 'code_interpreter_call';
+  container_id?: string;
+  outputs?: Array<{ type?: string; [key: string]: unknown }> | null;
+  [key: string]: unknown;
+}
+
 type OpenAIResponseOutputItem =
   | OpenAIResponseMessageItem
   | OpenAIResponseWebSearchItem
+  | OpenAIResponseCodeInterpreterItem
   | { type: string; [key: string]: unknown };
 
 interface OpenAIResponsePayload {
@@ -75,13 +95,59 @@ interface OpenAIResponsesClient {
   };
 }
 
+interface OpenAIContainersClient {
+  containers: {
+    files: {
+      content: {
+        retrieve: (
+          fileId: string,
+          params: { container_id: string }
+        ) => Promise<Response>;
+      };
+    };
+  };
+}
+
 interface GenerateResponseResult {
   content: string;
   thinking?: string;
   sources?: Source[];
+  generatedFiles?: GeneratedFile[];
   thinkingDuration: number;
   responseId?: string;
 }
+
+const GENERATED_FILE_MIME_TYPES: Record<string, string> = {
+  csv: 'text/csv',
+  gif: 'image/gif',
+  html: 'text/html',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  json: 'application/json',
+  md: 'text/markdown',
+  pdf: 'application/pdf',
+  png: 'image/png',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  txt: 'text/plain',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  zip: 'application/zip'
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null
+);
+
+const getStringProperty = (
+  value: Record<string, unknown>,
+  key: string
+): string | undefined => {
+  const property = value[key];
+
+  if (typeof property !== 'string') return undefined;
+
+  const trimmedProperty = property.trim();
+  return trimmedProperty.length > 0 ? trimmedProperty : undefined;
+};
 
 const isWebSearchResponseItem = (
   item: OpenAIResponseOutputItem
@@ -91,6 +157,123 @@ const isUrlCitationAnnotation = (
   annotation: OpenAIResponseAnnotation
 ): annotation is OpenAIResponseUrlCitationAnnotation => {
   return annotation.type === 'url_citation' && typeof annotation.url === 'string';
+};
+
+const isContainerFileCitationAnnotation = (
+  value: unknown
+): value is OpenAIResponseContainerFileCitationAnnotation => (
+  isRecord(value) && value.type === 'container_file_citation'
+);
+
+const getGeneratedFileDisplayName = (filename: string): string => {
+  const pathSegments = filename.split(/[\\/]/).filter(Boolean);
+  const displayName = (pathSegments[pathSegments.length - 1] || filename).trim();
+
+  return displayName || 'generated-file';
+};
+
+const getGeneratedFileMimeType = (filename: string): string | undefined => {
+  const extension = filename.split(/[?#]/)[0]?.split('.').pop()?.toLowerCase();
+
+  if (!extension || extension === filename.toLowerCase()) {
+    return undefined;
+  }
+
+  return GENERATED_FILE_MIME_TYPES[extension];
+};
+
+const mapContainerFileCitationToGeneratedFile = (
+  annotation: OpenAIResponseContainerFileCitationAnnotation
+): GeneratedFile | null => {
+  const fileId = getStringProperty(annotation, 'file_id');
+  const containerId = getStringProperty(annotation, 'container_id');
+
+  if (!fileId || !containerId) return null;
+
+  const filename = getStringProperty(annotation, 'filename') || fileId;
+  const mimeType = getGeneratedFileMimeType(filename);
+
+  return {
+    filename,
+    fileId,
+    containerId,
+    displayName: getGeneratedFileDisplayName(filename),
+    ...(mimeType ? { mimeType } : {}),
+    source: 'container_file_citation'
+  };
+};
+
+const addGeneratedFile = (
+  generatedFiles: GeneratedFile[],
+  seenGeneratedFileKeys: Set<string>,
+  generatedFile: GeneratedFile
+): void => {
+  const generatedFileKey = `${generatedFile.containerId}:${generatedFile.fileId}`;
+
+  if (seenGeneratedFileKeys.has(generatedFileKey)) return;
+
+  seenGeneratedFileKeys.add(generatedFileKey);
+  generatedFiles.push(generatedFile);
+};
+
+const collectGeneratedFilesFromValue = (
+  value: unknown,
+  generatedFiles: GeneratedFile[],
+  seenGeneratedFileKeys: Set<string>,
+  seenObjects: Set<object>
+): void => {
+  if (typeof value !== 'object' || value === null) return;
+
+  if (seenObjects.has(value)) return;
+  seenObjects.add(value);
+
+  if (isContainerFileCitationAnnotation(value)) {
+    const generatedFile = mapContainerFileCitationToGeneratedFile(value);
+
+    if (generatedFile) {
+      addGeneratedFile(generatedFiles, seenGeneratedFileKeys, generatedFile);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      collectGeneratedFilesFromValue(
+        item,
+        generatedFiles,
+        seenGeneratedFileKeys,
+        seenObjects
+      );
+    });
+    return;
+  }
+
+  Object.values(value).forEach((propertyValue) => {
+    collectGeneratedFilesFromValue(
+      propertyValue,
+      generatedFiles,
+      seenGeneratedFileKeys,
+      seenObjects
+    );
+  });
+};
+
+const collectGeneratedFilesFromOutput = (
+  output: OpenAIResponseOutputItem[] | undefined
+): GeneratedFile[] => {
+  if (!output || !Array.isArray(output)) return [];
+
+  const generatedFiles: GeneratedFile[] = [];
+  const seenGeneratedFileKeys = new Set<string>();
+  const seenObjects = new Set<object>();
+
+  collectGeneratedFilesFromValue(
+    output,
+    generatedFiles,
+    seenGeneratedFileKeys,
+    seenObjects
+  );
+
+  return generatedFiles;
 };
 
 const getSourceKey = (url: string): string => url.trim();
@@ -460,7 +643,8 @@ const getPreviousResponseId = (messages: Message[]): string | undefined => {
   const previousMessage = messages[messages.length - 2];
 
   // Only thread when the stored server state exactly matches the local transcript
-  // immediately before the newest user turn.
+  // immediately before the newest user turn. This also keeps any active auto
+  // Code Interpreter container in the previous response context available.
   if (previousMessage?.role === 'assistant' && previousMessage.openaiResponseId) {
     return previousMessage.openaiResponseId;
   }
@@ -519,8 +703,7 @@ export const generateResponse = async (
     tools.push({
       type: 'code_interpreter',
       container: {
-        type: 'auto',
-        file_ids: []
+        type: 'auto'
       }
     });
   }
@@ -576,6 +759,7 @@ export const generateResponse = async (
       sources: [],
       sourceIndexByUrl: new Map<string, number>()
     };
+    const generatedFiles = collectGeneratedFilesFromOutput(response.output);
 
     if (response.output && Array.isArray(response.output)) {
       for (const item of response.output) {
@@ -616,11 +800,50 @@ export const generateResponse = async (
       sources = markdownCitations.sources;
     }
 
-    return { content, thinking, sources, thinkingDuration, responseId: response.id };
+    return {
+      content,
+      thinking,
+      sources,
+      generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
+      thinkingDuration,
+      responseId: response.id
+    };
   } catch (error: unknown) {
     console.error('OpenAI API Error:', error);
     throw new Error(error instanceof Error ? error.message : 'Failed to generate response');
   }
+};
+
+export const fetchGeneratedFileContent = async (
+  generatedFile: GeneratedFile,
+  providedApiKey?: string
+): Promise<Blob> => {
+  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+
+  if (!apiKey) {
+    throw new Error('OpenAI API Key is missing. Please enter it in the settings before downloading generated files.');
+  }
+
+  if (!generatedFile.containerId || !generatedFile.fileId) {
+    throw new Error('Generated file metadata is incomplete.');
+  }
+
+  const openai = new OpenAI({
+    apiKey,
+    dangerouslyAllowBrowser: true
+  });
+  const containersClient = openai as unknown as OpenAIContainersClient;
+
+  const response = await containersClient.containers.files.content.retrieve(
+    generatedFile.fileId,
+    { container_id: generatedFile.containerId }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to download generated file (${response.status}).`);
+  }
+
+  return response.blob();
 };
 
 export const generateChatTitle = async (

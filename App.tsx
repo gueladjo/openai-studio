@@ -368,7 +368,14 @@ function App() {
       const selectedInstruction = systemInstructions.find(si => si.id === session.config.systemInstructionId);
       const systemInstructionContent = selectedInstruction ? selectedInstruction.content : undefined;
 
-      const { content: responseText, thinking, sources, thinkingDuration, responseId } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
+      const {
+        content: responseText,
+        thinking,
+        sources,
+        generatedFiles,
+        thinkingDuration,
+        responseId
+      } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
 
       const newBotMessage: Message = {
         id: uuidv4(),
@@ -378,6 +385,7 @@ function App() {
         thinking,
         thinkingDuration,
         sources,
+        generatedFiles,
         timestamp: Date.now(),
         model: session.config.model,
         reasoningEffort: session.config.reasoningEffort
@@ -581,6 +589,7 @@ function App() {
               session={currentSession}
               onSendMessage={handleSendMessage}
               onShareConversation={handleShareConversation}
+              apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
             />

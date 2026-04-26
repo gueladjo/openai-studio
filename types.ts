@@ -47,6 +47,15 @@ export interface Source {
   url: string;
 }
 
+export interface GeneratedFile {
+  filename: string;
+  fileId: string;
+  containerId: string;
+  displayName?: string;
+  mimeType?: string;
+  source?: 'container_file_citation';
+}
+
 export interface Message {
   id?: string;
   role: 'user' | 'assistant';
@@ -56,6 +65,7 @@ export interface Message {
   thinking?: string;
   thinkingDuration?: number; // Duration in milliseconds
   sources?: Source[];
+  generatedFiles?: GeneratedFile[];
   timestamp: number;
   attachments?: FileAttachment[];
   model?: string;
@@ -127,7 +137,7 @@ export interface OpenAICodeInterpreterTool {
   type: 'code_interpreter';
   container: {
     type: 'auto';
-    file_ids: string[];
+    file_ids?: string[];
   };
 }
 

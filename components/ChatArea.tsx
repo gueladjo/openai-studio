@@ -1,16 +1,18 @@
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload } from 'lucide-react';
+import { GeneratedFile, Message, Session, Source } from '../types';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
+import { fetchGeneratedFileContent } from '../services/openaiService';
 import { getSourcePresentation } from '../utils/sourceUrls';
 
 interface ChatAreaProps {
   session: Session | null;
   onSendMessage: (content: string, attachments: File[]) => void;
   onShareConversation: () => void;
+  apiKey: string;
   isLoading: boolean;
   isMobile?: boolean;
 }
@@ -346,6 +348,144 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
     );
 };
 
+const getGeneratedFileKey = (file: GeneratedFile, index: number): string => (
+    `${file.containerId}:${file.fileId}:${index}`
+);
+
+const getGeneratedFileLabel = (file: GeneratedFile): string => (
+    file.displayName || file.filename || file.fileId || 'generated-file'
+);
+
+const getGeneratedFileDownloadName = (file: GeneratedFile): string => {
+    const label = getGeneratedFileLabel(file)
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+        .trim();
+
+    return label || 'generated-file';
+};
+
+const saveBlobAsFile = (blob: Blob, filename: string): void => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => {
+        URL.revokeObjectURL(url);
+    }, 0);
+};
+
+const GeneratedFilesBlock = ({
+    files,
+    apiKey
+}: {
+    files: GeneratedFile[];
+    apiKey: string;
+}) => {
+    const [downloadStates, setDownloadStates] = useState<Record<string, 'idle' | 'downloading' | 'error'>>({});
+
+    if (!files || files.length === 0) return null;
+
+    const canDownload = apiKey.trim().length > 0;
+    const hasDownloadError = Object.values(downloadStates).includes('error');
+
+    const setDownloadState = (
+        fileKey: string,
+        state: 'idle' | 'downloading' | 'error'
+    ) => {
+        setDownloadStates(prev => ({
+            ...prev,
+            [fileKey]: state
+        }));
+    };
+
+    const handleDownload = async (file: GeneratedFile, index: number) => {
+        if (!canDownload) return;
+
+        const fileKey = getGeneratedFileKey(file, index);
+        setDownloadState(fileKey, 'downloading');
+
+        try {
+            const blob = await fetchGeneratedFileContent(file, apiKey);
+            const typedBlob = !blob.type && file.mimeType
+                ? new Blob([blob], { type: file.mimeType })
+                : blob;
+
+            saveBlobAsFile(typedBlob, getGeneratedFileDownloadName(file));
+            setDownloadState(fileKey, 'idle');
+        } catch (error) {
+            console.error('Failed to download generated file.', error);
+            setDownloadState(fileKey, 'error');
+        }
+    };
+
+    return (
+        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-800">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-2">
+                <FileText size={12} />
+                Generated files
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {files.map((file, index) => {
+                    const fileKey = getGeneratedFileKey(file, index);
+                    const downloadState = downloadStates[fileKey] || 'idle';
+                    const isDownloading = downloadState === 'downloading';
+                    const didFail = downloadState === 'error';
+                    const label = getGeneratedFileLabel(file);
+                    const title = `${label}\nContainer: ${file.containerId}\nFile: ${file.fileId}`;
+
+                    return (
+                        <button
+                            key={fileKey}
+                            type="button"
+                            onClick={() => handleDownload(file, index)}
+                            disabled={isDownloading}
+                            aria-disabled={!canDownload || isDownloading}
+                            title={title}
+                            className={`flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors ${
+                                canDownload
+                                    ? 'bg-gray-100 dark:bg-[#1f2937] border-gray-200 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-[#2d3748]'
+                                    : 'bg-gray-50 dark:bg-[#161b22] border-gray-200 dark:border-gray-800 cursor-default'
+                            } ${isDownloading ? 'cursor-wait' : ''} disabled:opacity-80`}
+                        >
+                            <FileText size={12} className="flex-shrink-0 text-gray-500 dark:text-gray-400" />
+                            <span className="min-w-0 flex-1">
+                                <span className="block truncate text-xs font-medium text-gray-700 dark:text-gray-300">
+                                    {label}
+                                </span>
+                                <span className="block truncate text-[10px] text-gray-500 dark:text-gray-500">
+                                    {file.fileId}
+                                </span>
+                            </span>
+                            {isDownloading ? (
+                                <Clock size={12} className="flex-shrink-0 text-gray-500 dark:text-gray-400" />
+                            ) : didFail ? (
+                                <AlertCircle size={12} className="flex-shrink-0 text-red-500 dark:text-red-400" />
+                            ) : canDownload ? (
+                                <Download size={12} className="flex-shrink-0 text-gray-500 dark:text-gray-400" />
+                            ) : null}
+                        </button>
+                    );
+                })}
+            </div>
+            {!canDownload && (
+                <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-500">
+                    API key required for download. File IDs remain visible for manual retrieval.
+                </div>
+            )}
+            {hasDownloadError && (
+                <div className="mt-2 text-[11px] text-red-500 dark:text-red-400">
+                    Download failed. The container file may have expired.
+                </div>
+            )}
+        </div>
+    );
+};
+
 const ConversationHeader = ({
   title,
   isMobile,
@@ -387,6 +527,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   session,
   onSendMessage,
   onShareConversation,
+  apiKey,
   isLoading,
   isMobile = false
 }) => {
@@ -596,6 +737,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     {/* Sources Chips */}
                     {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
                         <SourcesBlock sources={msg.sources} />
+                    )}
+
+                    {/* Generated File Chips */}
+                    {msg.role === 'assistant' && msg.generatedFiles && msg.generatedFiles.length > 0 && (
+                        <GeneratedFilesBlock files={msg.generatedFiles} apiKey={apiKey} />
                     )}
 
                     {/* Message Metadata Footer */}
