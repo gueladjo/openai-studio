@@ -12,12 +12,6 @@ import {
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
 
-// System prompt restricted to citations only.
-// We have removed instructions regarding <think> tags.
-const CITATION_SYSTEM_PROMPT = `
-CITATIONS: If you have access to web search or external knowledge, cite your sources using the Markdown format [Title](URL).
-`;
-
 const TITLE_GENERATION_INSTRUCTIONS = 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.';
 
 interface OpenAIResponseSource {
@@ -26,9 +20,29 @@ interface OpenAIResponseSource {
   url?: string;
 }
 
+interface OpenAIResponseUrlCitationAnnotation {
+  type: 'url_citation';
+  start_index?: number;
+  end_index?: number;
+  url?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+type OpenAIResponseAnnotation =
+  | OpenAIResponseUrlCitationAnnotation
+  | { type?: string; [key: string]: unknown };
+
+interface OpenAIResponseMessageContentPart {
+  type?: string;
+  text?: string;
+  annotations?: OpenAIResponseAnnotation[];
+  [key: string]: unknown;
+}
+
 interface OpenAIResponseMessageItem {
   type: 'message';
-  content?: string | Array<{ text?: string }>;
+  content?: string | OpenAIResponseMessageContentPart[];
 }
 
 interface OpenAIResponseWebSearchItem {
@@ -73,16 +87,326 @@ const isWebSearchResponseItem = (
   item: OpenAIResponseOutputItem
 ): item is OpenAIResponseWebSearchItem => item.type === 'web_search_call';
 
-const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
-  return sources
-    .map((source, index) =>
-      createSourceRecord(
-        source.title,
-        source.uri || source.url,
-        `OpenAI response source #${index + 1}`
+const isUrlCitationAnnotation = (
+  annotation: OpenAIResponseAnnotation
+): annotation is OpenAIResponseUrlCitationAnnotation => {
+  return annotation.type === 'url_citation' && typeof annotation.url === 'string';
+};
+
+const getSourceKey = (url: string): string => url.trim();
+
+const formatCitationMarkdownLink = (citationNumber: number, url: string): string => {
+  const escapedUrl = url.trim().replace(/>/g, '%3E');
+  return `[[${citationNumber}]](<${escapedUrl}>)`;
+};
+
+const isCitationMarkerSpan = (text: string): boolean => {
+  const trimmedText = text.trim();
+
+  if (!trimmedText) return false;
+
+  const sourceLabel = trimmedText
+    .replace(/^[([{]\s*/, '')
+    .replace(/\s*[)\]}]$/, '');
+
+  return (
+    /^\u3010[^\u3011]+\u3011$/.test(trimmedText) ||
+    /^\uE200cite\uE202.+?\uE201$/.test(trimmedText) ||
+    /^\[\d+(?:\s*[-,]\s*\d+)*\]$/.test(trimmedText) ||
+    /^(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(sourceLabel)
+  );
+};
+
+const normalizeSourceLabel = (label: string): string => {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/^[([{]\s*/, '')
+    .replace(/\s*[)\]}]$/, '')
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/$/, '');
+};
+
+const isDomainLikeSourceLabel = (label: string): boolean => (
+  /^(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(normalizeSourceLabel(label))
+);
+
+const stripAdjacentCitationSourceLabels = (content: string): string => {
+  const withoutAdjacentLabels = content
+    .replace(
+      /(^|[ \t])\(([^()\n]{3,160})\)([ \t]*(?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)/g,
+      (match, prefix, label, marker) => (
+        isDomainLikeSourceLabel(label) ? `${prefix}${marker.trimStart()}` : match
       )
     )
-    .filter((source): source is Source => source !== null);
+    .replace(
+      /((?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)[ \t]*\(([^()\n]{3,160})\)/g,
+      (match, marker, label) => (
+        isDomainLikeSourceLabel(label) ? marker : match
+      )
+    );
+
+  return withoutAdjacentLabels.replace(
+    /\(([^()\n]{0,300}?)((?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)[\]\s]*\)/g,
+    (match: string, labelPrefix: string, markers: string) => {
+      const remainder = labelPrefix
+        .replace(/\[([^\]\n]{3,160})\]/g, (labelMatch: string, label: string) => (
+          isDomainLikeSourceLabel(label) ? '' : labelMatch
+        ))
+        .replace(
+          /(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s,;\]]*)?/gi,
+          (label: string) => (isDomainLikeSourceLabel(label) ? '' : label)
+        )
+        .replace(/[\s,;\[\]]+/g, '');
+
+      return remainder.length === 0 ? markers.trim() : match;
+    }
+  );
+};
+
+const replaceInlineCitationSourceLabels = (
+  text: string,
+  markerText: string
+): {
+  text: string;
+  replaced: boolean;
+} => {
+  let replaced = false;
+
+  const updatedText = text.replace(
+    /\(([^()\n]{3,160})\)/g,
+    (match, label) => {
+      if (!isDomainLikeSourceLabel(label)) {
+        return match;
+      }
+
+      replaced = true;
+      return markerText;
+    }
+  );
+
+  return {
+    text: updatedText,
+    replaced
+  };
+};
+
+const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
+  const seenUrls = new Set<string>();
+  const mappedSources: Source[] = [];
+
+  sources.forEach((source, index) => {
+    const sourceRecord = createSourceRecord(
+      source.title,
+      source.uri || source.url,
+      `OpenAI response source #${index + 1}`
+    );
+
+    if (!sourceRecord) return;
+
+    const sourceKey = getSourceKey(sourceRecord.url);
+    if (seenUrls.has(sourceKey)) return;
+
+    seenUrls.add(sourceKey);
+    mappedSources.push(sourceRecord);
+  });
+
+  return mappedSources;
+};
+
+const extractMarkdownLinkCitations = (content: string): {
+  content: string;
+  sources: Source[];
+} => {
+  const linkRegex = /\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
+  const extractedSources: Source[] = [];
+  const sourceIndexByUrl = new Map<string, number>();
+
+  const updatedContent = content.replace(linkRegex, (match, title, url) => {
+    const extractedSource = createSourceRecord(
+      title,
+      url,
+      `Assistant citation #${extractedSources.length + 1}`
+    );
+
+    if (!extractedSource) {
+      return match;
+    }
+
+    const sourceKey = getSourceKey(extractedSource.url);
+    let citationNumber = sourceIndexByUrl.get(sourceKey);
+
+    if (!citationNumber) {
+      extractedSources.push(extractedSource);
+      citationNumber = extractedSources.length;
+      sourceIndexByUrl.set(sourceKey, citationNumber);
+    }
+
+    return formatCitationMarkdownLink(citationNumber, extractedSource.url);
+  });
+
+  return {
+    content: updatedContent,
+    sources: extractedSources
+  };
+};
+
+interface CitationRegistry {
+  sources: Source[];
+  sourceIndexByUrl: Map<string, number>;
+}
+
+interface CitationReplacement {
+  startIndex: number;
+  endIndex: number;
+  citationNumbers: number[];
+  urls: string[];
+}
+
+const getOrAddCitationSource = (
+  registry: CitationRegistry,
+  annotation: OpenAIResponseUrlCitationAnnotation
+): {
+  citationNumber: number;
+  source: Source;
+} | null => {
+  const source = createSourceRecord(
+    annotation.title,
+    annotation.url,
+    `OpenAI url_citation`
+  );
+
+  if (!source) return null;
+
+  const sourceKey = getSourceKey(source.url);
+  const existingCitationNumber = registry.sourceIndexByUrl.get(sourceKey);
+
+  if (existingCitationNumber) {
+    return {
+      citationNumber: existingCitationNumber,
+      source
+    };
+  }
+
+  registry.sources.push(source);
+  const citationNumber = registry.sources.length;
+  registry.sourceIndexByUrl.set(sourceKey, citationNumber);
+
+  return {
+    citationNumber,
+    source
+  };
+};
+
+const getAnnotationSpanKey = (
+  annotation: OpenAIResponseUrlCitationAnnotation
+): string | null => {
+  if (
+    !Number.isInteger(annotation.start_index) ||
+    !Number.isInteger(annotation.end_index)
+  ) {
+    return null;
+  }
+
+  return `${annotation.start_index}:${annotation.end_index}`;
+};
+
+const buildCitationReplacements = (
+  text: string,
+  annotations: OpenAIResponseAnnotation[] | undefined,
+  registry: CitationRegistry
+): CitationReplacement[] => {
+  if (!annotations || annotations.length === 0) return [];
+
+  const replacementsBySpan = new Map<string, CitationReplacement>();
+
+  annotations.forEach((annotation) => {
+    if (!isUrlCitationAnnotation(annotation)) return;
+
+    const spanKey = getAnnotationSpanKey(annotation);
+    if (!spanKey) return;
+
+    const startIndex = annotation.start_index as number;
+    const endIndex = annotation.end_index as number;
+
+    if (
+      startIndex < 0 ||
+      endIndex <= startIndex ||
+      startIndex >= text.length ||
+      endIndex > text.length
+    ) {
+      return;
+    }
+
+    const citationSource = getOrAddCitationSource(registry, annotation);
+    if (!citationSource) return;
+
+    const existingReplacement = replacementsBySpan.get(spanKey);
+
+    if (existingReplacement) {
+      if (!existingReplacement.citationNumbers.includes(citationSource.citationNumber)) {
+        existingReplacement.citationNumbers.push(citationSource.citationNumber);
+        existingReplacement.urls.push(citationSource.source.url);
+      }
+      return;
+    }
+
+    replacementsBySpan.set(spanKey, {
+      startIndex,
+      endIndex,
+      citationNumbers: [citationSource.citationNumber],
+      urls: [citationSource.source.url]
+    });
+  });
+
+  return Array.from(replacementsBySpan.values()).sort((a, b) => (
+    a.startIndex === b.startIndex
+      ? a.endIndex - b.endIndex
+      : a.startIndex - b.startIndex
+  ));
+};
+
+const applyCitationAnnotations = (
+  text: string,
+  annotations: OpenAIResponseAnnotation[] | undefined,
+  registry: CitationRegistry
+): string => {
+  const replacements = buildCitationReplacements(text, annotations, registry);
+
+  if (replacements.length === 0) {
+    return text;
+  }
+
+  let updatedText = '';
+  let cursor = 0;
+
+  replacements.forEach((replacement) => {
+    if (replacement.startIndex < cursor) return;
+
+    const spanText = text.slice(replacement.startIndex, replacement.endIndex);
+    const markerText = replacement.citationNumbers
+      .map((citationNumber, index) => (
+        formatCitationMarkdownLink(citationNumber, replacement.urls[index])
+      ))
+      .join(' ');
+
+    updatedText += text.slice(cursor, replacement.startIndex);
+    const spanWithCitationMarkers = replaceInlineCitationSourceLabels(spanText, markerText);
+
+    if (spanWithCitationMarkers.replaced) {
+      updatedText += spanWithCitationMarkers.text;
+    } else {
+      updatedText += isCitationMarkerSpan(spanText)
+        ? markerText
+        : `${spanText}${markerText}`;
+    }
+    cursor = replacement.endIndex;
+  });
+
+  updatedText += text.slice(cursor);
+
+  return stripAdjacentCitationSourceLabels(updatedText);
 };
 
 const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
@@ -176,10 +500,6 @@ export const generateResponse = async (
   const inputMessages = previousResponseId ? [latestMessage] : messages;
   const apiInput: OpenAIResponsesInput[] = inputMessages.map(mapMessageToResponseInput);
 
-  const fullSystemInstruction = systemInstruction
-    ? `${CITATION_SYSTEM_PROMPT}\n\n${systemInstruction}`
-    : CITATION_SYSTEM_PROMPT;
-
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 
   if (normalizedConfig.tools.webSearch) {
@@ -216,7 +536,6 @@ export const generateResponse = async (
   const payload: OpenAIResponsesConfig = {
     model: normalizedConfig.model,
     input: apiInput,
-    instructions: fullSystemInstruction,
     tools: tools,
     store: true,
     include: [
@@ -225,6 +544,10 @@ export const generateResponse = async (
     ],
     text: textConfig
   };
+
+  if (systemInstruction) {
+    payload.instructions = systemInstruction;
+  }
 
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;
@@ -249,6 +572,10 @@ export const generateResponse = async (
     let thinking = '';
     let content = '';
     const rawSources: OpenAIResponseSource[] = [];
+    const citationRegistry: CitationRegistry = {
+      sources: [],
+      sourceIndexByUrl: new Map<string, number>()
+    };
 
     if (response.output && Array.isArray(response.output)) {
       for (const item of response.output) {
@@ -256,7 +583,9 @@ export const generateResponse = async (
           if (typeof item.content === 'string') {
             content += item.content;
           } else if (Array.isArray(item.content)) {
-            content += item.content.map(part => part.text || '').join('');
+            content += item.content.map((part) => (
+              applyCitationAnnotations(part.text || '', part.annotations, citationRegistry)
+            )).join('');
           }
         } else if (isWebSearchResponseItem(item)) {
           rawSources.push(...(item.action?.sources || []));
@@ -271,28 +600,20 @@ export const generateResponse = async (
       }
     }
 
-    let sources = mapSources(rawSources);
+    if (citationRegistry.sources.length > 0) {
+      content = stripAdjacentCitationSourceLabels(content);
+    }
 
-    const linkRegex = /\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
-    const extractedSources: Source[] = [];
-    let counter = 1;
+    let sources = citationRegistry.sources;
 
-    content = content.replace(linkRegex, (match, title, url) => {
-      const extractedSource = createSourceRecord(
-        title,
-        url,
-        `Assistant citation #${counter}`
-      );
+    if (sources.length === 0) {
+      sources = mapSources(rawSources);
+    }
 
-      if (extractedSource) {
-        extractedSources.push(extractedSource);
-      }
-
-      return `[[${counter++}]](${url.trim()})`;
-    });
-
-    if (extractedSources.length > 0) {
-      sources = extractedSources;
+    if (sources.length === 0 && !normalizedConfig.tools.webSearch) {
+      const markdownCitations = extractMarkdownLinkCitations(content);
+      content = markdownCitations.content;
+      sources = markdownCitations.sources;
     }
 
     return { content, thinking, sources, thinkingDuration, responseId: response.id };
