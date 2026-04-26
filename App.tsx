@@ -39,6 +39,18 @@ const useIsMobile = (breakpoint = 768) => {
   return isMobile;
 };
 
+const readFileAsDataURL = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Failed to read file'));
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
 // Add global declaration for Electron API
 declare global {
   interface Window {
@@ -295,22 +307,11 @@ function App() {
 
       const processedAttachments = await Promise.all(attachments.map(async (file) => {
           let fileContent: string | undefined = undefined;
-          
-          // Convert images to Base64 for API usage
-          if (file.type.startsWith('image/')) {
-              try {
-                  fileContent = await new Promise<string>((resolve, reject) => {
-                      const reader = new FileReader();
-                      reader.onloadend = () => {
-                          if (typeof reader.result === 'string') resolve(reader.result);
-                          else reject(new Error('Failed to read file'));
-                      };
-                      reader.onerror = reject;
-                      reader.readAsDataURL(file);
-                  });
-              } catch (e) {
-                  console.error("Failed to read image file", e);
-              }
+
+          try {
+              fileContent = await readFileAsDataURL(file);
+          } catch (e) {
+              console.error("Failed to read attachment file", e);
           }
 
           return {

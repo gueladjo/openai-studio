@@ -86,11 +86,13 @@ const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
 const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   const images = message.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
   const otherAttachments = message.attachments?.filter(a => !a.type.startsWith('image/')) || [];
+  const fileAttachments = otherAttachments.filter(a => a.content);
+  const filenameFallbackAttachments = otherAttachments.filter(a => !a.content);
 
-  if (images.length === 0) {
+  if (images.length === 0 && fileAttachments.length === 0) {
     return {
       role: message.role,
-      content: message.content + (otherAttachments.length > 0 ? `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]` : '')
+      content: message.content + (filenameFallbackAttachments.length > 0 ? `\n\n[Attached Files: ${filenameFallbackAttachments.map(a => a.name).join(', ')}]` : '')
     };
   }
 
@@ -107,10 +109,18 @@ const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
     });
   });
 
-  if (otherAttachments.length > 0) {
+  fileAttachments.forEach(file => {
+    contentParts.push({
+      type: 'input_file',
+      filename: file.name,
+      file_data: file.content as string
+    });
+  });
+
+  if (filenameFallbackAttachments.length > 0) {
     contentParts.push({
       type: 'input_text',
-      text: `\n\n[Attached Files: ${otherAttachments.map(a => a.name).join(', ')}]`
+      text: `\n\n[Attached Files: ${filenameFallbackAttachments.map(a => a.name).join(', ')}]`
     });
   }
 

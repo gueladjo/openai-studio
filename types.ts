@@ -65,7 +65,7 @@ export interface Message {
 export interface FileAttachment {
   name: string;
   type: string;
-  content?: string; // For text files we might preview/send content directly
+  content?: string; // Data URL used for Responses API image/file inputs
 }
 
 export interface Session {
@@ -94,9 +94,16 @@ export interface OpenAIResponsesInputImage {
   image_url: string;
 }
 
+export interface OpenAIResponsesInputFile {
+  type: 'input_file';
+  filename: string;
+  file_data: string;
+}
+
 export type OpenAIResponsesContentPart =
   | OpenAIResponsesInputText
-  | OpenAIResponsesInputImage;
+  | OpenAIResponsesInputImage
+  | OpenAIResponsesInputFile;
 
 export interface OpenAIResponsesInput {
   role: string;
