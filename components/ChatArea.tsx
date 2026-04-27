@@ -21,6 +21,16 @@ interface ChatAreaProps {
 }
 
 const AUTO_SCROLL_THRESHOLD_PX = 120;
+const PROMPT_INPUT_MIN_HEIGHT_PX = 52;
+const PROMPT_INPUT_MAX_HEIGHT_PX = 192;
+
+const resizePromptTextarea = (textarea: HTMLTextAreaElement): void => {
+  textarea.style.height = `${PROMPT_INPUT_MIN_HEIGHT_PX}px`;
+  textarea.style.height = `${Math.min(
+    Math.max(textarea.scrollHeight, PROMPT_INPUT_MIN_HEIGHT_PX),
+    PROMPT_INPUT_MAX_HEIGHT_PX
+  )}px`;
+};
 
 const formatDuration = (ms: number): string => {
   const totalSeconds = ms / 1000;
@@ -558,6 +568,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isPinnedToBottomRef = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
@@ -625,6 +636,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       }
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!textareaRef.current) return;
+
+    resizePromptTextarea(textareaRef.current);
+  }, [inputValue]);
 
   const handleSend = () => {
     if ((!inputValue.trim() && attachments.length === 0) || isLoading) return;
@@ -943,6 +960,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           )}
           <div className="relative bg-gray-50 dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg focus-within:ring-1 focus-within:ring-blue-500/50 focus-within:border-blue-500 transition-all">
             <textarea
+              ref={textareaRef}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -950,12 +968,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               placeholder="Ask anything..."
               className="w-full bg-transparent text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 text-sm px-4 py-3 pr-24 rounded-xl focus:outline-none resize-none max-h-48 min-h-[52px]"
               rows={1}
-              style={{ height: 'auto', minHeight: '52px' }}
-              onInput={(e) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  target.style.height = 'auto';
-                  target.style.height = `${Math.min(target.scrollHeight, 200)}px`;
-              }}
+              style={{ height: `${PROMPT_INPUT_MIN_HEIGHT_PX}px`, minHeight: `${PROMPT_INPUT_MIN_HEIGHT_PX}px` }}
             />
             
             <div className="absolute right-2 bottom-1.5 flex items-center gap-1">
