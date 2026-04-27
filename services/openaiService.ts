@@ -1,6 +1,12 @@
-
 import OpenAI from 'openai';
-import { getModelConfig, normalizeChatConfig } from '../constants';
+import type {
+  Response as OpenAIResponse,
+  ResponseFunctionWebSearch,
+  ResponseOutputItem,
+  ResponseOutputMessage,
+  ResponseOutputText
+} from 'openai/resources/responses/responses';
+import { getModelConfig, getNormalizedReasoningEffort, normalizeChatConfig } from '../constants';
 import {
   ChatConfig,
   GeneratedFile,
@@ -15,98 +21,20 @@ import { createSourceRecord } from '../utils/sourceUrls';
 
 const TITLE_GENERATION_INSTRUCTIONS = 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.';
 
-interface OpenAIResponseSource {
+type OpenAIResponseSource = ResponseFunctionWebSearch.Search.Source & {
   title?: string;
   uri?: string;
-  url?: string;
-}
+};
 
-interface OpenAIResponseUrlCitationAnnotation {
+type OpenAIResponseUrlCitationAnnotation = Partial<ResponseOutputText.URLCitation> & {
   type: 'url_citation';
-  start_index?: number;
-  end_index?: number;
-  url?: string;
-  title?: string;
-  [key: string]: unknown;
-}
-
-interface OpenAIResponseContainerFileCitationAnnotation {
-  type: 'container_file_citation';
-  start_index?: number;
-  end_index?: number;
-  container_id?: string;
-  file_id?: string;
-  filename?: string;
-  [key: string]: unknown;
-}
-
-type OpenAIResponseAnnotation =
-  | OpenAIResponseUrlCitationAnnotation
-  | OpenAIResponseContainerFileCitationAnnotation
-  | { type?: string; [key: string]: unknown };
-
-interface OpenAIResponseMessageContentPart {
-  type?: string;
-  text?: string;
-  annotations?: OpenAIResponseAnnotation[];
-  [key: string]: unknown;
-}
-
-interface OpenAIResponseMessageItem {
-  type: 'message';
-  content?: string | OpenAIResponseMessageContentPart[];
-}
-
-interface OpenAIResponseWebSearchItem {
-  type: 'web_search_call';
-  action?: {
-    sources?: OpenAIResponseSource[];
+  url: string;
+};
+type OpenAIResponseContainerFileCitationAnnotation = ResponseOutputText.ContainerFileCitation;
+type OpenAIResponseContainerFileCitationCandidate =
+  Partial<OpenAIResponseContainerFileCitationAnnotation> & {
+    type: 'container_file_citation';
   };
-}
-
-interface OpenAIResponseCodeInterpreterItem {
-  type: 'code_interpreter_call';
-  container_id?: string;
-  outputs?: Array<{ type?: string; [key: string]: unknown }> | null;
-  [key: string]: unknown;
-}
-
-type OpenAIResponseOutputItem =
-  | OpenAIResponseMessageItem
-  | OpenAIResponseWebSearchItem
-  | OpenAIResponseCodeInterpreterItem
-  | { type: string; [key: string]: unknown };
-
-interface OpenAIResponsePayload {
-  id?: string;
-  output?: OpenAIResponseOutputItem[];
-  output_text?: string;
-  content?: string;
-  web_search_call?: {
-    action?: {
-      sources?: OpenAIResponseSource[];
-    };
-  };
-}
-
-interface OpenAIResponsesClient {
-  responses: {
-    create: (payload: OpenAIResponsesConfig) => Promise<OpenAIResponsePayload>;
-  };
-}
-
-interface OpenAIContainersClient {
-  containers: {
-    files: {
-      content: {
-        retrieve: (
-          fileId: string,
-          params: { container_id: string }
-        ) => Promise<Response>;
-      };
-    };
-  };
-}
 
 interface GenerateResponseResult {
   content: string;
@@ -150,20 +78,59 @@ const getStringProperty = (
 };
 
 const isWebSearchResponseItem = (
-  item: OpenAIResponseOutputItem
-): item is OpenAIResponseWebSearchItem => item.type === 'web_search_call';
+  item: ResponseOutputItem
+): item is ResponseFunctionWebSearch => item.type === 'web_search_call';
 
 const isUrlCitationAnnotation = (
-  annotation: OpenAIResponseAnnotation
+  annotation: unknown
 ): annotation is OpenAIResponseUrlCitationAnnotation => {
-  return annotation.type === 'url_citation' && typeof annotation.url === 'string';
+  return (
+    isRecord(annotation) &&
+    annotation.type === 'url_citation' &&
+    typeof annotation.url === 'string'
+  );
 };
 
 const isContainerFileCitationAnnotation = (
   value: unknown
-): value is OpenAIResponseContainerFileCitationAnnotation => (
+): value is OpenAIResponseContainerFileCitationCandidate => (
   isRecord(value) && value.type === 'container_file_citation'
 );
+
+const isOpenAIResponseSource = (value: unknown): value is OpenAIResponseSource => (
+  isRecord(value) && typeof value.url === 'string'
+);
+
+const getWebSearchActionSources = (
+  action: ResponseFunctionWebSearch['action']
+): OpenAIResponseSource[] => {
+  if (!('sources' in action) || !Array.isArray(action.sources)) return [];
+
+  return action.sources;
+};
+
+const getLegacyStringProperty = (
+  value: unknown,
+  key: string
+): string | undefined => {
+  if (!isRecord(value)) return undefined;
+
+  return getStringProperty(value, key);
+};
+
+const getLegacyTopLevelWebSearchSources = (
+  response: OpenAIResponse
+): OpenAIResponseSource[] => {
+  if (!isRecord(response)) return [];
+
+  const webSearchCall = response.web_search_call;
+  if (!isRecord(webSearchCall)) return [];
+
+  const action = webSearchCall.action;
+  if (!isRecord(action) || !Array.isArray(action.sources)) return [];
+
+  return action.sources.filter(isOpenAIResponseSource);
+};
 
 const getGeneratedFileDisplayName = (filename: string): string => {
   const pathSegments = filename.split(/[\\/]/).filter(Boolean);
@@ -183,14 +150,14 @@ const getGeneratedFileMimeType = (filename: string): string | undefined => {
 };
 
 const mapContainerFileCitationToGeneratedFile = (
-  annotation: OpenAIResponseContainerFileCitationAnnotation
+  annotation: OpenAIResponseContainerFileCitationCandidate
 ): GeneratedFile | null => {
-  const fileId = getStringProperty(annotation, 'file_id');
-  const containerId = getStringProperty(annotation, 'container_id');
+  const fileId = getLegacyStringProperty(annotation, 'file_id');
+  const containerId = getLegacyStringProperty(annotation, 'container_id');
 
   if (!fileId || !containerId) return null;
 
-  const filename = getStringProperty(annotation, 'filename') || fileId;
+  const filename = getLegacyStringProperty(annotation, 'filename') || fileId;
   const mimeType = getGeneratedFileMimeType(filename);
 
   return {
@@ -258,7 +225,7 @@ const collectGeneratedFilesFromValue = (
 };
 
 const collectGeneratedFilesFromOutput = (
-  output: OpenAIResponseOutputItem[] | undefined
+  output: ResponseOutputItem[] | undefined
 ): GeneratedFile[] => {
   if (!output || !Array.isArray(output)) return [];
 
@@ -497,7 +464,7 @@ const getAnnotationSpanKey = (
 
 const buildCitationReplacements = (
   text: string,
-  annotations: OpenAIResponseAnnotation[] | undefined,
+  annotations: unknown[] | undefined,
   registry: CitationRegistry
 ): CitationReplacement[] => {
   if (!annotations || annotations.length === 0) return [];
@@ -552,7 +519,7 @@ const buildCitationReplacements = (
 
 const applyCitationAnnotations = (
   text: string,
-  annotations: OpenAIResponseAnnotation[] | undefined,
+  annotations: unknown[] | undefined,
   registry: CitationRegistry
 ): string => {
   const replacements = buildCitationReplacements(text, annotations, registry);
@@ -592,6 +559,32 @@ const applyCitationAnnotations = (
   return stripAdjacentCitationSourceLabels(updatedText);
 };
 
+const getResponseOutputMessageText = (
+  message: ResponseOutputMessage,
+  citationRegistry?: CitationRegistry
+): string => {
+  const messageContent: unknown = message.content;
+
+  if (typeof messageContent === 'string') return messageContent;
+  if (!Array.isArray(messageContent)) return '';
+
+  return messageContent.map((part) => {
+    if (!isRecord(part)) return '';
+
+    const text = typeof part.text === 'string' ? part.text : '';
+
+    if (
+      citationRegistry &&
+      part.type === 'output_text' &&
+      Array.isArray(part.annotations)
+    ) {
+      return applyCitationAnnotations(text, part.annotations, citationRegistry);
+    }
+
+    return text;
+  }).join('');
+};
+
 const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   const images = message.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
   const otherAttachments = message.attachments?.filter(a => !a.type.startsWith('image/')) || [];
@@ -614,7 +607,8 @@ const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   images.forEach(img => {
     contentParts.push({
       type: 'input_image',
-      image_url: img.content as string
+      image_url: img.content as string,
+      detail: 'auto'
     });
   });
 
@@ -679,10 +673,9 @@ export const generateResponse = async (
   });
   const normalizedConfig = normalizeChatConfig(config);
   const modelConfig = getModelConfig(normalizedConfig.model);
-  const responsesClient = openai as unknown as OpenAIResponsesClient;
   const previousResponseId = getPreviousResponseId(messages);
   const inputMessages = previousResponseId ? [latestMessage] : messages;
-  const apiInput: OpenAIResponsesInput[] = inputMessages.map(mapMessageToResponseInput);
+  const apiInput = inputMessages.map(mapMessageToResponseInput);
 
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 
@@ -736,9 +729,14 @@ export const generateResponse = async (
     payload.previous_response_id = previousResponseId;
   }
 
-  if (normalizedConfig.reasoningEffort !== 'none') {
+  const reasoningEffort = getNormalizedReasoningEffort(
+    normalizedConfig.model,
+    normalizedConfig.reasoningEffort
+  );
+
+  if (reasoningEffort !== 'none') {
     payload.reasoning = {
-      effort: normalizedConfig.reasoningEffort
+      effort: reasoningEffort
     };
   } else if (modelConfig.reasoningOptions.includes('none')) {
     payload.reasoning = {
@@ -748,7 +746,7 @@ export const generateResponse = async (
 
   try {
     const startTime = Date.now();
-    const response = await responsesClient.responses.create(payload);
+    const response = await openai.responses.create(payload);
     const endTime = Date.now();
     const thinkingDuration = endTime - startTime;
 
@@ -759,29 +757,24 @@ export const generateResponse = async (
       sources: [],
       sourceIndexByUrl: new Map<string, number>()
     };
-    const generatedFiles = collectGeneratedFilesFromOutput(response.output);
+    const responseOutput = Array.isArray(response.output) ? response.output : undefined;
+    const generatedFiles = collectGeneratedFilesFromOutput(responseOutput);
 
-    if (response.output && Array.isArray(response.output)) {
-      for (const item of response.output) {
+    if (responseOutput) {
+      for (const item of responseOutput) {
         if (item.type === 'message') {
-          if (typeof item.content === 'string') {
-            content += item.content;
-          } else if (Array.isArray(item.content)) {
-            content += item.content.map((part) => (
-              applyCitationAnnotations(part.text || '', part.annotations, citationRegistry)
-            )).join('');
-          }
+          content += getResponseOutputMessageText(item, citationRegistry);
         } else if (isWebSearchResponseItem(item)) {
-          rawSources.push(...(item.action?.sources || []));
+          rawSources.push(...getWebSearchActionSources(item.action));
         }
       }
     } else {
       if (response.output_text) content = response.output_text;
-      else if (response.content) content = response.content;
+      else content = getLegacyStringProperty(response, 'content') || '';
+    }
 
-      if (rawSources.length === 0 && response.web_search_call?.action?.sources) {
-        rawSources.push(...response.web_search_call.action.sources);
-      }
+    if (rawSources.length === 0) {
+      rawSources.push(...getLegacyTopLevelWebSearchSources(response));
     }
 
     if (citationRegistry.sources.length > 0) {
@@ -832,9 +825,8 @@ export const fetchGeneratedFileContent = async (
     apiKey,
     dangerouslyAllowBrowser: true
   });
-  const containersClient = openai as unknown as OpenAIContainersClient;
 
-  const response = await containersClient.containers.files.content.retrieve(
+  const response = await openai.containers.files.content.retrieve(
     generatedFile.fileId,
     { container_id: generatedFile.containerId }
   );
@@ -857,7 +849,6 @@ export const generateChatTitle = async (
     apiKey: apiKey,
     dangerouslyAllowBrowser: true
   });
-  const responsesClient = openai as unknown as OpenAIResponsesClient;
 
   try {
     const payload: OpenAIResponsesConfig = {
@@ -876,22 +867,20 @@ export const generateChatTitle = async (
       store: true
     };
 
-    const response = await responsesClient.responses.create(payload);
+    const response = await openai.responses.create(payload);
 
     let title = '';
-    if (response.output && Array.isArray(response.output)) {
-      for (const item of response.output) {
+    const responseOutput = Array.isArray(response.output) ? response.output : undefined;
+
+    if (responseOutput) {
+      for (const item of responseOutput) {
         if (item.type === 'message') {
-          if (typeof item.content === 'string') {
-            title += item.content;
-          } else if (Array.isArray(item.content)) {
-            title += item.content.map(part => part.text || '').join('');
-          }
+          title += getResponseOutputMessageText(item);
         }
       }
     } else {
       if (response.output_text) title = response.output_text;
-      else if (response.content) title = response.content;
+      else title = getLegacyStringProperty(response, 'content') || '';
     }
 
     return title?.replace(/^"|"$/g, '').trim() || 'New Chat';

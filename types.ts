@@ -1,3 +1,14 @@
+import type {
+  EasyInputMessage,
+  ResponseCreateParamsNonStreaming,
+  ResponseInputContent,
+  ResponseInputFile,
+  ResponseInputImage,
+  ResponseInputItem,
+  ResponseInputText,
+  Tool,
+  WebSearchTool
+} from 'openai/resources/responses/responses';
 
 export enum ModelId {
   GPT_5_5 = 'gpt-5.5',
@@ -93,72 +104,17 @@ export interface PendingRequest {
   createdAt: number;
 }
 
-// Experimental API Types based on the prompt
-export interface OpenAIResponsesInputText {
-  type: 'input_text';
-  text: string;
-}
-
-export interface OpenAIResponsesInputImage {
-  type: 'input_image';
-  image_url: string;
-}
-
-export interface OpenAIResponsesInputFile {
-  type: 'input_file';
-  filename: string;
-  file_data: string;
-}
-
-export type OpenAIResponsesContentPart =
-  | OpenAIResponsesInputText
-  | OpenAIResponsesInputImage
-  | OpenAIResponsesInputFile;
-
-export type OpenAIResponsesInputRole = 'user' | 'assistant' | 'developer';
-
-export interface OpenAIResponsesInput {
-  role: OpenAIResponsesInputRole;
-  content: string | OpenAIResponsesContentPart[];
-}
-
-export interface OpenAIWebSearchTool {
-  type: 'web_search';
-  user_location: {
-    type: 'approximate';
-    country: string;
-    region: string;
-    city: string;
-  };
-  search_context_size: 'medium';
-}
-
-export interface OpenAICodeInterpreterTool {
-  type: 'code_interpreter';
-  container: {
-    type: 'auto';
-    file_ids?: string[];
-  };
-}
-
-export type OpenAIResponsesTool = OpenAIWebSearchTool | OpenAICodeInterpreterTool;
-
-export interface OpenAIResponsesConfig {
-  model: string;
-  input: OpenAIResponsesInput[];
-  instructions?: string;
-  previous_response_id?: string;
-  text?: {
-    format: { type: 'text' };
-    verbosity?: string;
-  };
-  reasoning?: {
-    effort: string;
-  };
-  tools?: OpenAIResponsesTool[];
-  store: boolean;
-  include?: string[];
-}
+// Responses API SDK type aliases
+export type OpenAIResponsesInputText = ResponseInputText;
+export type OpenAIResponsesInputImage = ResponseInputImage;
+export type OpenAIResponsesInputFile = ResponseInputFile;
+export type OpenAIResponsesContentPart = ResponseInputContent;
+export type OpenAIResponsesInputRole = EasyInputMessage['role'];
+export type OpenAIResponsesInput = ResponseInputItem;
+export type OpenAIWebSearchTool = WebSearchTool;
+export type OpenAICodeInterpreterTool = Extract<Tool, { type: 'code_interpreter' }>;
+export type OpenAIResponsesTool = Tool;
+export type OpenAIResponsesConfig = ResponseCreateParamsNonStreaming;
 
 export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_5_5,
