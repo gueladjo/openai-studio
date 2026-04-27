@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenAI Studio is a React + TypeScript desktop/web chat interface for OpenAI's models (GPT-5 series and o3). It uses OpenAI's Responses API and stores data client-side via the browser's Origin Private File System (OPFS).
+OpenAI Studio is a React + TypeScript desktop/web chat interface for OpenAI's models (GPT-5 series and o3). It uses OpenAI's Responses API through SDK-backed types and stores data client-side via the browser's Origin Private File System (OPFS).
 
 ## Commands
 
@@ -32,7 +32,7 @@ User Input (ChatArea) → App.tsx (state) → openaiService.ts (API) → OpenAI 
 - `data/system_instructions.json` - System prompt library
 
 **Key Services**:
-- `services/openaiService.ts`: API integration with Responses API, handles multimodal input (text + base64 images), reasoning effort config, tool options (web_search, code_interpreter)
+- `services/openaiService.ts`: Responses API integration using OpenAI SDK types. Handles `previous_response_id` state threading, top-level `instructions`, multimodal input (`input_text`, `input_image`, `input_file`), reasoning effort config, tool options (`web_search`, `code_interpreter`), URL citations, and generated Code Interpreter files.
 - `services/storage.ts`: OPFS file operations, backup/restore
 
 **Components**:
@@ -55,9 +55,13 @@ interface ChatConfig {
   systemInstructionId?: string;
 }
 
-interface Session { id, title, messages: Message[], config: ChatConfig, lastModified }
-interface Message { role, content, thinking?, sources?, attachments?, timestamp }
+interface Source { title: string; url: string }
+interface GeneratedFile { filename, fileId, containerId, displayName?, mimeType? }
+interface Session { id, title, messages: Message[], config: ChatConfig, lastModified, pendingRequest? }
+interface Message { role, content, openaiResponseId?, thinking?, sources?, generatedFiles?, attachments?, timestamp }
 ```
+
+Responses request/input/tool types in `types.ts` should stay aliased to the installed OpenAI SDK exports from `openai/resources/responses/responses` instead of being re-declared locally.
 
 ## Styling
 

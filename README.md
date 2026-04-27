@@ -5,7 +5,7 @@ OpenAI Studio is a sophisticated web-based chat interface designed to mimic the 
 
 It provides a rich, persistent workspace for developers and power users to interact with LLMs, offering granular control over model parameters, system instructions, and tool usage.
 
-It uses OpenAI new Responses API: https://platform.openai.com/docs/api-reference/responses
+It uses the OpenAI Responses API: https://platform.openai.com/docs/api-reference/responses
 
 ## Features
 
@@ -17,9 +17,10 @@ It uses OpenAI new Responses API: https://platform.openai.com/docs/api-reference
     *   **Model Selection:** Switch between GPT-5.5 (Flagship), GPT-5.4, GPT-5.2, GPT-5 Mini, GPT-5 Nano, and o3.
     *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to XHigh for GPT-5 flagship models).
     *   **Text Verbosity:** Control the length and detail of generated responses (GPT-5 series only).
-*   **System Instructions:** Create and manage a library of system prompts to steer model behavior.
-*   **Tool Integration:** Toggle Web Search and Code Interpreter capabilities.
-*   **Artifacts & Citations:** Rich rendering of Markdown, code blocks, and source citations.
+*   **System Instructions:** Create and manage a library of instructions sent through the Responses API `instructions` field.
+*   **File Attachments:** Attach images and non-image files as Responses API inputs for multimodal analysis.
+*   **Tool Integration:** Toggle Web Search and Code Interpreter capabilities, including file analysis with Code Interpreter.
+*   **Artifacts & Citations:** Rich rendering of Markdown, code blocks, source citations, and generated Code Interpreter files.
 
 ## Setup & Usage
 
@@ -223,7 +224,7 @@ The application automatically manages these files in the browser's private file 
 
 *   **`App.tsx`**: The main application controller. Handles storage initialization and auto-saving.
 *   **`services/storage.ts`**: Manages the Origin Private File System (OPFS) connection.
-*   **`services/openaiService.ts`**: The API layer.
+*   **`services/openaiService.ts`**: The Responses API layer. It uses OpenAI SDK request/response types, sends file inputs, threads state with `previous_response_id`, and parses web citations plus generated Code Interpreter files.
 *   **`components/`**: UI components (Sidebar, ChatArea, ConfigPanel).
 
 ## License
