@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type {
   Response as OpenAIResponse,
+  ResponseCodeInterpreterToolCall,
   ResponseFunctionWebSearch,
   ResponseOutputItem,
   ResponseOutputMessage,
@@ -80,6 +81,10 @@ const getStringProperty = (
 const isWebSearchResponseItem = (
   item: ResponseOutputItem
 ): item is ResponseFunctionWebSearch => item.type === 'web_search_call';
+
+const isCodeInterpreterResponseItem = (
+  item: ResponseOutputItem
+): item is ResponseCodeInterpreterToolCall => item.type === 'code_interpreter_call';
 
 const isUrlCitationAnnotation = (
   annotation: unknown
@@ -369,11 +374,11 @@ const extractMarkdownLinkCitations = (content: string): {
   content: string;
   sources: Source[];
 } => {
-  const linkRegex = /\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
+  const linkRegex = /(^|[^!])\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
   const extractedSources: Source[] = [];
   const sourceIndexByUrl = new Map<string, number>();
 
-  const updatedContent = content.replace(linkRegex, (match, title, url) => {
+  const updatedContent = content.replace(linkRegex, (match, prefix, title, url) => {
     const extractedSource = createSourceRecord(
       title,
       url,
@@ -393,7 +398,7 @@ const extractMarkdownLinkCitations = (content: string): {
       sourceIndexByUrl.set(sourceKey, citationNumber);
     }
 
-    return formatCitationMarkdownLink(citationNumber, extractedSource.url);
+    return `${prefix}${formatCitationMarkdownLink(citationNumber, extractedSource.url)}`;
   });
 
   return {
@@ -585,6 +590,72 @@ const getResponseOutputMessageText = (
   }).join('');
 };
 
+const getLongestBacktickRun = (content: string): number => {
+  const backtickRuns = content.match(/`+/g);
+
+  if (!backtickRuns) return 0;
+
+  return backtickRuns.reduce((longestRun, run) => (
+    Math.max(longestRun, run.length)
+  ), 0);
+};
+
+const formatMarkdownCodeBlock = (content: string, language: string): string => {
+  if (!content.trim()) return '';
+
+  const fence = '`'.repeat(Math.max(3, getLongestBacktickRun(content) + 1));
+  const trimmedContent = content.replace(/\s+$/, '');
+
+  return `${fence}${language}\n${trimmedContent}\n${fence}`;
+};
+
+const formatCodeInterpreterOutput = (
+  output: ResponseCodeInterpreterToolCall.Logs | ResponseCodeInterpreterToolCall.Image,
+  index: number
+): string => {
+  if (output.type === 'logs') {
+    const logs = formatMarkdownCodeBlock(output.logs, 'output');
+
+    return logs ? `**Output**\n\n${logs}` : '';
+  }
+
+  if (output.type === 'image' && output.url.trim()) {
+    return `![Code Interpreter output ${index + 1}](${output.url})`;
+  }
+
+  return '';
+};
+
+const formatCodeInterpreterCall = (
+  item: ResponseCodeInterpreterToolCall
+): string => {
+  const sections: string[] = [];
+  const code = item.code ? formatMarkdownCodeBlock(item.code, 'python') : '';
+
+  if (code) {
+    sections.push(`**Code Interpreter**\n\n${code}`);
+  }
+
+  item.outputs?.forEach((output, index) => {
+    const formattedOutput = formatCodeInterpreterOutput(output, index);
+
+    if (formattedOutput) {
+      sections.push(formattedOutput);
+    }
+  });
+
+  return sections.join('\n\n');
+};
+
+const appendMarkdownSection = (content: string, section: string): string => {
+  const trimmedSection = section.trim();
+
+  if (!trimmedSection) return content;
+  if (!content.trim()) return trimmedSection;
+
+  return `${content.trimEnd()}\n\n${trimmedSection}`;
+};
+
 const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   const images = message.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
   const otherAttachments = message.attachments?.filter(a => !a.type.startsWith('image/')) || [];
@@ -763,7 +834,12 @@ export const generateResponse = async (
     if (responseOutput) {
       for (const item of responseOutput) {
         if (item.type === 'message') {
-          content += getResponseOutputMessageText(item, citationRegistry);
+          content = appendMarkdownSection(
+            content,
+            getResponseOutputMessageText(item, citationRegistry)
+          );
+        } else if (isCodeInterpreterResponseItem(item)) {
+          content = appendMarkdownSection(content, formatCodeInterpreterCall(item));
         } else if (isWebSearchResponseItem(item)) {
           rawSources.push(...getWebSearchActionSources(item.action));
         }

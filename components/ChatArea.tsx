@@ -48,6 +48,16 @@ const formatMessageTimestamp = (timestamp: number): string => {
   return `${dateLabel}, ${timeLabel}`;
 };
 
+const getCodeBlockLabel = (className?: string): string => {
+  const language = className?.match(/language-(\S+)/)?.[1];
+
+  if (!language) return 'Code';
+
+  return language
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+};
+
 const copyTextWithExecCommandFallback = (text: string): void => {
   const textarea = document.createElement('textarea');
   textarea.value = text;
@@ -691,11 +701,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                 remarkPlugins={[remarkGfm]}
                                 components={{
                                     code: ({node, inline, className, children, ...props}: any) => {
+                                        const codeBlockLabel = getCodeBlockLabel(className);
+
                                         return !inline ? (
                                             <div className="my-2 bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
-                                                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">Code</div>
+                                                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{codeBlockLabel}</div>
                                                 <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300">
-                                                    <code {...props}>{children}</code>
+                                                    <code className={className} {...props}>{children}</code>
                                                 </pre>
                                             </div>
                                         ) : (
