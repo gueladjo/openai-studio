@@ -3,10 +3,10 @@
 ## Project Structure & Module Organization
 - Root entry points: `index.tsx` (bootstraps React) and `App.tsx` (top-level state/controller).
 - UI lives in `components/` (e.g., `ChatArea.tsx`, `Sidebar.tsx`, `ConfigPanel.tsx`, `TitleBar.tsx`).
-- Integrations and persistence live in `services/` (OpenAI Responses API + OPFS storage).
+- Integrations and persistence live in `services/` (OpenAI Responses API streaming/cancellation + OPFS storage).
 - Desktop packaging is in `electron/` (main/preload process files).
 - Static assets and PWA metadata are in `public/`, `manifest.json`, and `metadata.json`.
-- Shared types/config live in `types.ts` and `constants.ts`; Responses API request/input/tool types should be SDK-backed aliases rather than local hand-rolled schemas.
+- Shared types/config live in `types.ts` and `constants.ts`; Responses API request/input/tool/stream event types should be SDK-backed aliases rather than local hand-rolled schemas.
 - Utility scripts live in `scripts/` (e.g., `scripts/generate-icons.js`).
 
 ## Build, Test, and Development Commands

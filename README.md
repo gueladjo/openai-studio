@@ -19,6 +19,7 @@ It uses the OpenAI Responses API: https://platform.openai.com/docs/api-reference
     *   **Text Verbosity:** Control the length and detail of generated responses (GPT-5 series only).
 *   **System Instructions:** Create and manage a library of instructions sent through the Responses API `instructions` field.
 *   **File Attachments:** Attach images and non-image files as Responses API inputs for multimodal analysis.
+*   **Streaming Responses:** Assistant messages stream into the chat as Responses API text deltas arrive, with support for stopping an in-flight generation.
 *   **Tool Integration:** Toggle Web Search and Code Interpreter capabilities, including file analysis with Code Interpreter.
 *   **Artifacts & Citations:** Rich rendering of Markdown, code blocks, source citations, and generated Code Interpreter files.
 
@@ -222,9 +223,9 @@ The application automatically manages these files in the browser's private file 
 
 ## Project Structure
 
-*   **`App.tsx`**: The main application controller. Handles storage initialization and auto-saving.
+*   **`App.tsx`**: The main application controller. Handles storage initialization, auto-saving, streaming message state, and stop-generation control.
 *   **`services/storage.ts`**: Manages the Origin Private File System (OPFS) connection.
-*   **`services/openaiService.ts`**: The Responses API layer. It uses OpenAI SDK request/response types, sends file inputs, threads state with `previous_response_id`, and parses web citations plus generated Code Interpreter files.
+*   **`services/openaiService.ts`**: The Responses API layer. It uses OpenAI SDK request/response and streaming event types, streams text deltas, supports response cancellation, sends file inputs, threads state with `previous_response_id`, and parses web citations plus generated Code Interpreter files.
 *   **`components/`**: UI components (Sidebar, ChatArea, ConfigPanel).
 
 ## License
