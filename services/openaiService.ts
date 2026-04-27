@@ -16,6 +16,8 @@ import {
   OpenAIResponsesConfig,
   OpenAIResponsesContentPart,
   OpenAIResponsesInput,
+  OpenAIResponsesStreamEvent,
+  OpenAIResponsesStreamingConfig,
   Source
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
@@ -44,6 +46,12 @@ interface GenerateResponseResult {
   generatedFiles?: GeneratedFile[];
   thinkingDuration: number;
   responseId?: string;
+}
+
+interface GenerateResponseOptions {
+  signal?: AbortSignal;
+  onResponseCreated?: (responseId: string) => void;
+  onTextDelta?: (delta: string) => void;
 }
 
 const GENERATED_FILE_MIME_TYPES: Record<string, string> = {
@@ -717,11 +725,105 @@ const getPreviousResponseId = (messages: Message[]): string | undefined => {
   return undefined;
 };
 
+const parseGenerateResponse = (
+  response: OpenAIResponse,
+  thinkingDuration: number,
+  normalizedConfig: ChatConfig
+): GenerateResponseResult => {
+  let thinking = '';
+  let content = '';
+  const rawSources: OpenAIResponseSource[] = [];
+  const citationRegistry: CitationRegistry = {
+    sources: [],
+    sourceIndexByUrl: new Map<string, number>()
+  };
+  const responseOutput = Array.isArray(response.output) ? response.output : undefined;
+  const generatedFiles = collectGeneratedFilesFromOutput(responseOutput);
+
+  if (responseOutput) {
+    for (const item of responseOutput) {
+      if (item.type === 'message') {
+        content = appendMarkdownSection(
+          content,
+          getResponseOutputMessageText(item, citationRegistry)
+        );
+      } else if (isCodeInterpreterResponseItem(item)) {
+        content = appendMarkdownSection(content, formatCodeInterpreterCall(item));
+      } else if (isWebSearchResponseItem(item)) {
+        rawSources.push(...getWebSearchActionSources(item.action));
+      }
+    }
+  } else {
+    if (response.output_text) content = response.output_text;
+    else content = getLegacyStringProperty(response, 'content') || '';
+  }
+
+  if (rawSources.length === 0) {
+    rawSources.push(...getLegacyTopLevelWebSearchSources(response));
+  }
+
+  if (citationRegistry.sources.length > 0) {
+    content = stripAdjacentCitationSourceLabels(content);
+  }
+
+  let sources = citationRegistry.sources;
+
+  if (sources.length === 0) {
+    sources = mapSources(rawSources);
+  }
+
+  if (sources.length === 0 && !normalizedConfig.tools.webSearch) {
+    const markdownCitations = extractMarkdownLinkCitations(content);
+    content = markdownCitations.content;
+    sources = markdownCitations.sources;
+  }
+
+  return {
+    content,
+    thinking,
+    sources,
+    generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
+    thinkingDuration,
+    responseId: response.id
+  };
+};
+
+const createAbortError = (): Error => {
+  const error = new Error('Request aborted.');
+  error.name = 'AbortError';
+  return error;
+};
+
+const getErrorMessageFromValue = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value;
+  if (!isRecord(value)) return undefined;
+
+  return getStringProperty(value, 'message') ||
+    getStringProperty(value, 'code') ||
+    getStringProperty(value, 'type');
+};
+
+const getStreamEventErrorMessage = (
+  event: OpenAIResponsesStreamEvent
+): string | undefined => {
+  if (!isRecord(event)) return undefined;
+
+  const eventError = getErrorMessageFromValue(event.error);
+  if (eventError) return eventError;
+
+  if (isRecord(event.response)) {
+    return getErrorMessageFromValue(event.response.error);
+  }
+
+  return undefined;
+};
+
 export const generateResponse = async (
   messages: Message[],
   config: ChatConfig,
   providedApiKey?: string,
-  systemInstruction?: string
+  systemInstruction?: string,
+  options: GenerateResponseOptions = {}
 ): Promise<GenerateResponseResult> => {
   const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
 
@@ -780,11 +882,12 @@ export const generateResponse = async (
     textConfig.verbosity = normalizedConfig.textVerbosity;
   }
 
-  const payload: OpenAIResponsesConfig = {
+  const payload: OpenAIResponsesStreamingConfig = {
     model: normalizedConfig.model,
     input: apiInput,
     tools: tools,
     store: true,
+    stream: true,
     include: [
       'code_interpreter_call.outputs',
       'web_search_call.action.sources'
@@ -817,70 +920,68 @@ export const generateResponse = async (
 
   try {
     const startTime = Date.now();
-    const response = await openai.responses.create(payload);
-    const endTime = Date.now();
-    const thinkingDuration = endTime - startTime;
+    const stream = await openai.responses.create(
+      payload,
+      options.signal ? { signal: options.signal } : undefined
+    );
+    let completedResponse: OpenAIResponse | undefined;
 
-    let thinking = '';
-    let content = '';
-    const rawSources: OpenAIResponseSource[] = [];
-    const citationRegistry: CitationRegistry = {
-      sources: [],
-      sourceIndexByUrl: new Map<string, number>()
-    };
-    const responseOutput = Array.isArray(response.output) ? response.output : undefined;
-    const generatedFiles = collectGeneratedFilesFromOutput(responseOutput);
-
-    if (responseOutput) {
-      for (const item of responseOutput) {
-        if (item.type === 'message') {
-          content = appendMarkdownSection(
-            content,
-            getResponseOutputMessageText(item, citationRegistry)
-          );
-        } else if (isCodeInterpreterResponseItem(item)) {
-          content = appendMarkdownSection(content, formatCodeInterpreterCall(item));
-        } else if (isWebSearchResponseItem(item)) {
-          rawSources.push(...getWebSearchActionSources(item.action));
-        }
+    for await (const event of stream) {
+      if (options.signal?.aborted) {
+        throw createAbortError();
       }
-    } else {
-      if (response.output_text) content = response.output_text;
-      else content = getLegacyStringProperty(response, 'content') || '';
+
+      if (event.type === 'response.created') {
+        options.onResponseCreated?.(event.response.id);
+      } else if (event.type === 'response.output_text.delta') {
+        options.onTextDelta?.(event.delta);
+      } else if (event.type === 'response.completed') {
+        completedResponse = event.response;
+      } else if (event.type === 'response.failed' || event.type === 'error') {
+        throw new Error(getStreamEventErrorMessage(event) || 'OpenAI response failed.');
+      }
     }
 
-    if (rawSources.length === 0) {
-      rawSources.push(...getLegacyTopLevelWebSearchSources(response));
+    if (options.signal?.aborted) {
+      throw createAbortError();
     }
 
-    if (citationRegistry.sources.length > 0) {
-      content = stripAdjacentCitationSourceLabels(content);
+    if (!completedResponse) {
+      throw new Error('Response stream ended before completion.');
     }
 
-    let sources = citationRegistry.sources;
-
-    if (sources.length === 0) {
-      sources = mapSources(rawSources);
-    }
-
-    if (sources.length === 0 && !normalizedConfig.tools.webSearch) {
-      const markdownCitations = extractMarkdownLinkCitations(content);
-      content = markdownCitations.content;
-      sources = markdownCitations.sources;
-    }
-
-    return {
-      content,
-      thinking,
-      sources,
-      generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
-      thinkingDuration,
-      responseId: response.id
-    };
+    return parseGenerateResponse(
+      completedResponse,
+      Date.now() - startTime,
+      normalizedConfig
+    );
   } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+
     console.error('OpenAI API Error:', error);
     throw new Error(error instanceof Error ? error.message : 'Failed to generate response');
   }
+};
+
+export const cancelResponse = async (
+  responseId: string,
+  providedApiKey?: string
+): Promise<void> => {
+  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+
+  if (!apiKey) {
+    throw new Error('OpenAI API Key is missing. Please enter it in the settings before cancelling a response.');
+  }
+
+  const openai = new OpenAI({
+    apiKey,
+    dangerouslyAllowBrowser: true,
+    maxRetries: 0
+  });
+
+  await openai.responses.cancel(responseId);
 };
 
 export const fetchGeneratedFileContent = async (

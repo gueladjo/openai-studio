@@ -1,7 +1,7 @@
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { GeneratedFile, Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
@@ -11,11 +11,16 @@ import { getSourcePresentation } from '../utils/sourceUrls';
 interface ChatAreaProps {
   session: Session | null;
   onSendMessage: (content: string, attachments: File[]) => void;
+  onStopGenerating: () => void;
+  onRetryFailedMessage: (assistantMessageId: string) => void;
+  onRegenerateResponse: () => void;
   onShareConversation: () => void;
   apiKey: string;
   isLoading: boolean;
   isMobile?: boolean;
 }
+
+const AUTO_SCROLL_THRESHOLD_PX = 120;
 
 const formatDuration = (ms: number): string => {
   const totalSeconds = ms / 1000;
@@ -389,6 +394,11 @@ const saveBlobAsFile = (blob: Blob, filename: string): void => {
     }, 0);
 };
 
+const isFailedAssistantMessage = (message: Message): boolean => (
+    message.role === 'assistant' &&
+    (message.status === 'error' || message.content.startsWith('Error:'))
+);
+
 const GeneratedFilesBlock = ({
     files,
     apiKey
@@ -536,6 +546,9 @@ const ConversationHeader = ({
 export const ChatArea: React.FC<ChatAreaProps> = ({
   session,
   onSendMessage,
+  onStopGenerating,
+  onRetryFailedMessage,
+  onRegenerateResponse,
   onShareConversation,
   apiKey,
   isLoading,
@@ -544,19 +557,78 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isPinnedToBottomRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
+  const previousSessionIdRef = useRef<string | null>(null);
+  const previousMessageCountRef = useRef(0);
+  const latestMessage = session?.messages[session.messages.length - 1];
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const isNearBottom = (element: HTMLDivElement): boolean => {
+    return element.scrollHeight - element.scrollTop - element.clientHeight < AUTO_SCROLL_THRESHOLD_PX;
   };
 
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    if (scrollFrameRef.current) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+    }
+
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior
+      });
+      scrollFrameRef.current = null;
+    });
+  };
+
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    isPinnedToBottomRef.current = isNearBottom(container);
+  };
+
+  useLayoutEffect(() => {
+    if (!session) return;
+
+    const didSwitchSession = previousSessionIdRef.current !== session.id;
+    const didAddMessage = previousMessageCountRef.current !== session.messages.length;
+    const shouldFollowStreaming = isPinnedToBottomRef.current && latestMessage?.status === 'streaming';
+
+    if (didSwitchSession) {
+      isPinnedToBottomRef.current = true;
+      scrollToBottom('auto');
+    } else if (shouldFollowStreaming) {
+      scrollToBottom('auto');
+    } else if (didAddMessage && isPinnedToBottomRef.current) {
+      scrollToBottom('smooth');
+    }
+
+    previousSessionIdRef.current = session.id;
+    previousMessageCountRef.current = session.messages.length;
+  }, [
+    session?.id,
+    session?.messages.length,
+    latestMessage?.content,
+    latestMessage?.status
+  ]);
+
   useEffect(() => {
-    scrollToBottom();
-  }, [session?.messages]);
+    return () => {
+      if (scrollFrameRef.current) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+    };
+  }, []);
 
   const handleSend = () => {
     if ((!inputValue.trim() && attachments.length === 0) || isLoading) return;
+    isPinnedToBottomRef.current = true;
     onSendMessage(inputValue, attachments);
     setInputValue('');
     setAttachments([]);
@@ -631,16 +703,41 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       />
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-8 scroll-smooth">
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 overflow-y-auto px-4 py-6 space-y-8"
+      >
         {session.messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-600 opacity-50">
             <Bot size={48} className="mb-4" />
             <p>Start a conversation...</p>
           </div>
         ) : (
-          session.messages.map((msg, idx) => (
+          session.messages.map((msg, idx) => {
+            const isLatestMessage = idx === session.messages.length - 1;
+            const isAssistantError = isFailedAssistantMessage(msg);
+            const isAssistantStreaming = msg.status === 'streaming';
+            const canRetry = (
+                isAssistantError &&
+                !isLoading &&
+                Boolean(msg.id) &&
+                idx > 0 &&
+                session.messages[idx - 1]?.role === 'user'
+            );
+            const canRegenerate = (
+                msg.role === 'assistant' &&
+                isLatestMessage &&
+                !isAssistantError &&
+                !isAssistantStreaming &&
+                !isLoading &&
+                idx > 0 &&
+                session.messages[idx - 1]?.role === 'user'
+            );
+
+            return (
             <div
-              key={idx}
+              key={msg.id || idx}
               className={`flex gap-4 max-w-4xl mx-auto ${
                 msg.role === 'user' ? 'justify-end' : 'justify-start'
               }`}
@@ -697,6 +794,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     >
                         {msg.role === 'assistant' ? (
                         <div className="markdown-content">
+                            {isAssistantStreaming && !msg.content ? (
+                                <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                                    <Loader2 size={14} className="animate-spin" />
+                                    <span>Thinking...</span>
+                                </div>
+                            ) : (
                             <ReactMarkdown 
                                 remarkPlugins={[remarkGfm]}
                                 components={{
@@ -740,6 +843,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             >
                                 {msg.content}
                             </ReactMarkdown>
+                            )}
                         </div>
                         ) : (
                         msg.content
@@ -758,7 +862,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                     {/* Message Metadata Footer */}
                     {msg.role === 'assistant' && (
-                        <div className="flex justify-end mt-1.5 items-center select-none">
+                        <div className="flex justify-end mt-1.5 items-center gap-1.5 select-none">
+                            {canRetry && (
+                                <button
+                                    type="button"
+                                    onClick={() => onRetryFailedMessage(msg.id!)}
+                                    className="inline-flex h-10 items-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] px-3 text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
+                                >
+                                    <RotateCcw size={15} />
+                                    <span>Retry</span>
+                                </button>
+                            )}
+                            {canRegenerate && (
+                                <button
+                                    type="button"
+                                    onClick={onRegenerateResponse}
+                                    className="inline-flex h-10 items-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] px-3 text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
+                                >
+                                    <RefreshCw size={15} />
+                                    <span>Regenerate</span>
+                                </button>
+                            )}
                             <ResponseDetailsMenu message={msg} />
                         </div>
                     )}
@@ -771,9 +895,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 </div>
               )}
             </div>
-          ))
+            );
+          })
         )}
-        <div ref={messagesEndRef} className="h-4" />
+        <div className="h-4" />
       </div>
 
       {/* Input Area */}
@@ -849,17 +974,30 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   onChange={handleFileSelect}
                   key={fileInputKey}
                />
-               <button
-                  onClick={handleSend}
-                  disabled={isLoading || (!inputValue.trim() && attachments.length === 0)}
-                  className={`p-2 rounded-lg transition-all ${
-                    isLoading || (!inputValue.trim() && attachments.length === 0)
-                      ? 'text-gray-400 dark:text-gray-600 bg-gray-200 dark:bg-gray-800 cursor-not-allowed'
-                      : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'
-                  }`}
-               >
-                  <Send size={18} />
-               </button>
+               {isLoading ? (
+                  <button
+                    type="button"
+                    onClick={onStopGenerating}
+                    className="p-2 rounded-lg transition-all bg-red-600 text-white hover:bg-red-700 shadow-md"
+                    title="Stop generating"
+                    aria-label="Stop generating"
+                  >
+                    <Square size={18} />
+                  </button>
+               ) : (
+                  <button
+                    type="button"
+                    onClick={handleSend}
+                    disabled={!inputValue.trim() && attachments.length === 0}
+                    className={`p-2 rounded-lg transition-all ${
+                      !inputValue.trim() && attachments.length === 0
+                        ? 'text-gray-400 dark:text-gray-600 bg-gray-200 dark:bg-gray-800 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'
+                    }`}
+                  >
+                    <Send size={18} />
+                  </button>
+               )}
             </div>
           </div>
           <div className="text-center mt-2 text-[10px] text-gray-400 dark:text-gray-600">

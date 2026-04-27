@@ -6,7 +6,7 @@ import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
 import { TitleBar } from './components/TitleBar';
 import { Session, ChatConfig, Message, DEFAULT_CONFIG, SystemInstruction } from './types';
-import { generateResponse, generateChatTitle } from './services/openaiService';
+import { cancelResponse, generateResponse, generateChatTitle } from './services/openaiService';
 import {
   getStorageHandle,
   readJsonFile,
@@ -65,6 +65,21 @@ declare global {
   }
 }
 
+interface ActiveChatRequest {
+  controller: AbortController;
+  assistantMessageId: string;
+  apiKey: string;
+  responseId?: string;
+}
+
+const isAbortError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+
+  const message = error.message.toLowerCase();
+
+  return error.name === 'AbortError' || message.includes('abort');
+};
+
 function App() {
   // Storage State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
@@ -73,14 +88,17 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const sessionsRef = useRef<Session[]>([]);
 
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
   const processingSessionIdsRef = useRef<Set<string>>(new Set());
+  const activeRequestsRef = useRef<Map<string, ActiveChatRequest>>(new Map());
 
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [apiKey, setApiKey] = useState('');
   const [systemInstructions, setSystemInstructions] = useState<SystemInstruction[]>([]);
+  const systemInstructionsRef = useRef<SystemInstruction[]>([]);
 
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -94,6 +112,14 @@ function App() {
       setIsConfigOpen(false);
     }
   }, [isMobile]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    systemInstructionsRef.current = systemInstructions;
+  }, [systemInstructions]);
 
   // Close sidebar when selecting a session on mobile
   const handleSelectSession = useCallback((id: string) => {
@@ -122,17 +148,36 @@ function App() {
       if (!session.pendingRequest) return session;
 
       hasChanges = true;
+      const interruptedContent = 'Error: Previous request was interrupted and has been marked as failed. Please retry if needed.';
       const failureMessage: Message = {
         id: uuidv4(),
+        requestId: session.pendingRequest.id,
         role: 'assistant',
-        content: 'Error: Previous request was interrupted and has been marked as failed. Please resend manually if needed.',
+        content: interruptedContent,
+        status: 'error',
         timestamp: now
       };
+      const hasPendingAssistant = Boolean(session.pendingRequest.assistantMessageId);
+      const pendingAssistantExists = session.messages.some(message => (
+        message.id === session.pendingRequest?.assistantMessageId
+      ));
+      const messages = hasPendingAssistant && pendingAssistantExists
+        ? session.messages.map(message => (
+          message.id === session.pendingRequest?.assistantMessageId
+            ? {
+              ...message,
+              content: message.content || interruptedContent,
+              status: 'error' as const,
+              timestamp: message.timestamp || now
+            }
+            : message
+        ))
+        : [...session.messages, failureMessage];
 
       return {
         ...session,
         pendingRequest: undefined,
-        messages: [...session.messages, failureMessage],
+        messages,
         lastModified: now
       };
     });
@@ -293,6 +338,177 @@ function App() {
       }
   };
 
+  const createAssistantPlaceholder = (
+    id: string,
+    requestId: string,
+    session: Session,
+    timestamp: number
+  ): Message => ({
+    id,
+    requestId,
+    role: 'assistant',
+    content: '',
+    status: 'streaming',
+    timestamp,
+    model: session.config.model,
+    reasoningEffort: session.config.reasoningEffort
+  });
+
+  const updateAssistantMessage = (
+    sessionId: string,
+    assistantMessageId: string,
+    updateMessage: (message: Message) => Message,
+    clearPendingRequest = false
+  ) => {
+    const now = Date.now();
+
+    setSessions(prev => prev.map(s => {
+      if (s.id !== sessionId) return s;
+
+      return {
+        ...s,
+        messages: s.messages.map(message => (
+          message.id === assistantMessageId ? updateMessage(message) : message
+        )),
+        lastModified: now,
+        pendingRequest: clearPendingRequest ? undefined : s.pendingRequest
+      };
+    }));
+  };
+
+  const markAssistantStopped = (sessionId: string, assistantMessageId: string) => {
+    updateAssistantMessage(
+      sessionId,
+      assistantMessageId,
+      message => ({
+        ...message,
+        content: message.content || 'Stopped.',
+        status: 'stopped',
+        timestamp: Date.now()
+      }),
+      true
+    );
+  };
+
+  const startAssistantResponse = async ({
+    targetSessionId,
+    session,
+    messagesForApi,
+    requestId,
+    assistantMessageId
+  }: {
+    targetSessionId: string;
+    session: Session;
+    messagesForApi: Message[];
+    requestId: string;
+    assistantMessageId: string;
+  }) => {
+    const controller = new AbortController();
+    activeRequestsRef.current.set(targetSessionId, {
+      controller,
+      assistantMessageId,
+      apiKey
+    });
+
+    try {
+      const selectedInstruction = systemInstructionsRef.current.find(si => (
+        si.id === session.config.systemInstructionId
+      ));
+      const systemInstructionContent = selectedInstruction ? selectedInstruction.content : undefined;
+
+      const {
+        content: responseText,
+        thinking,
+        sources,
+        generatedFiles,
+        thinkingDuration,
+        responseId
+      } = await generateResponse(
+        messagesForApi,
+        session.config,
+        apiKey,
+        systemInstructionContent,
+        {
+          signal: controller.signal,
+          onResponseCreated: (createdResponseId) => {
+            const activeRequest = activeRequestsRef.current.get(targetSessionId);
+
+            if (activeRequest?.assistantMessageId === assistantMessageId) {
+              activeRequest.responseId = createdResponseId;
+            }
+          },
+          onTextDelta: (delta) => {
+            const activeRequest = activeRequestsRef.current.get(targetSessionId);
+
+            if (activeRequest?.assistantMessageId !== assistantMessageId) return;
+
+            updateAssistantMessage(
+              targetSessionId,
+              assistantMessageId,
+              message => ({
+                ...message,
+                content: `${message.content}${delta}`,
+                status: 'streaming'
+              })
+            );
+          }
+        }
+      );
+
+      const newBotMessage: Message = {
+        id: assistantMessageId,
+        requestId,
+        role: 'assistant',
+        content: responseText,
+        status: 'complete',
+        openaiResponseId: responseId,
+        thinking,
+        thinkingDuration,
+        sources,
+        generatedFiles,
+        timestamp: Date.now(),
+        model: session.config.model,
+        reasoningEffort: session.config.reasoningEffort
+      };
+
+      updateAssistantMessage(
+        targetSessionId,
+        assistantMessageId,
+        () => newBotMessage,
+        true
+      );
+    } catch (error) {
+      if (isAbortError(error)) {
+        markAssistantStopped(targetSessionId, assistantMessageId);
+      } else {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+
+        updateAssistantMessage(
+          targetSessionId,
+          assistantMessageId,
+          message => ({
+            ...message,
+            content: `Error: ${errorMessage}`,
+            status: 'error',
+            timestamp: Date.now(),
+            model: session.config.model,
+            reasoningEffort: session.config.reasoningEffort
+          }),
+          true
+        );
+      }
+    } finally {
+      const activeRequest = activeRequestsRef.current.get(targetSessionId);
+
+      if (activeRequest?.assistantMessageId === assistantMessageId) {
+        activeRequestsRef.current.delete(targetSessionId);
+        removeProcessingSession(targetSessionId);
+      } else if (!activeRequest) {
+        removeProcessingSession(targetSessionId);
+      }
+    }
+  };
+
   const handleSendMessage = async (content: string, attachments: File[]) => {
     if (!currentSessionId) return;
 
@@ -300,9 +516,10 @@ function App() {
     const targetSessionId = currentSessionId;
     if (processingSessionIdsRef.current.has(targetSessionId)) return;
     addProcessingSession(targetSessionId);
+    let didStartResponse = false;
 
     try {
-      const session = sessions.find(s => s.id === targetSessionId);
+      const session = sessionsRef.current.find(s => s.id === targetSessionId);
       if (!session) throw new Error("Session lost");
 
       const processedAttachments = await Promise.all(attachments.map(async (file) => {
@@ -323,6 +540,7 @@ function App() {
 
       const requestId = uuidv4();
       const userMessageId = uuidv4();
+      const assistantMessageId = uuidv4();
       const requestTimestamp = Date.now();
 
       const newUserMessage: Message = {
@@ -333,6 +551,12 @@ function App() {
         timestamp: requestTimestamp,
         attachments: processedAttachments
       };
+      const assistantPlaceholder = createAssistantPlaceholder(
+        assistantMessageId,
+        requestId,
+        session,
+        requestTimestamp
+      );
 
       // Trigger background title generation for new sessions
       if (session.messages.length === 0) {
@@ -350,11 +574,12 @@ function App() {
         if (s.id === targetSessionId) {
           return {
             ...s,
-            messages: [...s.messages, newUserMessage],
+            messages: [...s.messages, newUserMessage, assistantPlaceholder],
             lastModified: requestTimestamp,
             pendingRequest: {
               id: requestId,
               userMessageId,
+              assistantMessageId,
               createdAt: requestTimestamp
             },
             title: s.messages.length === 0 ? (content.slice(0, 30) + (content.length > 30 ? '...' : '')) : s.title
@@ -365,49 +590,21 @@ function App() {
 
       // 2. Perform API Call Detached from current UI State
       const messagesForApi = [...session.messages, newUserMessage];
-      const selectedInstruction = systemInstructions.find(si => si.id === session.config.systemInstructionId);
-      const systemInstructionContent = selectedInstruction ? selectedInstruction.content : undefined;
-
-      const {
-        content: responseText,
-        thinking,
-        sources,
-        generatedFiles,
-        thinkingDuration,
-        responseId
-      } = await generateResponse(messagesForApi, session.config, apiKey, systemInstructionContent);
-
-      const newBotMessage: Message = {
-        id: uuidv4(),
-        role: 'assistant',
-        content: responseText,
-        openaiResponseId: responseId,
-        thinking,
-        thinkingDuration,
-        sources,
-        generatedFiles,
-        timestamp: Date.now(),
-        model: session.config.model,
-        reasoningEffort: session.config.reasoningEffort
-      };
-
-      setSessions(prev => prev.map(s => {
-        if (s.id === targetSessionId) {
-          return {
-            ...s,
-            messages: [...s.messages, newBotMessage],
-            lastModified: Date.now(),
-            pendingRequest: undefined
-          };
-        }
-        return s;
-      }));
+      didStartResponse = true;
+      await startAssistantResponse({
+        targetSessionId,
+        session,
+        messagesForApi,
+        requestId,
+        assistantMessageId
+      });
 
     } catch (error) {
       const errorMessage: Message = {
         id: uuidv4(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+        status: 'error',
         timestamp: Date.now()
       };
        setSessions(prev => prev.map(s => {
@@ -422,9 +619,159 @@ function App() {
         return s;
       }));
     } finally {
-      // 4. Remove session from processing set
-      removeProcessingSession(targetSessionId);
+      if (!didStartResponse) {
+        removeProcessingSession(targetSessionId);
+      }
     }
+  };
+
+  const handleRetryFailedMessage = async (assistantMessageId: string) => {
+    if (!currentSessionId) return;
+
+    const targetSessionId = currentSessionId;
+    if (processingSessionIdsRef.current.has(targetSessionId)) return;
+
+    const session = sessionsRef.current.find(s => s.id === targetSessionId);
+    if (!session) return;
+
+    const failedMessageIndex = session.messages.findIndex(message => (
+      message.id === assistantMessageId
+    ));
+    const failedMessage = session.messages[failedMessageIndex];
+    const userMessage = session.messages[failedMessageIndex - 1];
+
+    if (
+      failedMessageIndex < 1 ||
+      failedMessage?.role !== 'assistant' ||
+      userMessage?.role !== 'user'
+    ) {
+      return;
+    }
+
+    const requestId = failedMessage.requestId || userMessage.requestId || uuidv4();
+    const userMessageId = userMessage.id || uuidv4();
+    const newAssistantMessageId = uuidv4();
+    const requestTimestamp = Date.now();
+    const messagesForApi = session.messages.slice(0, failedMessageIndex).map((message, index) => (
+      index === failedMessageIndex - 1 && !message.id
+        ? { ...message, id: userMessageId }
+        : message
+    ));
+    const assistantPlaceholder = createAssistantPlaceholder(
+      newAssistantMessageId,
+      requestId,
+      session,
+      requestTimestamp
+    );
+
+    addProcessingSession(targetSessionId);
+
+    setSessions(prev => prev.map(s => {
+      if (s.id !== targetSessionId) return s;
+
+      return {
+        ...s,
+        messages: [...messagesForApi, assistantPlaceholder],
+        lastModified: requestTimestamp,
+        pendingRequest: {
+          id: requestId,
+          userMessageId,
+          assistantMessageId: newAssistantMessageId,
+          createdAt: requestTimestamp
+        }
+      };
+    }));
+
+    await startAssistantResponse({
+      targetSessionId,
+      session,
+      messagesForApi,
+      requestId,
+      assistantMessageId: newAssistantMessageId
+    });
+  };
+
+  const handleRegenerateLatestResponse = async () => {
+    if (!currentSessionId) return;
+
+    const targetSessionId = currentSessionId;
+    if (processingSessionIdsRef.current.has(targetSessionId)) return;
+
+    const session = sessionsRef.current.find(s => s.id === targetSessionId);
+    if (!session) return;
+
+    const assistantMessageIndex = session.messages.length - 1;
+    const assistantMessage = session.messages[assistantMessageIndex];
+    const userMessage = session.messages[assistantMessageIndex - 1];
+
+    if (
+      assistantMessageIndex < 1 ||
+      assistantMessage?.role !== 'assistant' ||
+      userMessage?.role !== 'user'
+    ) {
+      return;
+    }
+
+    const requestId = userMessage.requestId || uuidv4();
+    const userMessageId = userMessage.id || uuidv4();
+    const newAssistantMessageId = uuidv4();
+    const requestTimestamp = Date.now();
+    const messagesForApi = session.messages.slice(0, assistantMessageIndex).map((message, index) => (
+      index === assistantMessageIndex - 1 && !message.id
+        ? { ...message, id: userMessageId }
+        : message
+    ));
+    const assistantPlaceholder = createAssistantPlaceholder(
+      newAssistantMessageId,
+      requestId,
+      session,
+      requestTimestamp
+    );
+
+    addProcessingSession(targetSessionId);
+
+    setSessions(prev => prev.map(s => {
+      if (s.id !== targetSessionId) return s;
+
+      return {
+        ...s,
+        messages: [...messagesForApi, assistantPlaceholder],
+        lastModified: requestTimestamp,
+        pendingRequest: {
+          id: requestId,
+          userMessageId,
+          assistantMessageId: newAssistantMessageId,
+          createdAt: requestTimestamp
+        }
+      };
+    }));
+
+    await startAssistantResponse({
+      targetSessionId,
+      session,
+      messagesForApi,
+      requestId,
+      assistantMessageId: newAssistantMessageId
+    });
+  };
+
+  const handleStopGenerating = () => {
+    if (!currentSessionId) return;
+
+    const targetSessionId = currentSessionId;
+    const activeRequest = activeRequestsRef.current.get(targetSessionId);
+    if (!activeRequest) return;
+
+    if (activeRequest.responseId) {
+      cancelResponse(activeRequest.responseId, activeRequest.apiKey).catch(error => {
+        console.warn('Failed to cancel OpenAI response:', error);
+      });
+    }
+
+    activeRequest.controller.abort();
+    activeRequestsRef.current.delete(targetSessionId);
+    removeProcessingSession(targetSessionId);
+    markAssistantStopped(targetSessionId, activeRequest.assistantMessageId);
   };
 
   // Data Import/Export Handlers
@@ -588,6 +935,9 @@ function App() {
             <ChatArea
               session={currentSession}
               onSendMessage={handleSendMessage}
+              onStopGenerating={handleStopGenerating}
+              onRetryFailedMessage={handleRetryFailedMessage}
+              onRegenerateResponse={handleRegenerateLatestResponse}
               onShareConversation={handleShareConversation}
               apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}

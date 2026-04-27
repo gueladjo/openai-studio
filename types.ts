@@ -1,11 +1,13 @@
 import type {
   EasyInputMessage,
   ResponseCreateParamsNonStreaming,
+  ResponseCreateParamsStreaming,
   ResponseInputContent,
   ResponseInputFile,
   ResponseInputImage,
   ResponseInputItem,
   ResponseInputText,
+  ResponseStreamEvent,
   Tool,
   WebSearchTool
 } from 'openai/resources/responses/responses';
@@ -71,6 +73,7 @@ export interface Message {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
+  status?: 'streaming' | 'complete' | 'error' | 'stopped';
   requestId?: string;
   openaiResponseId?: string;
   thinking?: string;
@@ -101,6 +104,7 @@ export interface Session {
 export interface PendingRequest {
   id: string;
   userMessageId: string;
+  assistantMessageId?: string;
   createdAt: number;
 }
 
@@ -115,6 +119,8 @@ export type OpenAIWebSearchTool = WebSearchTool;
 export type OpenAICodeInterpreterTool = Extract<Tool, { type: 'code_interpreter' }>;
 export type OpenAIResponsesTool = Tool;
 export type OpenAIResponsesConfig = ResponseCreateParamsNonStreaming;
+export type OpenAIResponsesStreamingConfig = ResponseCreateParamsStreaming;
+export type OpenAIResponsesStreamEvent = ResponseStreamEvent;
 
 export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_5_5,
