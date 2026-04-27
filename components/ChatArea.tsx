@@ -894,10 +894,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                 <button
                                     type="button"
                                     onClick={onRegenerateResponse}
-                                    className="inline-flex h-10 items-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] px-3 text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
+                                    aria-label="Regenerate"
+                                    className="group relative inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
                                 >
                                     <RefreshCw size={15} />
-                                    <span>Regenerate</span>
+                                    <span
+                                        aria-hidden="true"
+                                        className="pointer-events-none absolute bottom-full right-0 mb-2 whitespace-nowrap rounded-md bg-white px-2 py-1 text-[11px] font-medium text-black opacity-0 shadow-lg transition-opacity group-hover:opacity-100"
+                                    >
+                                        Regenerate
+                                    </span>
                                 </button>
                             )}
                             <ResponseDetailsMenu message={msg} />
