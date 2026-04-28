@@ -33,6 +33,7 @@ export type TextVerbosity = 'low' | 'medium' | 'high';
 export interface ModelConfig {
   id: ModelId;
   name: string;
+  pickerName?: string;
   supportsVerbosity: boolean;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;

@@ -131,7 +131,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
               className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-md p-2.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none appearance-none transition-colors"
             >
               {MODELS.map(m => (
-                <option key={m.id} value={m.id}>{m.name}</option>
+                <option key={m.id} value={m.id}>{m.pickerName ?? m.name}</option>
               ))}
             </select>
             <div className="absolute right-3 top-3 pointer-events-none text-gray-400">

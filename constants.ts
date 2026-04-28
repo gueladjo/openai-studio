@@ -18,7 +18,8 @@ export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_5]: {
     id: ModelId.GPT_5_5,
-    name: 'GPT-5.5 (Flagship)',
+    name: 'GPT-5.5',
+    pickerName: 'GPT-5.5 (Flagship)',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
