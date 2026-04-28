@@ -18,6 +18,7 @@ import {
   OpenAIResponsesInput,
   OpenAIResponsesStreamEvent,
   OpenAIResponsesStreamingConfig,
+  OpenAIResponsesUsage,
   Source
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
@@ -46,6 +47,7 @@ interface GenerateResponseResult {
   generatedFiles?: GeneratedFile[];
   thinkingDuration: number;
   responseId?: string;
+  usage?: OpenAIResponsesUsage;
 }
 
 interface GenerateResponseOptions {
@@ -115,11 +117,11 @@ const isOpenAIResponseSource = (value: unknown): value is OpenAIResponseSource =
 );
 
 const getWebSearchActionSources = (
-  action: ResponseFunctionWebSearch['action']
+  action: ResponseFunctionWebSearch['action'] | undefined
 ): OpenAIResponseSource[] => {
-  if (!('sources' in action) || !Array.isArray(action.sources)) return [];
+  if (!isRecord(action) || !Array.isArray(action.sources)) return [];
 
-  return action.sources;
+  return action.sources.filter(isOpenAIResponseSource);
 };
 
 const getLegacyStringProperty = (
@@ -784,7 +786,8 @@ const parseGenerateResponse = (
     sources,
     generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
     thinkingDuration,
-    responseId: response.id
+    responseId: response.id,
+    usage: response.usage
   };
 };
 

@@ -8,6 +8,7 @@ import type {
   ResponseInputItem,
   ResponseInputText,
   ResponseStreamEvent,
+  ResponseUsage,
   Tool,
   WebSearchTool
 } from 'openai/resources/responses/responses';
@@ -79,6 +80,7 @@ export interface Message {
   openaiResponseId?: string;
   thinking?: string;
   thinkingDuration?: number; // Duration in milliseconds
+  usage?: OpenAIResponsesUsage;
   sources?: Source[];
   generatedFiles?: GeneratedFile[];
   timestamp: number;
@@ -122,6 +124,7 @@ export type OpenAIResponsesTool = Tool;
 export type OpenAIResponsesConfig = ResponseCreateParamsNonStreaming;
 export type OpenAIResponsesStreamingConfig = ResponseCreateParamsStreaming;
 export type OpenAIResponsesStreamEvent = ResponseStreamEvent;
+export type OpenAIResponsesUsage = ResponseUsage;
 
 export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_5_5,

@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { GeneratedFile, Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
@@ -41,6 +41,8 @@ const formatDuration = (ms: number): string => {
   const seconds = Math.round(totalSeconds % 60);
   return `${minutes}m ${seconds}s`;
 };
+
+const formatTokenCount = (tokens: number): string => tokens.toLocaleString();
 
 const formatMessageTimestamp = (timestamp: number): string => {
   const date = new Date(timestamp);
@@ -205,6 +207,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         ? `${modelName}${message.reasoningEffort ? ` ${message.reasoningEffort}` : ''}`
         : null;
     const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
+    const hasTokenUsage = Boolean(message.usage);
     const canCopyResponse = message.content.length > 0;
 
     const setCopyFeedback = (state: 'copied' | 'error') => {
@@ -264,6 +267,31 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                                     </div>
                                     <div className="text-sm font-medium">
                                         {formatDuration(message.thinkingDuration!)}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {hasTokenUsage && (
+                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
+                                <Hash size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
+                                        Tokens
+                                    </div>
+                                    <div className="mt-1 space-y-1 text-sm font-medium">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span className="text-gray-500 dark:text-gray-400">Input</span>
+                                            <span>{formatTokenCount(message.usage!.input_tokens)}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span className="text-gray-500 dark:text-gray-400">Cached input</span>
+                                            <span>{formatTokenCount(message.usage!.input_tokens_details.cached_tokens)}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span className="text-gray-500 dark:text-gray-400">Output</span>
+                                            <span>{formatTokenCount(message.usage!.output_tokens)}</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

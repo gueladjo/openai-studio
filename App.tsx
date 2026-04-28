@@ -422,7 +422,8 @@ function App() {
         sources,
         generatedFiles,
         thinkingDuration,
-        responseId
+        responseId,
+        usage
       } = await generateResponse(
         messagesForApi,
         session.config,
@@ -464,6 +465,7 @@ function App() {
         openaiResponseId: responseId,
         thinking,
         thinkingDuration,
+        usage,
         sources,
         generatedFiles,
         timestamp: Date.now(),
