@@ -56,6 +56,10 @@ interface GenerateResponseOptions {
   onTextDelta?: (delta: string) => void;
 }
 
+const getMonotonicTime = (): number => (
+  typeof performance !== 'undefined' ? performance.now() : Date.now()
+);
+
 const GENERATED_FILE_MIME_TYPES: Record<string, string> = {
   csv: 'text/csv',
   gif: 'image/gif',
@@ -922,12 +926,13 @@ export const generateResponse = async (
   }
 
   try {
-    const startTime = Date.now();
+    const startTime = getMonotonicTime();
     const stream = await openai.responses.create(
       payload,
       options.signal ? { signal: options.signal } : undefined
     );
     let completedResponse: OpenAIResponse | undefined;
+    let timeToFirstToken = 0;
 
     for await (const event of stream) {
       if (options.signal?.aborted) {
@@ -937,6 +942,9 @@ export const generateResponse = async (
       if (event.type === 'response.created') {
         options.onResponseCreated?.(event.response.id);
       } else if (event.type === 'response.output_text.delta') {
+        if (timeToFirstToken === 0 && event.delta.length > 0) {
+          timeToFirstToken = getMonotonicTime() - startTime;
+        }
         options.onTextDelta?.(event.delta);
       } else if (event.type === 'response.completed') {
         completedResponse = event.response;
@@ -955,7 +963,7 @@ export const generateResponse = async (
 
     return parseGenerateResponse(
       completedResponse,
-      Date.now() - startTime,
+      timeToFirstToken,
       normalizedConfig
     );
   } catch (error: unknown) {

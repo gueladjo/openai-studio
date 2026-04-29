@@ -79,7 +79,7 @@ export interface Message {
   requestId?: string;
   openaiResponseId?: string;
   thinking?: string;
-  thinkingDuration?: number; // Duration in milliseconds
+  thinkingDuration?: number; // Time to first streamed output token in milliseconds
   usage?: OpenAIResponsesUsage;
   sources?: Source[];
   generatedFiles?: GeneratedFile[];
