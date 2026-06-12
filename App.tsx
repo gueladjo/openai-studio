@@ -22,7 +22,7 @@ import {
   downloadTextFile,
   formatConversationMarkdown
 } from './utils/conversationExport';
-import { Loader2, Menu, Settings, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Menu, Settings, X } from 'lucide-react';
 
 // Hook for detecting mobile viewport
 const useIsMobile = (breakpoint = 768) => {
@@ -80,6 +80,10 @@ const isAbortError = (error: unknown): boolean => {
   return error.name === 'AbortError' || message.includes('abort');
 };
 
+const getErrorMessage = (error: unknown): string => (
+  error instanceof Error ? error.message : 'Unknown error'
+);
+
 function App() {
   // Storage State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
@@ -88,6 +92,8 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [isWorkspaceLoaded, setIsWorkspaceLoaded] = useState(false);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const sessionsRef = useRef<Session[]>([]);
 
   // Replaced single boolean with a Set to track multiple active sessions
@@ -187,32 +193,25 @@ function App() {
 
   // Helper: Load all data from disk
   const loadWorkspaceData = async (handle: FileSystemDirectoryHandle) => {
-    try {
-      // Parallel load
-      const [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
-        readJsonFile<Session[]>(handle, STORAGE_FILES.SESSIONS),
-        readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
-        readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
-      ]);
+    // Parallel load
+    const [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
+      readJsonFile<Session[]>(handle, STORAGE_FILES.SESSIONS),
+      readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
+      readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
+    ]);
 
-      const cleanedSessions = loadedSessions ? markPendingRequestsFailed(loadedSessions) : null;
-      if (cleanedSessions) setSessions(cleanedSessions);
-      if (loadedInstructions) setSystemInstructions(loadedInstructions);
-      
-      if (loadedSettings) {
-        setIsDarkMode(loadedSettings.theme === 'dark');
-        setApiKey(loadedSettings.apiKey || '');
-        if (loadedSettings.lastActiveSessionId) {
-          // Verify ID exists
-          if (cleanedSessions && cleanedSessions.find(s => s.id === loadedSettings.lastActiveSessionId)) {
-            setCurrentSessionId(loadedSettings.lastActiveSessionId);
-          } else if (cleanedSessions && cleanedSessions.length > 0) {
-            setCurrentSessionId(cleanedSessions[0].id);
-          }
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load workspace data", e);
+    const cleanedSessions = loadedSessions ? markPendingRequestsFailed(loadedSessions) : [];
+    const nextInstructions = loadedInstructions || [];
+
+    setSessions(cleanedSessions);
+    setSystemInstructions(nextInstructions);
+    setIsDarkMode(loadedSettings ? loadedSettings.theme === 'dark' : true);
+    setApiKey(loadedSettings?.apiKey || '');
+
+    if (loadedSettings?.lastActiveSessionId && cleanedSessions.find(s => s.id === loadedSettings.lastActiveSessionId)) {
+      setCurrentSessionId(loadedSettings.lastActiveSessionId);
+    } else {
+      setCurrentSessionId(cleanedSessions[0]?.id || null);
     }
   };
 
@@ -221,10 +220,15 @@ function App() {
     const init = async () => {
       try {
         const handle = await getStorageHandle();
-        setDirHandle(handle);
         await loadWorkspaceData(handle);
+        setDirHandle(handle);
+        setWorkspaceLoadError(null);
+        setIsWorkspaceLoaded(true);
       } catch (e) {
         console.error("Critical: Failed to initialize storage", e);
+        setDirHandle(null);
+        setIsWorkspaceLoaded(false);
+        setWorkspaceLoadError(getErrorMessage(e));
       } finally {
         // Add a small artificial delay to ensure smooth transition from the HTML loader
         // if the OPFS loads extremely fast.
@@ -236,7 +240,7 @@ function App() {
 
   // Debounced Save Helper
   const scheduleSave = (key: string, fn: () => Promise<void>) => {
-    if (!dirHandle) return;
+    if (!dirHandle || !isWorkspaceLoaded) return;
     
     if (saveTimeoutRef.current[key]) {
       clearTimeout(saveTimeoutRef.current[key]);
@@ -246,8 +250,13 @@ function App() {
     const delay = key === 'sessions' ? 1000 : 500;
     
     saveTimeoutRef.current[key] = window.setTimeout(async () => {
-      await fn();
-      delete saveTimeoutRef.current[key];
+      try {
+        await fn();
+      } catch (e) {
+        console.error(`Failed to persist ${key}`, e);
+      } finally {
+        delete saveTimeoutRef.current[key];
+      }
     }, delay);
   };
 
@@ -256,14 +265,14 @@ function App() {
     scheduleSave('sessions', async () => {
       if (dirHandle) await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, sessions);
     });
-  }, [sessions, dirHandle]);
+  }, [sessions, dirHandle, isWorkspaceLoaded]);
 
   // Effect: Persist Instructions
   useEffect(() => {
     scheduleSave('instructions', async () => {
       if (dirHandle) await writeJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS, systemInstructions);
     });
-  }, [systemInstructions, dirHandle]);
+  }, [systemInstructions, dirHandle, isWorkspaceLoaded]);
 
   // Effect: Persist Settings (Theme, API Key, Active Session)
   useEffect(() => {
@@ -277,7 +286,7 @@ function App() {
         await writeJsonFile(dirHandle, STORAGE_FILES.SETTINGS, settings);
       }
     });
-  }, [isDarkMode, apiKey, currentSessionId, dirHandle]);
+  }, [isDarkMode, apiKey, currentSessionId, dirHandle, isWorkspaceLoaded]);
 
 
   // --- App Logic ---
@@ -836,6 +845,39 @@ function App() {
              <Loader2 size={40} className="animate-spin text-blue-600 dark:text-blue-500" />
              <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">Loading Workspace...</div>
          </div>
+      </div>
+    );
+  }
+
+  if (workspaceLoadError) {
+    return (
+      <div className={isDarkMode ? 'dark' : ''}>
+        <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
+          {!isMobile && window.electronAPI && <TitleBar isDarkMode={isDarkMode} />}
+          <div className="flex flex-1 items-center justify-center px-6">
+            <div className="w-full max-w-lg rounded-lg border border-red-200 bg-red-50 p-6 shadow-sm dark:border-red-900/60 dark:bg-red-950/20">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" size={24} />
+                <div className="min-w-0">
+                  <h1 className="text-base font-semibold text-red-900 dark:text-red-100">Workspace storage could not be loaded</h1>
+                  <p className="mt-2 text-sm leading-6 text-red-800 dark:text-red-200">
+                    OpenAI Studio did not write an empty workspace. Close the app, back up your AppData folder, then retry.
+                  </p>
+                  <pre className="mt-3 max-h-32 overflow-auto rounded-md bg-white/70 p-3 text-xs text-red-950 dark:bg-black/20 dark:text-red-100">
+                    {workspaceLoadError}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="mt-4 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
