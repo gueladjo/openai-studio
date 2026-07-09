@@ -19,6 +19,7 @@ import {
   OpenAIResponsesStreamEvent,
   OpenAIResponsesStreamingConfig,
   OpenAIResponsesUsage,
+  ReasoningEffort,
   Source
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
@@ -55,6 +56,14 @@ interface GenerateResponseOptions {
   onResponseCreated?: (responseId: string) => void;
   onTextDelta?: (delta: string) => void;
 }
+
+type OpenAIReasoningConfig = NonNullable<OpenAIResponsesStreamingConfig['reasoning']>;
+type OpenAIReasoningEffort = NonNullable<OpenAIReasoningConfig['effort']>;
+
+const toOpenAIReasoningEffort = (effort: ReasoningEffort): OpenAIReasoningEffort => (
+  // The GPT-5.6 API supports `max`; openai@6.26.0 response typings do not list it yet.
+  effort as OpenAIReasoningEffort
+);
 
 const getMonotonicTime = (): number => (
   typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -917,7 +926,7 @@ export const generateResponse = async (
 
   if (reasoningEffort !== 'none') {
     payload.reasoning = {
-      effort: reasoningEffort
+      effort: toOpenAIReasoningEffort(reasoningEffort)
     };
   } else if (modelConfig.reasoningOptions.includes('none')) {
     payload.reasoning = {

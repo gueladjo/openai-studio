@@ -45,11 +45,11 @@ User Input (ChatArea) → App.tsx (state) → openaiService.ts (streaming API) �
 ## Key Types (types.ts)
 
 ```typescript
-enum ModelId { GPT_5_5, GPT_5_4, GPT_5_2, GPT_5_MINI, GPT_5_NANO, GPT_O3 }
+enum ModelId { GPT_5_6_SOL, GPT_5_6_TERRA, GPT_5_5, GPT_5_MINI, GPT_5_NANO, GPT_O3 }
 
 interface ChatConfig {
   model: ModelId;
-  reasoningEffort: string;  // Model-dependent (none/low/medium/high/xhigh)
+  reasoningEffort: string;  // Model-dependent (none/low/medium/high/xhigh/max)
   textVerbosity: 'low' | 'medium' | 'high';
   tools: { webSearch: boolean; codeInterpreter: boolean; };
   systemInstructionId?: string;
