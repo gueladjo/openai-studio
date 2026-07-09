@@ -14,8 +14,8 @@ It uses the OpenAI Responses API: https://platform.openai.com/docs/api-reference
     *   **No Setup:** Just open the app and start chatting. Your history is saved instantly.
     *   **Privacy:** Data is stored locally in your browser's sandboxed file system.
 *   **Advanced Configuration:**
-    *   **Model Selection:** Switch between GPT-5.5 (Flagship), GPT-5.4, GPT-5.2, GPT-5 Mini, GPT-5 Nano, and o3.
-    *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to XHigh for GPT-5 flagship models).
+    *   **Model Selection:** Switch between GPT-5.6 Sol (Flagship), GPT-5.6 Terra (Balanced), GPT-5.5, GPT-5 Mini, GPT-5 Nano, and o3.
+    *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to Max for GPT-5.6 models; None to XHigh for GPT-5.5).
     *   **Text Verbosity:** Control the length and detail of generated responses (GPT-5 series only).
 *   **System Instructions:** Create and manage a library of instructions sent through the Responses API `instructions` field.
 *   **File Attachments:** Attach images and non-image files as Responses API inputs for multimodal analysis.
@@ -30,20 +30,40 @@ It uses the OpenAI Responses API: https://platform.openai.com/docs/api-reference
 *   An OpenAI API Key.
 *   A modern web browser (Chrome, Edge, Opera, Safari 15.2+) that supports **Origin Private File System**.
 
-### Running the Application (Web)
+### Running Locally (Web)
 
-This project is built as a client-side React application.
+Install dependencies once after cloning or after dependency changes:
 
-**Option 1: Development Environment (Recommended)**
-If you are moving this code to a local machine, the recommended setup is using [Vite](https://vitejs.dev/):
+```bash
+npm install
+```
 
-1.  Initialize a new Vite project: `npm create vite@latest openai-studio -- --template react-ts`
-2.  Copy the source files into the `src` directory (adjusting `index.html` location as needed).
-3.  Install dependencies: `react`, `react-dom`, `lucide-react`, `react-markdown`, `openai`, `uuid`.
-4.  Run `npm run dev`.
+Use the Vite dev server for normal local development:
 
-**Option 2: Static / Sandbox**
-The project is currently structured to run in environments that support direct `.tsx` loading.
+```bash
+npm run dev
+```
+
+This starts the app at `http://localhost:5173`. You do **not** need to run `npm run build` before `npm run dev`; the dev server compiles files on demand and supports hot reload.
+
+To test the production web/PWA bundle locally, build first:
+
+```bash
+npm run build:web
+npm run preview
+```
+
+`npm run build:web` runs TypeScript checks and writes the web/PWA production build to `dist/`. `npm run preview` only serves the existing `dist/` folder; it does not rebuild. If you change source files, run `npm run build:web` again before previewing.
+
+Because the web build currently uses the GitHub Pages base path `/openai-studio/`, preview the app at:
+
+```text
+http://localhost:4173/openai-studio/
+```
+
+If you change `vite.config.ts` to use `base: '/'` for another host, the local preview URL becomes `http://localhost:4173/`.
+
+Use the production preview when you want to check optimized assets, routing/base-path behavior, the manifest, and service-worker/PWA output. Use `npm run dev` for day-to-day UI and API testing.
 
 ### Running as a Desktop App (Electron)
 
@@ -106,13 +126,17 @@ This creates a production build in the `dist/` folder with:
 
 #### 3. Test Locally
 
-Preview the production build locally:
+Preview the production build locally after `npm run build:web`:
 
 ```bash
 npm run preview
 ```
 
-Opens at `http://localhost:4173`. For full PWA testing (service worker, install prompt), you need HTTPS - deploy to a hosting service or use:
+`npm run preview` serves the current `dist/` folder and does not rebuild. With the default GitHub Pages base path, open `http://localhost:4173/openai-studio/`.
+
+Localhost is a secure context for service workers, so it is useful for basic PWA checks. For final install/offline testing on mobile devices, deploy to HTTPS hosting.
+
+To serve `dist/` with a different static server:
 
 ```bash
 npx serve dist
