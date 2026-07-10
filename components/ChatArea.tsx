@@ -1025,7 +1025,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <button
                     type="button"
                     onClick={onStopGenerating}
-                    className="p-2 rounded-lg transition-all bg-red-600 text-white hover:bg-red-700 shadow-md"
+                    className="p-2 rounded-lg transition-all bg-gray-500 text-white hover:bg-gray-600 dark:bg-gray-600 dark:hover:bg-gray-500 shadow-md"
                     title="Stop generating"
                     aria-label="Stop generating"
                   >
