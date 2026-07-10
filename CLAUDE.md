@@ -41,7 +41,6 @@ User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → Ope
 - `components/Sidebar.tsx` — session list/search, theme, API key modal, workspace backup/restore, app version
 - `components/ConfigPanel.tsx` — model, reasoning effort, verbosity, tools, system instructions
 - `components/TitleBar.tsx` — Electron-only window controls
-- `components/WorkspaceSelector.tsx` — unused legacy folder-selection UI; not part of the active flow
 - `services/openaiService.ts` — SDK integration: streaming, cancellation, response threading, citations, generated-file retrieval, title generation
 - `services/storage.ts` — OPFS/IndexedDB abstraction, `.bak` recovery, workspace backup/restore
 - `utils/conversationExport.ts` — Markdown transcript export (the chat "Share" button downloads a local file; it does not publish)
@@ -49,7 +48,7 @@ User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → Ope
 - `types.ts` — app types + Responses API SDK aliases; `constants.ts` — model catalog, defaults, config normalization
 - `electron/main.js` / `electron/preload.cjs` — Electron lifecycle and the narrow IPC bridge
 - `vite.config.ts` — mode-specific base paths, env injection, `__APP_VERSION__`, and the authoritative generated PWA manifest/service worker
-- `manifest.json` — a second, hand-maintained manifest linked from `index.html`; it can drift from the Vite-generated one, so check both when touching PWA metadata. `metadata.json` is not imported by the app.
+- `manifest.json` — a second, hand-maintained manifest linked from `index.html`; it can drift from the Vite-generated one, so check both when touching PWA metadata.
 
 ## Key Types (types.ts)
 

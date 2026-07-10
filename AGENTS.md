@@ -24,7 +24,6 @@ One request may run per session, while different sessions may stream concurrentl
 - `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
-- `components/WorkspaceSelector.tsx`: currently unused legacy folder-selection UI; do not assume it is part of the active workflow.
 - `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
 - `services/storage.ts`: OPFS/IndexedDB abstraction, rolling backups, and workspace backup/restore.
 - `utils/conversationExport.ts`: Markdown transcript export and filename handling.
@@ -36,7 +35,6 @@ One request may run per session, while different sessions may stream concurrentl
 - `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
 - `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
 - `manifest.json`: an active second manifest explicitly linked by `index.html`; the web build also injects the Vite-generated `manifest.webmanifest`, so built HTML contains both until they are consolidated.
-- `metadata.json`: supplemental project metadata not imported by the TypeScript application.
 
 Generated `node_modules/`, `dist/`, and `release/` content is ignored and should not be edited.
 
