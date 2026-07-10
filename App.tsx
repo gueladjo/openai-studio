@@ -1038,7 +1038,7 @@ function App() {
     }
   };
 
-  const handleRetryFailedMessage = async (assistantMessageId: string) => {
+  const restartAssistantResponse = async (assistantMessageIndex: number) => {
     if (!currentSessionId) return;
 
     const targetSessionId = currentSessionId;
@@ -1047,74 +1047,6 @@ function App() {
     const session = sessionsRef.current.find(s => s.id === targetSessionId);
     if (!session) return;
 
-    const failedMessageIndex = session.messages.findIndex(message => (
-      message.id === assistantMessageId
-    ));
-    const failedMessage = session.messages[failedMessageIndex];
-    const userMessage = session.messages[failedMessageIndex - 1];
-
-    if (
-      failedMessageIndex < 1 ||
-      failedMessage?.role !== 'assistant' ||
-      userMessage?.role !== 'user'
-    ) {
-      return;
-    }
-
-    const requestId = failedMessage.requestId || userMessage.requestId || uuidv4();
-    const userMessageId = userMessage.id || uuidv4();
-    const newAssistantMessageId = uuidv4();
-    const requestTimestamp = Date.now();
-    const messagesForApi = session.messages.slice(0, failedMessageIndex).map((message, index) => (
-      index === failedMessageIndex - 1 && !message.id
-        ? { ...message, id: userMessageId }
-        : message
-    ));
-    const assistantPlaceholder = createAssistantPlaceholder(
-      newAssistantMessageId,
-      requestId,
-      session,
-      requestTimestamp
-    );
-
-    addProcessingSession(targetSessionId);
-    forceImmediateSessionSaveRef.current = true;
-
-    setSessions(prev => prev.map(s => {
-      if (s.id !== targetSessionId) return s;
-
-      return {
-        ...s,
-        messages: [...messagesForApi, assistantPlaceholder],
-        lastModified: requestTimestamp,
-        pendingRequest: {
-          id: requestId,
-          userMessageId,
-          assistantMessageId: newAssistantMessageId,
-          createdAt: requestTimestamp
-        }
-      };
-    }));
-
-    await startAssistantResponse({
-      targetSessionId,
-      session,
-      messagesForApi,
-      requestId,
-      assistantMessageId: newAssistantMessageId
-    });
-  };
-
-  const handleRegenerateLatestResponse = async () => {
-    if (!currentSessionId) return;
-
-    const targetSessionId = currentSessionId;
-    if (processingSessionIdsRef.current.has(targetSessionId)) return;
-
-    const session = sessionsRef.current.find(s => s.id === targetSessionId);
-    if (!session) return;
-
-    const assistantMessageIndex = session.messages.length - 1;
     const assistantMessage = session.messages[assistantMessageIndex];
     const userMessage = session.messages[assistantMessageIndex - 1];
 
@@ -1126,7 +1058,7 @@ function App() {
       return;
     }
 
-    const requestId = userMessage.requestId || uuidv4();
+    const requestId = userMessage.requestId || assistantMessage.requestId || uuidv4();
     const userMessageId = userMessage.id || uuidv4();
     const newAssistantMessageId = uuidv4();
     const requestTimestamp = Date.now();
@@ -1168,6 +1100,21 @@ function App() {
       requestId,
       assistantMessageId: newAssistantMessageId
     });
+  };
+
+  const handleRetryFailedMessage = async (assistantMessageId: string) => {
+    const session = sessionsRef.current.find(s => s.id === currentSessionId);
+    const assistantMessageIndex = session?.messages.findIndex(message => (
+      message.id === assistantMessageId
+    ));
+
+    if (assistantMessageIndex === undefined) return;
+    await restartAssistantResponse(assistantMessageIndex);
+  };
+
+  const handleRegenerateLatestResponse = async () => {
+    const session = sessionsRef.current.find(s => s.id === currentSessionId);
+    await restartAssistantResponse((session?.messages.length ?? 0) - 1);
   };
 
   const handleStopGenerating = () => {
