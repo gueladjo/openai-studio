@@ -5,7 +5,8 @@ import type {
   ResponseFunctionWebSearch,
   ResponseOutputItem,
   ResponseOutputMessage,
-  ResponseOutputText
+  ResponseOutputText,
+  ResponseReasoningItem
 } from 'openai/resources/responses/responses';
 import {
   getModelConfig,
@@ -60,6 +61,7 @@ interface GenerateResponseResult {
 interface GenerateResponseOptions {
   signal?: AbortSignal;
   onResponseCreated?: (responseId: string) => void;
+  onReasoningSummaryDelta?: (delta: string) => void;
   onTextDelta?: (delta: string) => void;
   resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
 }
@@ -115,6 +117,10 @@ const isWebSearchResponseItem = (
 const isCodeInterpreterResponseItem = (
   item: ResponseOutputItem
 ): item is ResponseCodeInterpreterToolCall => item.type === 'code_interpreter_call';
+
+const isReasoningResponseItem = (
+  item: ResponseOutputItem
+): item is ResponseReasoningItem => item.type === 'reasoning';
 
 const isUrlCitationAnnotation = (
   annotation: unknown
@@ -762,10 +768,18 @@ const getPreviousResponseId = (messages: Message[]): string | undefined => {
   return undefined;
 };
 
+const getReasoningSummaryText = (item: ResponseReasoningItem): string => (
+  item.summary
+    .map(summary => summary.text)
+    .filter(summary => summary.trim().length > 0)
+    .join('\n\n')
+);
+
 const parseGenerateResponse = (
   response: OpenAIResponse,
   thinkingDuration: number,
-  normalizedConfig: ChatConfig
+  normalizedConfig: ChatConfig,
+  streamedThinking = ''
 ): GenerateResponseResult => {
   let thinking = '';
   let content = '';
@@ -784,6 +798,8 @@ const parseGenerateResponse = (
           content,
           getResponseOutputMessageText(item, citationRegistry)
         );
+      } else if (isReasoningResponseItem(item)) {
+        thinking = appendMarkdownSection(thinking, getReasoningSummaryText(item));
       } else if (isCodeInterpreterResponseItem(item)) {
         content = appendMarkdownSection(content, formatCodeInterpreterCall(item));
       } else if (isWebSearchResponseItem(item)) {
@@ -817,7 +833,7 @@ const parseGenerateResponse = (
 
   return {
     content,
-    thinking,
+    thinking: thinking || streamedThinking,
     sources,
     generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
     thinkingDuration,
@@ -854,6 +870,45 @@ const getStreamEventErrorMessage = (
   }
 
   return undefined;
+};
+
+const isReasoningSummaryUnavailableError = (error: unknown): boolean => {
+  if (!isRecord(error)) return false;
+
+  const status = error.status;
+  if (status !== 400 && status !== 403 && status !== 422) return false;
+
+  const nestedError = isRecord(error.error) ? error.error : undefined;
+  const details = [
+    getStringProperty(error, 'message'),
+    getStringProperty(error, 'code'),
+    getStringProperty(error, 'param'),
+    getStringProperty(error, 'type'),
+    nestedError && getStringProperty(nestedError, 'message'),
+    nestedError && getStringProperty(nestedError, 'code'),
+    nestedError && getStringProperty(nestedError, 'param'),
+    nestedError && getStringProperty(nestedError, 'type')
+  ].filter((detail): detail is string => Boolean(detail));
+  const normalizedDetails = details.join(' ').toLowerCase();
+
+  return normalizedDetails.includes('reasoning.summary') ||
+    normalizedDetails.includes('reasoning summary') ||
+    normalizedDetails.includes('reasoning summaries') ||
+    (normalizedDetails.includes('organization') && normalizedDetails.includes('verif'));
+};
+
+const withoutReasoningSummary = (
+  payload: OpenAIResponsesStreamingConfig
+): OpenAIResponsesStreamingConfig => {
+  if (!payload.reasoning) return payload;
+
+  const reasoning = { ...payload.reasoning };
+  delete reasoning.summary;
+
+  return {
+    ...payload,
+    reasoning
+  };
 };
 
 export const generateResponse = async (
@@ -949,7 +1004,8 @@ export const generateResponse = async (
 
   if (reasoningEffort !== 'none') {
     payload.reasoning = {
-      effort: toOpenAIReasoningEffort(reasoningEffort)
+      effort: toOpenAIReasoningEffort(reasoningEffort),
+      summary: 'auto'
     };
   } else if (modelConfig.reasoningOptions.includes('none')) {
     payload.reasoning = {
@@ -959,11 +1015,29 @@ export const generateResponse = async (
 
   try {
     const startTime = getMonotonicTime();
-    const stream = await openai.responses.create(
-      payload,
-      options.signal ? { signal: options.signal } : undefined
+    const createStream = (streamPayload: OpenAIResponsesStreamingConfig) => (
+      openai.responses.create(
+        streamPayload,
+        options.signal ? { signal: options.signal } : undefined
+      )
     );
+    let stream: Awaited<ReturnType<typeof createStream>>;
+
+    try {
+      stream = await createStream(payload);
+    } catch (error) {
+      if (!payload.reasoning?.summary || !isReasoningSummaryUnavailableError(error)) {
+        throw error;
+      }
+
+      // Some accounts or models cannot request summaries. The first request was
+      // rejected before a stream existed, so retry once without that optional field.
+      stream = await createStream(withoutReasoningSummary(payload));
+    }
+
     let completedResponse: OpenAIResponse | undefined;
+    let streamedThinking = '';
+    let activeReasoningSummaryPart: string | undefined;
     let timeToFirstToken = 0;
 
     for await (const event of stream) {
@@ -973,6 +1047,16 @@ export const generateResponse = async (
 
       if (event.type === 'response.created') {
         options.onResponseCreated?.(event.response.id);
+      } else if (event.type === 'response.reasoning_summary_text.delta') {
+        const summaryPart = `${event.output_index}:${event.summary_index}`;
+        const separator = streamedThinking && activeReasoningSummaryPart !== summaryPart
+          ? '\n\n'
+          : '';
+        const delta = separator + event.delta;
+
+        activeReasoningSummaryPart = summaryPart;
+        streamedThinking += delta;
+        options.onReasoningSummaryDelta?.(delta);
       } else if (event.type === 'response.output_text.delta') {
         if (timeToFirstToken === 0 && event.delta.length > 0) {
           timeToFirstToken = getMonotonicTime() - startTime;
@@ -998,7 +1082,8 @@ export const generateResponse = async (
     return parseGenerateResponse(
       completedResponse,
       timeToFirstToken,
-      normalizedConfig
+      normalizedConfig,
+      streamedThinking
     );
   } catch (error: unknown) {
     if (error instanceof Error && error.name === 'AbortError') {

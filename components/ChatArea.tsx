@@ -153,7 +153,7 @@ const ThinkingBlock = ({ text }: { text: string }) => {
         >
             {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <BrainCircuit size={14} />
-            <span>Reasoning Process</span>
+            <span>Reasoning Summary</span>
         </button>
         {isOpen && (
             <div className="p-3 pt-0 text-gray-600 dark:text-gray-400 text-sm font-mono leading-relaxed border-t border-transparent whitespace-pre-wrap">

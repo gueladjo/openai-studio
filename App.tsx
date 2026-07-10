@@ -87,7 +87,9 @@ interface ActiveChatRequest {
   apiKey: string;
   responseId?: string;
   getPartialContent?: () => string;
+  getPartialThinking?: () => string;
   checkpointPartialContent?: () => string;
+  checkpointPartialThinking?: () => string;
 }
 
 const isAbortError = (error: unknown): boolean => {
@@ -534,13 +536,18 @@ function App() {
         const activeRequest = activeRequestsRef.current.get(session.id);
         const partialContent = activeRequest?.checkpointPartialContent?.() ||
           activeRequest?.getPartialContent?.();
-        if (!activeRequest || !partialContent) return session;
+        const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
+          activeRequest?.getPartialThinking?.();
+        if (!activeRequest || (!partialContent && !partialThinking)) return session;
 
         let didUpdateMessage = false;
         const messages = session.messages.map(message => {
           if (
             message.id !== activeRequest.assistantMessageId ||
-            message.content === partialContent
+            (
+              message.content === partialContent &&
+              (message.thinking || '') === (partialThinking || '')
+            )
           ) {
             return message;
           }
@@ -548,7 +555,8 @@ function App() {
           didUpdateMessage = true;
           return {
             ...message,
-            content: partialContent,
+            content: partialContent || message.content,
+            thinking: partialThinking || message.thinking,
             status: 'streaming' as const
           };
         });
@@ -696,7 +704,8 @@ function App() {
   const markAssistantStopped = (
     sessionId: string,
     assistantMessageId: string,
-    partialContent?: string
+    partialContent?: string,
+    partialThinking?: string
   ) => {
     updateAssistantMessage(
       sessionId,
@@ -704,6 +713,7 @@ function App() {
       message => ({
         ...message,
         content: partialContent || message.content || 'Stopped.',
+        thinking: partialThinking || message.thinking,
         status: 'stopped',
         timestamp: Date.now()
       }),
@@ -734,12 +744,15 @@ function App() {
     // Streamed deltas flush once per animation frame while visible and on a
     // short timer while hidden, where animation frames may be suspended.
     let streamedContent = '';
+    let streamedThinking = '';
     let pendingDelta = '';
+    let pendingThinkingDelta = '';
     let deltaFlushHandle: number | null = null;
     let deltaFlushUsesTimeout = false;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
     if (activeRequest?.assistantMessageId === assistantMessageId) {
       activeRequest.getPartialContent = () => streamedContent + pendingDelta;
+      activeRequest.getPartialThinking = () => streamedThinking + pendingThinkingDelta;
     }
 
     const cancelScheduledDeltaFlush = () => {
@@ -751,20 +764,30 @@ function App() {
       }
     };
 
-    const flushPendingDelta = () => {
+    const checkpointPendingDeltas = () => {
       cancelScheduledDeltaFlush();
-      if (!pendingDelta) return;
-
       streamedContent += pendingDelta;
+      streamedThinking += pendingThinkingDelta;
       pendingDelta = '';
+      pendingThinkingDelta = '';
+    };
+
+    const flushPendingDeltas = () => {
+      const hasContentDelta = pendingDelta.length > 0;
+      const hasThinkingDelta = pendingThinkingDelta.length > 0;
+      if (!hasContentDelta && !hasThinkingDelta) return;
+
+      checkpointPendingDeltas();
       const content = streamedContent;
+      const thinking = streamedThinking;
 
       updateAssistantMessage(
         targetSessionId,
         assistantMessageId,
         message => ({
           ...message,
-          content,
+          content: hasContentDelta ? content : message.content,
+          thinking: hasThinkingDelta ? thinking : message.thinking,
           status: 'streaming'
         })
       );
@@ -772,12 +795,37 @@ function App() {
 
     if (activeRequest?.assistantMessageId === assistantMessageId) {
       activeRequest.checkpointPartialContent = () => {
-        cancelScheduledDeltaFlush();
-        streamedContent += pendingDelta;
-        pendingDelta = '';
+        checkpointPendingDeltas();
         return streamedContent;
       };
+      activeRequest.checkpointPartialThinking = () => {
+        checkpointPendingDeltas();
+        return streamedThinking;
+      };
     }
+
+    const scheduleDeltaFlush = () => {
+      if (deltaFlushHandle !== null) return;
+
+      const runDeltaFlush = () => {
+        deltaFlushHandle = null;
+        deltaFlushUsesTimeout = false;
+
+        // Skip when the request was stopped meanwhile; the catch path
+        // flushes the remainder before marking the message stopped.
+        const flushRequest = activeRequestsRef.current.get(targetSessionId);
+        if (flushRequest?.assistantMessageId !== assistantMessageId) return;
+
+        flushPendingDeltas();
+      };
+
+      if (document.visibilityState === 'hidden') {
+        deltaFlushUsesTimeout = true;
+        deltaFlushHandle = window.setTimeout(runDeltaFlush, 100);
+      } else {
+        deltaFlushHandle = window.requestAnimationFrame(runDeltaFlush);
+      }
+    };
 
     try {
       const selectedInstruction = systemInstructionsRef.current.find(si => (
@@ -807,33 +855,21 @@ function App() {
               activeRequest.responseId = createdResponseId;
             }
           },
+          onReasoningSummaryDelta: (delta) => {
+            const activeRequest = activeRequestsRef.current.get(targetSessionId);
+
+            if (activeRequest?.assistantMessageId !== assistantMessageId) return;
+
+            pendingThinkingDelta += delta;
+            scheduleDeltaFlush();
+          },
           onTextDelta: (delta) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
             if (activeRequest?.assistantMessageId !== assistantMessageId) return;
 
             pendingDelta += delta;
-
-            if (deltaFlushHandle !== null) return;
-
-            const runDeltaFlush = () => {
-              deltaFlushHandle = null;
-              deltaFlushUsesTimeout = false;
-
-              // Skip when the request was stopped meanwhile; the catch path
-              // flushes the remainder before marking the message stopped.
-              const flushRequest = activeRequestsRef.current.get(targetSessionId);
-              if (flushRequest?.assistantMessageId !== assistantMessageId) return;
-
-              flushPendingDelta();
-            };
-
-            if (document.visibilityState === 'hidden') {
-              deltaFlushUsesTimeout = true;
-              deltaFlushHandle = window.setTimeout(runDeltaFlush, 100);
-            } else {
-              deltaFlushHandle = window.requestAnimationFrame(runDeltaFlush);
-            }
+            scheduleDeltaFlush();
           },
           resolveAttachmentContent: async attachment => {
             const handle = dirHandleRef.current;
@@ -847,12 +883,14 @@ function App() {
       if (completedRequest?.assistantMessageId !== assistantMessageId) {
         cancelScheduledDeltaFlush();
         pendingDelta = '';
+        pendingThinkingDelta = '';
         return;
       }
 
       // response.completed carries the authoritative full text; drop any unflushed tail.
       cancelScheduledDeltaFlush();
       pendingDelta = '';
+      pendingThinkingDelta = '';
 
       const newBotMessage: Message = {
         id: assistantMessageId,
@@ -882,11 +920,12 @@ function App() {
       if (failedRequest?.assistantMessageId !== assistantMessageId) {
         cancelScheduledDeltaFlush();
         pendingDelta = '';
+        pendingThinkingDelta = '';
         return;
       }
 
       // Flush tokens received before the stop or failure so partial output survives.
-      flushPendingDelta();
+      flushPendingDeltas();
 
       if (isAbortError(error)) {
         markAssistantStopped(targetSessionId, assistantMessageId);
@@ -1136,7 +1175,8 @@ function App() {
     markAssistantStopped(
       targetSessionId,
       activeRequest.assistantMessageId,
-      activeRequest.checkpointPartialContent?.() || activeRequest.getPartialContent?.()
+      activeRequest.checkpointPartialContent?.() || activeRequest.getPartialContent?.(),
+      activeRequest.checkpointPartialThinking?.() || activeRequest.getPartialThinking?.()
     );
   };
 
@@ -1179,6 +1219,9 @@ function App() {
                       activeRequest.getPartialContent?.() ||
                       message.content ||
                       'Stopped.',
+                    thinking: activeRequest.checkpointPartialThinking?.() ||
+                      activeRequest.getPartialThinking?.() ||
+                      message.thinking,
                     status: 'stopped' as const,
                     timestamp: now
                   }
