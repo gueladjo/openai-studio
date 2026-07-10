@@ -37,6 +37,7 @@ export interface ModelConfig {
   id: ModelId;
   name: string;
   pickerName?: string;
+  knowledgeCutoff: string;
   supportsVerbosity: boolean;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;

@@ -7,7 +7,12 @@ import type {
   ResponseOutputMessage,
   ResponseOutputText
 } from 'openai/resources/responses/responses';
-import { getModelConfig, getNormalizedReasoningEffort, normalizeChatConfig } from '../constants';
+import {
+  getModelConfig,
+  getModelInstructions,
+  getNormalizedReasoningEffort,
+  normalizeChatConfig
+} from '../constants';
 import {
   ChatConfig,
   GeneratedFile,
@@ -911,9 +916,7 @@ export const generateResponse = async (
     text: textConfig
   };
 
-  if (systemInstruction) {
-    payload.instructions = systemInstruction;
-  }
+  payload.instructions = getModelInstructions(normalizedConfig.model, systemInstruction);
 
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;

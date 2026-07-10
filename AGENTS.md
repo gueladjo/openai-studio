@@ -87,7 +87,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 - Generated-file downloads require the in-app API key state plus both container and file IDs. An environment-only key can authorize requests but leaves the download controls unavailable.
 - New-chat titles are a separate non-streaming GPT-5 Nano request.
 - `thinkingDuration` is time to the first streamed text token, not total reasoning time or chain-of-thought duration.
-- Model capability rules live in `constants.ts`. Normalize saved configs when model options change so older workspaces remain loadable.
+- Model capability rules plus the identity and knowledge-cutoff metadata used to build the automatic instruction preamble live in `constants.ts`. Verify cutoff changes against the official model reference, keep the preamble ahead of user-selected custom instructions, and normalize saved configs when model options change so older workspaces remain loadable.
 
 ## Storage And Data Integrity
 

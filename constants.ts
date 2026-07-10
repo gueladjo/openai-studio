@@ -21,6 +21,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_6_SOL]: {
     id: ModelId.GPT_5_6_SOL,
     name: 'GPT-5.6 Sol',
+    knowledgeCutoff: 'February 16, 2026',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
@@ -28,6 +29,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_6_TERRA]: {
     id: ModelId.GPT_5_6_TERRA,
     name: 'GPT-5.6 Terra',
+    knowledgeCutoff: 'February 16, 2026',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
@@ -35,6 +37,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_5]: {
     id: ModelId.GPT_5_5,
     name: 'GPT-5.5',
+    knowledgeCutoff: 'December 1, 2025',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
@@ -42,6 +45,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_MINI]: {
     id: ModelId.GPT_5_MINI,
     name: 'GPT-5 Mini',
+    knowledgeCutoff: 'May 31, 2024',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_MINI_NANO,
     defaultReasoningEffort: 'medium'
@@ -49,6 +53,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_NANO]: {
     id: ModelId.GPT_5_NANO,
     name: 'GPT-5 Nano',
+    knowledgeCutoff: 'May 31, 2024',
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_MINI_NANO,
     defaultReasoningEffort: 'medium'
@@ -56,6 +61,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_O3]: {
     id: ModelId.GPT_O3,
     name: 'o3',
+    knowledgeCutoff: 'June 1, 2024',
     supportsVerbosity: false,
     reasoningOptions: REASONING_EFFORT_O3,
     defaultReasoningEffort: 'medium'
@@ -75,6 +81,18 @@ export const TEXT_VERBOSITY: TextVerbosity[] = ['low', 'medium', 'high'];
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
   return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_6_SOL];
+};
+
+export const getModelInstructions = (
+  model: ModelId | string,
+  customInstructions?: string
+): string => {
+  const modelConfig = getModelConfig(model);
+  const identityInstructions = `You are ${modelConfig.name}, an OpenAI model. Your knowledge cutoff is ${modelConfig.knowledgeCutoff}.`;
+
+  return customInstructions
+    ? `${identityInstructions}\n\n${customInstructions}`
+    : identityInstructions;
 };
 
 export const getNormalizedReasoningEffort = (

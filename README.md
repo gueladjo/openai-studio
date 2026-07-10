@@ -10,7 +10,7 @@ This project has no application server. The OpenAI SDK runs in the browser or El
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
 - Configured model picker for GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.5, GPT-5 Mini, GPT-5 Nano, and o3. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
-- Reusable system-instruction library, applied through the Responses API `instructions` field.
+- Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
 - Optional Web Search and Code Interpreter tools.
 - Multiple image and file attachments, including files pasted from the clipboard.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
