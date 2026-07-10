@@ -1,7 +1,7 @@
 
 import React, { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { GeneratedFile, Message, Session, Source } from '../types';
-import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
+import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
@@ -140,24 +140,40 @@ const copyTextToClipboard = async (text: string): Promise<void> => {
   throw lastError ?? new Error('Unable to copy response.');
 };
 
-const ThinkingBlock = ({ text }: { text: string }) => {
-  const [isOpen, setIsOpen] = useState(true);
+const formatThinkingLabel = (ms?: number): string => {
+  if (typeof ms !== 'number' || ms <= 0) return 'Thought process';
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  if (totalSeconds < 60) {
+    return `Thought for ${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `Thought for ${minutes}m ${seconds}s`;
+};
+
+const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number }) => {
+  const [isOpen, setIsOpen] = useState(false);
 
   if (!text) return null;
 
   return (
-    <div className="mb-4 bg-gray-50 dark:bg-[#161b22]/50 border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden">
-        <button 
+    <div className="mb-2">
+        <button
             onClick={() => setIsOpen(!isOpen)}
-            className="w-full flex items-center gap-2 p-3 text-xs font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-[#161b22] transition-colors"
+            aria-expanded={isOpen}
+            className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
         >
+            <span>{formatThinkingLabel(durationMs)}</span>
             {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            <BrainCircuit size={14} />
-            <span>Reasoning Summary</span>
         </button>
         {isOpen && (
-            <div className="p-3 pt-0 text-gray-600 dark:text-gray-400 text-sm font-mono leading-relaxed border-t border-transparent whitespace-pre-wrap">
-                {text}
+            <div className="mt-2 pl-3 border-l-2 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 text-sm leading-relaxed markdown-content">
+                <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={markdownComponents}
+                >
+                    {text}
+                </ReactMarkdown>
             </div>
         )}
     </div>
@@ -686,7 +702,7 @@ const MessageRow = React.memo(({
 
             {/* Thinking/Reasoning Section */}
             {message.role === 'assistant' && message.thinking && (
-                <ThinkingBlock text={message.thinking} />
+                <ThinkingBlock text={message.thinking} durationMs={message.thinkingDuration} />
             )}
 
             {/* Main Content */}
