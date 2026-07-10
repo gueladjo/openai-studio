@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { GeneratedFile, Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, BrainCircuit, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -581,6 +581,197 @@ const ConversationHeader = ({
   );
 };
 
+const markdownComponents = {
+    code: ({node, inline, className, children, ...props}: any) => {
+        const codeBlockLabel = getCodeBlockLabel(className);
+
+        return !inline ? (
+            <div className="my-2 bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
+                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{codeBlockLabel}</div>
+                <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300">
+                    <code className={className} {...props}>{children}</code>
+                </pre>
+            </div>
+        ) : (
+            <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-xs font-mono text-blue-600 dark:text-blue-300" {...props}>
+                {children}
+            </code>
+        )
+    },
+    table: ({node, children, ...props}: any) => (
+        <div className="markdown-table-wrapper">
+            <table {...props}>{children}</table>
+        </div>
+    ),
+    a: ({node, href, children, ...props}: any) => {
+        const isFootnote = /^\[\d+\]$/.test(String(children));
+        return (
+            <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={href}
+                className={`${isFootnote ? "text-blue-500 hover:text-blue-600 font-bold no-underline ml-0.5" : "text-blue-600 dark:text-blue-400 hover:underline"}`}
+                {...props}
+            >
+                {children}
+            </a>
+        );
+    }
+};
+
+interface MessageRowProps {
+  message: Message;
+  canRetry: boolean;
+  canRegenerate: boolean;
+  apiKey: string;
+  onRetryFailedMessage: (assistantMessageId: string) => void;
+  onRegenerateResponse: () => void;
+}
+
+// Memoized so a streaming delta only re-renders (and re-parses markdown for) the
+// message it touches; App's session updaters keep untouched message identities stable.
+const MessageRow = React.memo(({
+  message,
+  canRetry,
+  canRegenerate,
+  apiKey,
+  onRetryFailedMessage,
+  onRegenerateResponse
+}: MessageRowProps) => {
+  const isAssistantStreaming = message.status === 'streaming';
+
+  return (
+    <div
+      className={`flex gap-4 max-w-4xl mx-auto ${
+        message.role === 'user' ? 'justify-end' : 'justify-start'
+      }`}
+    >
+      {message.role === 'assistant' && (
+        <div className="w-8 h-8 rounded-full bg-blue-600 flex-shrink-0 flex items-center justify-center mt-1 text-white shadow-sm">
+          <Bot size={16} />
+        </div>
+      )}
+
+      <div className={`flex flex-col max-w-[85%] ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
+
+          {/* Attachments Section */}
+          {message.attachments && message.attachments.length > 0 && (
+              <div className={`flex flex-col gap-2 mb-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  {/* Images Grid */}
+                  <div className={`flex flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      {message.attachments.filter(a => a.type.startsWith('image/') && a.content).map((file, i) => (
+                          <img
+                            key={`img-${i}`}
+                            src={file.content}
+                            alt={file.name}
+                            className="max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
+                          />
+                      ))}
+                  </div>
+
+                  {/* File Chips */}
+                  <div className={`flex flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      {message.attachments.filter(a => !a.type.startsWith('image/')).map((file, i) => (
+                          <div key={`file-${i}`} className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                              <FileText size={12} />
+                              <span>{file.name}</span>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+          )}
+
+          <div className={`w-full ${message.role === 'user' ? '' : 'space-y-2'}`}>
+
+            {/* Thinking/Reasoning Section */}
+            {message.role === 'assistant' && message.thinking && (
+                <ThinkingBlock text={message.thinking} />
+            )}
+
+            {/* Main Content */}
+            <div
+                className={`rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm min-w-0 ${
+                message.role === 'user'
+                    ? 'bg-[#2d3748] text-white rounded-br-none whitespace-pre-wrap'
+                    : 'bg-white dark:bg-transparent text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-800 rounded-bl-none shadow-sm dark:shadow-none'
+                }`}
+            >
+                {message.role === 'assistant' ? (
+                <div className="markdown-content">
+                    {isAssistantStreaming && !message.content ? (
+                        <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                            <Loader2 size={14} className="animate-spin" />
+                            <span>Thinking...</span>
+                        </div>
+                    ) : (
+                    <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={markdownComponents}
+                    >
+                        {message.content}
+                    </ReactMarkdown>
+                    )}
+                </div>
+                ) : (
+                message.content
+                )}
+            </div>
+
+            {/* Sources Chips */}
+            {message.role === 'assistant' && message.sources && message.sources.length > 0 && (
+                <SourcesBlock sources={message.sources} />
+            )}
+
+            {/* Generated File Chips */}
+            {message.role === 'assistant' && message.generatedFiles && message.generatedFiles.length > 0 && (
+                <GeneratedFilesBlock files={message.generatedFiles} apiKey={apiKey} />
+            )}
+
+            {/* Message Metadata Footer */}
+            {message.role === 'assistant' && (
+                <div className="flex justify-end mt-1.5 items-center gap-1.5 select-none">
+                    {canRetry && (
+                        <button
+                            type="button"
+                            onClick={() => onRetryFailedMessage(message.id!)}
+                            className="inline-flex h-10 items-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] px-3 text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
+                        >
+                            <RotateCcw size={15} />
+                            <span>Retry</span>
+                        </button>
+                    )}
+                    {canRegenerate && (
+                        <button
+                            type="button"
+                            onClick={onRegenerateResponse}
+                            aria-label="Regenerate"
+                            className="group relative inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
+                        >
+                            <RefreshCw size={15} />
+                            <span
+                                aria-hidden="true"
+                                className="pointer-events-none absolute bottom-full right-0 mb-2 whitespace-nowrap rounded-md bg-white px-2 py-1 text-[11px] font-medium text-black opacity-0 shadow-lg transition-opacity group-hover:opacity-100"
+                            >
+                                Regenerate
+                            </span>
+                        </button>
+                    )}
+                    <ResponseDetailsMenu message={message} />
+                </div>
+            )}
+          </div>
+      </div>
+
+      {message.role === 'user' && (
+        <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex-shrink-0 flex items-center justify-center mt-1">
+          <User size={16} className="text-gray-600 dark:text-gray-300" />
+        </div>
+      )}
+    </div>
+  );
+});
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
   session,
   onSendMessage,
@@ -603,6 +794,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const previousSessionIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
   const latestMessage = session?.messages[session.messages.length - 1];
+
+  // App recreates these handlers on every render; hand memoized rows
+  // stable wrappers instead so streaming updates don't defeat React.memo.
+  const onRetryFailedMessageRef = useRef(onRetryFailedMessage);
+  const onRegenerateResponseRef = useRef(onRegenerateResponse);
+
+  useLayoutEffect(() => {
+    onRetryFailedMessageRef.current = onRetryFailedMessage;
+    onRegenerateResponseRef.current = onRegenerateResponse;
+  });
+
+  const handleRetryFailedMessage = useCallback((assistantMessageId: string) => {
+    onRetryFailedMessageRef.current(assistantMessageId);
+  }, []);
+
+  const handleRegenerateResponse = useCallback(() => {
+    onRegenerateResponseRef.current();
+  }, []);
 
   const isNearBottom = (element: HTMLDivElement): boolean => {
     return element.scrollHeight - element.scrollTop - element.clientHeight < AUTO_SCROLL_THRESHOLD_PX;
@@ -761,191 +970,32 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         ) : (
           session.messages.map((msg, idx) => {
             const isLatestMessage = idx === session.messages.length - 1;
-            const isAssistantError = isFailedAssistantMessage(msg);
-            const isAssistantStreaming = msg.status === 'streaming';
+            const hasPrecedingUserMessage = idx > 0 && session.messages[idx - 1]?.role === 'user';
             const canRetry = (
-                isAssistantError &&
+                isFailedAssistantMessage(msg) &&
                 !isLoading &&
                 Boolean(msg.id) &&
-                idx > 0 &&
-                session.messages[idx - 1]?.role === 'user'
+                hasPrecedingUserMessage
             );
             const canRegenerate = (
                 msg.role === 'assistant' &&
                 isLatestMessage &&
-                !isAssistantError &&
-                !isAssistantStreaming &&
+                !isFailedAssistantMessage(msg) &&
+                msg.status !== 'streaming' &&
                 !isLoading &&
-                idx > 0 &&
-                session.messages[idx - 1]?.role === 'user'
+                hasPrecedingUserMessage
             );
 
             return (
-            <div
-              key={msg.id || idx}
-              className={`flex gap-4 max-w-4xl mx-auto ${
-                msg.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
-              {msg.role === 'assistant' && (
-                <div className="w-8 h-8 rounded-full bg-blue-600 flex-shrink-0 flex items-center justify-center mt-1 text-white shadow-sm">
-                  <Bot size={16} />
-                </div>
-              )}
-
-              <div className={`flex flex-col max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  
-                  {/* Attachments Section */}
-                  {msg.attachments && msg.attachments.length > 0 && (
-                      <div className={`flex flex-col gap-2 mb-2 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                          {/* Images Grid */}
-                          <div className={`flex flex-wrap gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                              {msg.attachments.filter(a => a.type.startsWith('image/') && a.content).map((file, i) => (
-                                  <img 
-                                    key={`img-${i}`} 
-                                    src={file.content} 
-                                    alt={file.name} 
-                                    className="max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800" 
-                                  />
-                              ))}
-                          </div>
-                          
-                          {/* File Chips */}
-                          <div className={`flex flex-wrap gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                              {msg.attachments.filter(a => !a.type.startsWith('image/')).map((file, i) => (
-                                  <div key={`file-${i}`} className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
-                                      <FileText size={12} />
-                                      <span>{file.name}</span>
-                                  </div>
-                              ))}
-                          </div>
-                      </div>
-                  )}
-
-                  <div className={`w-full ${msg.role === 'user' ? '' : 'space-y-2'}`}>
-                    
-                    {/* Thinking/Reasoning Section */}
-                    {msg.role === 'assistant' && msg.thinking && (
-                        <ThinkingBlock text={msg.thinking} />
-                    )}
-
-                    {/* Main Content */}
-                    <div
-                        className={`rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm min-w-0 ${
-                        msg.role === 'user'
-                            ? 'bg-[#2d3748] text-white rounded-br-none whitespace-pre-wrap'
-                            : 'bg-white dark:bg-transparent text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-800 rounded-bl-none shadow-sm dark:shadow-none'
-                        }`}
-                    >
-                        {msg.role === 'assistant' ? (
-                        <div className="markdown-content">
-                            {isAssistantStreaming && !msg.content ? (
-                                <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-                                    <Loader2 size={14} className="animate-spin" />
-                                    <span>Thinking...</span>
-                                </div>
-                            ) : (
-                            <ReactMarkdown 
-                                remarkPlugins={[remarkGfm]}
-                                components={{
-                                    code: ({node, inline, className, children, ...props}: any) => {
-                                        const codeBlockLabel = getCodeBlockLabel(className);
-
-                                        return !inline ? (
-                                            <div className="my-2 bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
-                                                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{codeBlockLabel}</div>
-                                                <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300">
-                                                    <code className={className} {...props}>{children}</code>
-                                                </pre>
-                                            </div>
-                                        ) : (
-                                            <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-xs font-mono text-blue-600 dark:text-blue-300" {...props}>
-                                                {children}
-                                            </code>
-                                        )
-                                    },
-                                    table: ({node, children, ...props}: any) => (
-                                        <div className="markdown-table-wrapper">
-                                            <table {...props}>{children}</table>
-                                        </div>
-                                    ),
-                                    a: ({node, href, children, ...props}: any) => {
-                                        const isFootnote = /^\[\d+\]$/.test(String(children));
-                                        return (
-                                            <a
-                                                href={href}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                title={href}
-                                                className={`${isFootnote ? "text-blue-500 hover:text-blue-600 font-bold no-underline ml-0.5" : "text-blue-600 dark:text-blue-400 hover:underline"}`}
-                                                {...props}
-                                            >
-                                                {children}
-                                            </a>
-                                        );
-                                    }
-                                }}
-                            >
-                                {msg.content}
-                            </ReactMarkdown>
-                            )}
-                        </div>
-                        ) : (
-                        msg.content
-                        )}
-                    </div>
-
-                    {/* Sources Chips */}
-                    {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                        <SourcesBlock sources={msg.sources} />
-                    )}
-
-                    {/* Generated File Chips */}
-                    {msg.role === 'assistant' && msg.generatedFiles && msg.generatedFiles.length > 0 && (
-                        <GeneratedFilesBlock files={msg.generatedFiles} apiKey={apiKey} />
-                    )}
-
-                    {/* Message Metadata Footer */}
-                    {msg.role === 'assistant' && (
-                        <div className="flex justify-end mt-1.5 items-center gap-1.5 select-none">
-                            {canRetry && (
-                                <button
-                                    type="button"
-                                    onClick={() => onRetryFailedMessage(msg.id!)}
-                                    className="inline-flex h-10 items-center gap-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] px-3 text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
-                                >
-                                    <RotateCcw size={15} />
-                                    <span>Retry</span>
-                                </button>
-                            )}
-                            {canRegenerate && (
-                                <button
-                                    type="button"
-                                    onClick={onRegenerateResponse}
-                                    aria-label="Regenerate"
-                                    className="group relative inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-[#161b22] text-xs font-medium text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-[#1f2937] hover:text-gray-800 dark:hover:text-gray-100"
-                                >
-                                    <RefreshCw size={15} />
-                                    <span
-                                        aria-hidden="true"
-                                        className="pointer-events-none absolute bottom-full right-0 mb-2 whitespace-nowrap rounded-md bg-white px-2 py-1 text-[11px] font-medium text-black opacity-0 shadow-lg transition-opacity group-hover:opacity-100"
-                                    >
-                                        Regenerate
-                                    </span>
-                                </button>
-                            )}
-                            <ResponseDetailsMenu message={msg} />
-                        </div>
-                    )}
-                  </div>
-              </div>
-              
-              {msg.role === 'user' && (
-                <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex-shrink-0 flex items-center justify-center mt-1">
-                  <User size={16} className="text-gray-600 dark:text-gray-300" />
-                </div>
-              )}
-            </div>
+              <MessageRow
+                key={msg.id || idx}
+                message={msg}
+                canRetry={canRetry}
+                canRegenerate={canRegenerate}
+                apiKey={apiKey}
+                onRetryFailedMessage={handleRetryFailedMessage}
+                onRegenerateResponse={handleRegenerateResponse}
+              />
             );
           })
         )}

@@ -419,6 +419,40 @@ function App() {
       apiKey
     });
 
+    // Streamed deltas are buffered and flushed at most once per animation frame;
+    // a setSessions call per SSE chunk re-renders the whole transcript. Flushes
+    // write the absolute accumulated text so a flush racing the stop path cannot
+    // append onto the 'Stopped.' placeholder.
+    let streamedContent = '';
+    let pendingDelta = '';
+    let deltaFlushHandle: number | null = null;
+
+    const cancelScheduledDeltaFlush = () => {
+      if (deltaFlushHandle !== null) {
+        window.cancelAnimationFrame(deltaFlushHandle);
+        deltaFlushHandle = null;
+      }
+    };
+
+    const flushPendingDelta = () => {
+      cancelScheduledDeltaFlush();
+      if (!pendingDelta) return;
+
+      streamedContent += pendingDelta;
+      pendingDelta = '';
+      const content = streamedContent;
+
+      updateAssistantMessage(
+        targetSessionId,
+        assistantMessageId,
+        message => ({
+          ...message,
+          content,
+          status: 'streaming'
+        })
+      );
+    };
+
     try {
       const selectedInstruction = systemInstructionsRef.current.find(si => (
         si.id === session.config.systemInstructionId
@@ -452,18 +486,27 @@ function App() {
 
             if (activeRequest?.assistantMessageId !== assistantMessageId) return;
 
-            updateAssistantMessage(
-              targetSessionId,
-              assistantMessageId,
-              message => ({
-                ...message,
-                content: `${message.content}${delta}`,
-                status: 'streaming'
-              })
-            );
+            pendingDelta += delta;
+
+            if (deltaFlushHandle !== null) return;
+
+            deltaFlushHandle = window.requestAnimationFrame(() => {
+              deltaFlushHandle = null;
+
+              // Skip when the request was stopped meanwhile; the catch path
+              // flushes the remainder before marking the message stopped.
+              const flushRequest = activeRequestsRef.current.get(targetSessionId);
+              if (flushRequest?.assistantMessageId !== assistantMessageId) return;
+
+              flushPendingDelta();
+            });
           }
         }
       );
+
+      // response.completed carries the authoritative full text; drop any unflushed tail.
+      cancelScheduledDeltaFlush();
+      pendingDelta = '';
 
       const newBotMessage: Message = {
         id: assistantMessageId,
@@ -489,6 +532,9 @@ function App() {
         true
       );
     } catch (error) {
+      // Flush tokens received before the stop or failure so partial output survives.
+      flushPendingDelta();
+
       if (isAbortError(error)) {
         markAssistantStopped(targetSessionId, assistantMessageId);
       } else {
