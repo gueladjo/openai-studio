@@ -1,38 +1,147 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- Root entry points: `index.tsx` (bootstraps React) and `App.tsx` (top-level state/controller).
-- UI lives in `components/` (e.g., `ChatArea.tsx`, `Sidebar.tsx`, `ConfigPanel.tsx`, `TitleBar.tsx`).
-- Integrations and persistence live in `services/` (OpenAI Responses API streaming/cancellation + OPFS storage).
-- Desktop packaging is in `electron/` (main/preload process files).
-- Static assets and PWA metadata are in `public/`, `manifest.json`, and `metadata.json`.
-- Shared types/config live in `types.ts` and `constants.ts`; Responses API request/input/tool/stream event types should be SDK-backed aliases rather than local hand-rolled schemas.
-- Utility scripts live in `scripts/` (e.g., `scripts/generate-icons.js`).
+## Project Overview
 
-## Build, Test, and Development Commands
-- `npm run dev` — start the Vite dev server (web).
-- `npm run electron:dev` — run Vite + Electron together for desktop development.
-- `npm run build` — typecheck and build for Electron output.
-- `npm run build:web` — typecheck and build the web/PWA bundle.
-- `npm run preview` — serve the production build locally for verification.
-- `npm run dist` — package the Electron installer into `release/`.
-- `npm run deploy` — build web output and publish `dist/` to GitHub Pages.
+OpenAI Studio is a React 18 and TypeScript client for the OpenAI Responses API. Vite produces either a web/PWA bundle or an Electron renderer bundle. The OpenAI SDK runs directly in the renderer; there is no application server.
 
-## Coding Style & Naming Conventions
-- TypeScript + React functional components with hooks.
-- Indentation is 2 spaces; semicolons are used; imports/strings use single quotes (follow existing style).
-- Tailwind utility classes are used inline; `index.css` is reserved for global styles.
-- File naming: PascalCase for components (`ChatArea.tsx`), camelCase for utilities.
+`index.tsx` mounts the application. `App.tsx` is the top-level controller and owns workspace loading, sessions, configuration, persistence, and active request state. State flows to functional components through props; the project has no router, React context, Redux-style store, or external state library.
 
-## Testing Guidelines
-- No automated test framework is configured yet.
-- Before PRs, run `npm run build` and smoke test via `npm run dev` (web) and/or `npm run electron:dev` (desktop).
-- If adding tests, prefer `*.test.tsx` or `*.spec.tsx` and document the runner in this guide.
+The primary flow is:
 
-## Commit & Pull Request Guidelines
-- Commit messages are short, imperative, and descriptive (e.g., `fix PWA URL.`, `Implement PWA option for Mobile.`).
-- PRs should include a concise summary, testing notes, and screenshots/GIFs for UI changes. Link related issues when relevant.
+```text
+ChatArea user input -> App request/session state -> openaiService streaming API
+                              |
+                              +-> storage persistence
+```
 
-## Security & Configuration Tips
-- API keys are entered in-app and stored locally; never commit secrets or real user data.
-- For PWA deploys, update the base path in `vite.config.ts` to match the hosting target.
+One request may run per session, while different sessions may stream concurrently.
+
+## Repository Map
+
+- `index.tsx`: React bootstrap.
+- `App.tsx`: central state, storage initialization, debounced saves, response lifecycle, stop/retry/regenerate, and import/export.
+- `components/ChatArea.tsx`: composer, attachments, message rendering, response details, citations, generated files, and conversation Markdown export.
+- `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
+- `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
+- `components/TitleBar.tsx`: Electron-only window controls.
+- `components/WorkspaceSelector.tsx`: currently unused legacy folder-selection UI; do not assume it is part of the active workflow.
+- `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
+- `services/storage.ts`: OPFS/IndexedDB abstraction, rolling backups, and workspace backup/restore.
+- `utils/conversationExport.ts`: Markdown transcript export and filename handling.
+- `utils/sourceUrls.ts`: citation URL validation and display metadata.
+- `types.ts`: application types plus aliases to Responses API SDK types.
+- `constants.ts`: model catalog, defaults, and config normalization.
+- `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window policy, IPC, and the narrow renderer bridge.
+- `vite.config.ts`: mode-specific base paths, environment injection, app version, and authoritative generated PWA configuration.
+- `index.html` and `index.css`: document shell, CDN Tailwind configuration/fonts, and global/custom CSS.
+- `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
+- `manifest.json`: an active second manifest explicitly linked by `index.html`; the web build also injects the Vite-generated `manifest.webmanifest`, so built HTML contains both until they are consolidated.
+- `metadata.json`: supplemental project metadata not imported by the TypeScript application.
+
+Generated `node_modules/`, `dist/`, and `release/` content is ignored and should not be edited.
+
+## Install And Commands
+
+Use Node.js 20.3+ and install the lockfile exactly:
+
+```bash
+npm ci
+```
+
+- `npm run dev`: web dev server at `http://localhost:5173/openai-studio/`.
+- `npm run electron:dev`: Vite in Electron mode plus Electron. The Electron main process is fixed to port 5173.
+- `npm run build`: TypeScript check plus Electron-mode Vite output in `dist/`.
+- `npm run build:electron`: explicit equivalent of `npm run build`.
+- `npm run build:web`: TypeScript check plus PWA-enabled web output in `dist/`.
+- `npm run preview`: serves the existing `dist/`; run `npm run build:web` first and open `http://localhost:4173/openai-studio/`.
+- `npm run dist`: Electron build plus host-platform packaging into `release/`.
+- `npm run deploy`: web build plus `gh-pages -d dist`.
+- `node scripts/generate-icons.js`: regenerate application icons; there is no npm alias.
+
+There is no lint, format, or automated test command. Do not invent one in documentation or verification notes.
+
+## Coding Conventions
+
+- Use TypeScript and React functional components with hooks.
+- Follow the existing 2-space indentation, semicolons, and single-quoted imports/strings.
+- Use PascalCase for component files and components; use camelCase for functions and utilities.
+- Keep state in `App.tsx` unless a component-local concern is genuinely isolated. Follow the current prop-driven data flow before adding a new state abstraction.
+- Prefer the existing component, service, and utility boundaries. Avoid unrelated refactors.
+- Tailwind utilities are written inline, but Tailwind is loaded/configured from `index.html`, not through a local Tailwind build pipeline. Reserve `index.css` for global and complex reusable rules.
+- Use `lucide-react` for UI icons and preserve accessible names/tooltips on icon-only controls.
+- Keep fixed controls and responsive layouts stable at desktop and mobile widths. The mobile breakpoint in `App.tsx` is 768px.
+- Add brief comments only for logic whose intent is not apparent from the code.
+- Keep Responses API request, input, tool, usage, and stream-event types as aliases to the installed OpenAI SDK exports in `types.ts`. Do not introduce parallel hand-written API schemas.
+
+## Responses API Invariants
+
+- `services/openaiService.ts` creates the SDK client in the renderer with `dangerouslyAllowBrowser: true`. The UI-supplied key takes precedence over `process.env.OPENAI_API_KEY`.
+- Preserve the streamed lifecycle: create an assistant placeholder, record the ID from `response.created`, append `response.output_text.delta`, and parse `response.completed` for the authoritative final content and metadata.
+- Automatic SDK retries are disabled for streamed generation and cancellation to avoid duplicate calls. Title generation and generated-file retrieval still use SDK defaults; coordinate any retry-policy changes with persisted request IDs and UI state.
+- Stop generation attempts `responses.cancel(responseId)` when available, aborts the local stream, and retains partial content with `stopped` status.
+- Persisted `pendingRequest` records are marked failed and retryable on the next startup. Preserve this recovery behavior when changing message state.
+- Use `previous_response_id` only when the immediately preceding assistant message has an OpenAI response ID. In that case only the newest user turn is sent; otherwise send the local transcript.
+- Requests intentionally use `store: true`, which supports response threading. A change to storage policy must also redesign continuation behavior and update user documentation.
+- System prompts belong in top-level `instructions`. Images map to `input_image`; other readable attachments map to base64/data-URL `input_file` parts.
+- Web Search currently sends a medium search context and a hard-coded approximate New York, US location. Code Interpreter uses an automatic container.
+- Generated-file downloads require the in-app API key state plus both container and file IDs. An environment-only key can authorize requests but leaves the download controls unavailable.
+- New-chat titles are a separate non-streaming GPT-5 Nano request.
+- `thinkingDuration` is time to the first streamed text token, not total reasoning time or chain-of-thought duration.
+- Model capability rules live in `constants.ts`. Normalize saved configs when model options change so older workspaces remain loadable.
+
+## Storage And Data Integrity
+
+- Storage must load successfully before any writes are enabled. Do not allow initialization defaults to overwrite an unread workspace.
+- Prefer OPFS. Browsers may fall back to IndexedDB, but Electron intentionally fails instead of silently opening an empty fallback store when OPFS is unavailable.
+- The logical files are `sessions.json`, `settings.json`, and `system_instructions.json`. Each changed write preserves one `<filename>.bak` recovery copy.
+- Keep malformed-primary recovery through the backup file. Schema and migration changes must tolerate older persisted data.
+- Session writes are debounced by 1 second; settings and instructions by 500 ms. Account for those delays in close/reload behavior and manual tests.
+- Attachments are persisted as data URLs. Workspaces and exported backups can therefore be large and sensitive.
+- Full workspace export includes `settings.apiKey`. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
+- Chat deletion is immediate with no confirmation or undo. Preserve that risk in user-facing documentation unless the workflow changes.
+- Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
+
+## Web, PWA, And Electron Constraints
+
+- Electron mode uses relative asset paths and disables the PWA plugin. Every non-Electron Vite mode currently uses the hard-coded `/openai-studio/` base.
+- Generated PWA `scope` and `start_url` derive from `base`. For another hosting path, update `base` and align or remove the separate root manifest linked by `index.html`.
+- `vite.config.ts` is authoritative for the generated PWA manifest and service worker. The root `manifest.json` and explicit link in `index.html` can drift from it; verify both when touching metadata.
+- The PWA caches the built shell and selected assets, but model requests require connectivity. Tailwind is fetched from its CDN at runtime and is not explicitly covered by the current Workbox runtime cache.
+- `__APP_VERSION__` is read from `package.json` at build time.
+- Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes only window controls, maximize state, and clipboard writes.
+- Keep external navigation in the system browser and keep renderer IPC narrow. Electron's Chromium sandbox is currently disabled, which makes bridge and navigation discipline especially important.
+
+## Security And Configuration
+
+- Never commit API keys, real user data, or workspace exports. Local `.env*` files are ignored; `.env.example` is explicitly allowed but is not currently present.
+- Development and Electron modes may inline `OPENAI_API_KEY` from Vite environment files into renderer JavaScript. Never package or distribute a developer key. Production web mode excludes the environment key.
+- The Settings key is stored locally without application-level encryption and is included in full workspace exports. Do not log it or expose it in diagnostics.
+- This direct-client architecture is intended for user-owned keys. Do not add a shared deployment key without moving API calls behind an authenticated server.
+- Prompts and attachments are sent to OpenAI, and requests use server-side response storage. Keep privacy claims and backup warnings accurate when behavior changes.
+
+## Verification
+
+For shared React, TypeScript, service, storage, or configuration changes, run both build modes:
+
+```bash
+npm run build
+npm run build:web
+```
+
+Then smoke-test the affected workflow. Use this risk-based matrix:
+
+- UI changes: web at desktop and below 768px; check overflow, drawers/modals, keyboard send behavior, and light/dark themes.
+- Streaming changes: text deltas, completion metadata, switching sessions mid-stream, stop, retry, regenerate, and interrupted-request recovery.
+- Attachment/tool changes: images, non-image files, citations, Code Interpreter output, and generated-file downloads.
+- Storage changes: first load, debounced persistence, reload, malformed-primary backup recovery, JSON export, and confirmed import replacement.
+- PWA changes: `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
+- Electron/preload changes: `npm run electron:dev`; exercise window controls, clipboard behavior, external links, and storage failure handling.
+- Packaging changes: `npm run dist` on the target host when the required packaging/signing tooling is available.
+
+Live API smoke tests consume account quota and can create stored responses. Use a personal test key and report when API-dependent paths were not exercised.
+
+## Commits And Pull Requests
+
+- Use short, imperative, descriptive commit subjects consistent with project history.
+- Keep commits scoped and avoid generated output or unrelated formatting churn.
+- Pull requests should include a concise summary, verification notes, and screenshots or recordings for visible UI changes. Link related issues when applicable.

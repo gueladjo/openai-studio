@@ -1,257 +1,180 @@
-
 # OpenAI Studio
 
-OpenAI Studio is a sophisticated web-based chat interface designed to mimic the capabilities of professional AI development environments like Google AI Studio, but tailored for OpenAI's models (specifically targeting the next-gen GPT-5 series and reasoning models like o3).
+OpenAI Studio is a React and TypeScript client for the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses). It runs as a Vite web/PWA application or an Electron desktop application, streams responses directly from OpenAI, and keeps workspace state in client-managed storage.
 
-It provides a rich, persistent workspace for developers and power users to interact with LLMs, offering granular control over model parameters, system instructions, and tool usage.
-
-It uses the OpenAI Responses API: https://platform.openai.com/docs/api-reference/responses
+This project has no application server. The OpenAI SDK runs in the browser or Electron renderer with the API key supplied by the user.
 
 ## Features
 
-*   **Professional Interface:** A clean, dark-mode ready UI built with Tailwind CSS.
-*   **Automatic Persistence:** The app automatically creates a secure `data/` folder in your browser's private storage (OPFS).
-    *   **No Setup:** Just open the app and start chatting. Your history is saved instantly.
-    *   **Privacy:** Data is stored locally in your browser's sandboxed file system.
-*   **Advanced Configuration:**
-    *   **Model Selection:** Switch between GPT-5.6 Sol (Flagship), GPT-5.6 Terra (Balanced), GPT-5.5, GPT-5 Mini, GPT-5 Nano, and o3.
-    *   **Reasoning Effort:** Adjust the depth of the model's thinking process (Low/Medium/High for o3; None to Max for GPT-5.6 models; None to XHigh for GPT-5.5).
-    *   **Text Verbosity:** Control the length and detail of generated responses (GPT-5 series only).
-*   **System Instructions:** Create and manage a library of instructions sent through the Responses API `instructions` field.
-*   **File Attachments:** Attach images and non-image files as Responses API inputs for multimodal analysis.
-*   **Streaming Responses:** Assistant messages stream into the chat as Responses API text deltas arrive, with support for stopping an in-flight generation.
-*   **Tool Integration:** Toggle Web Search and Code Interpreter capabilities, including file analysis with Code Interpreter.
-*   **Artifacts & Citations:** Rich rendering of Markdown, code blocks, source citations, and generated Code Interpreter files.
+- Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
+- Independent in-flight requests across sessions, so a response can continue while another chat is open.
+- Configured model picker for GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.5, GPT-5 Mini, GPT-5 Nano, and o3. Model availability depends on the API account.
+- Model-specific reasoning effort and text verbosity controls.
+- Reusable system-instruction library, applied through the Responses API `instructions` field.
+- Optional Web Search and Code Interpreter tools.
+- Multiple image and file attachments, including files pasted from the clipboard.
+- GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
+- Per-response model, reasoning effort, time-to-first-token, and token-usage details.
+- Local chat-title search with light and dark themes.
+- Full workspace JSON backup/restore and per-conversation Markdown export.
+- Responsive mobile layout, installable PWA output, and Electron desktop packaging.
 
-## Setup & Usage
+## Security And Data
 
-### Prerequisites
+OpenAI Studio is a direct client, not a local-only inference application:
 
-*   An OpenAI API Key.
-*   A modern web browser (Chrome, Edge, Opera, Safari 15.2+) that supports **Origin Private File System**.
+- Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
+- Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
+- The API key entered in Settings is stored locally in `settings.json` and is not encrypted by this project.
+- A full workspace export includes any API key saved in Settings, conversations, system instructions, and attachment data. Treat exported JSON files as secrets.
+- Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
 
-### Running Locally (Web)
+Do not put a shared or production API key into a publicly deployed build. Each user should enter their own key in Settings.
 
-Install dependencies once after cloning or after dependency changes:
+## Prerequisites
+
+- Node.js 20.3 or newer and npm. The locked toolchain also supports Node 18.17+, but a current supported LTS is recommended.
+- An OpenAI API key with access to the selected models and tools.
+- A modern browser for the web app. The app prefers OPFS and falls back to IndexedDB outside Electron.
+
+## Quick Start
+
+Install the locked dependencies:
 
 ```bash
-npm install
+npm ci
 ```
 
-Use the Vite dev server for normal local development:
+Start the web development server:
 
 ```bash
 npm run dev
 ```
 
-This starts the app at `http://localhost:5173`. You do **not** need to run `npm run build` before `npm run dev`; the dev server compiles files on demand and supports hot reload.
+Open `http://localhost:5173/openai-studio/`. Vite provides hot module replacement; a production build is not required for normal development.
 
-To test the production web/PWA bundle locally, build first:
+Create a chat, open Settings from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
+
+### Optional Local Environment Key
+
+For local development or Electron development, an ignored `.env.local` file can provide a convenience key:
+
+```dotenv
+OPENAI_API_KEY=sk-...
+```
+
+Development and Electron modes compile this value into renderer JavaScript. Do not use this mechanism for a build that will be packaged, published, or shared. Production web mode intentionally excludes `OPENAI_API_KEY`; users must enter it in the UI. An environment-only key can authorize model calls, but generated-file download controls require the key to be entered in Settings.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm ci` | Install the exact dependency versions from `package-lock.json`. |
+| `npm run dev` | Start the web dev server at `/openai-studio/`. |
+| `npm run electron:dev` | Start Vite in Electron mode and launch Electron against it on port 5173. |
+| `npm run build` | Typecheck and create an Electron-mode bundle in `dist/`. |
+| `npm run build:electron` | Explicit alias for the Electron-mode build. |
+| `npm run build:web` | Typecheck and create the web/PWA bundle in `dist/`. |
+| `npm run preview` | Serve the existing `dist/` directory; run `build:web` first for PWA verification. |
+| `npm run dist` | Build and package the configured Electron target into `release/`. |
+| `npm run deploy` | Build the web app and publish `dist/` with `gh-pages`. |
+| `node scripts/generate-icons.js` | Regenerate the PNG application icons. |
+
+There is currently no automated test, lint, or format script.
+
+## Web And PWA
+
+Create and preview a production PWA build:
 
 ```bash
 npm run build:web
 npm run preview
 ```
 
-`npm run build:web` runs TypeScript checks and writes the web/PWA production build to `dist/`. `npm run preview` only serves the existing `dist/` folder; it does not rebuild. If you change source files, run `npm run build:web` again before previewing.
+Open `http://localhost:4173/openai-studio/`. The preview command serves the current contents of `dist/`; it does not rebuild after source changes.
 
-Because the web build currently uses the GitHub Pages base path `/openai-studio/`, preview the app at:
+The web base path is configured in `vite.config.ts` as `/openai-studio/`, matching this repository's GitHub Pages path. The generated PWA `scope` and `start_url` derive from `base`. When deploying under another repository path or at a domain root, change `base` and also align or remove the separate root `manifest.json` linked by `index.html`.
 
-```text
-http://localhost:4173/openai-studio/
-```
+Deploy the PWA over HTTPS. Localhost is treated as a secure context for development and preview, but service workers are not available from an ordinary HTTP production origin.
 
-If you change `vite.config.ts` to use `base: '/'` for another host, the local preview URL becomes `http://localhost:4173/`.
-
-Use the production preview when you want to check optimized assets, routing/base-path behavior, the manifest, and service-worker/PWA output. Use `npm run dev` for day-to-day UI and API testing.
-
-### Running as a Desktop App (Electron)
-
-You can turn this web application into a standalone desktop application for Windows, macOS, or Linux.
-
-1.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
-
-2.  **Run in Development Mode:**
-    To run the desktop app alongside the Vite dev server:
-    ```bash
-    npm run electron:dev
-    ```
-
-3.  **Advance the release version:**
-    The desktop app version shown in Settings comes from `package.json`.
-    Before cutting a new desktop release, bump the package version:
-    ```bash
-    npm version patch
-    ```
-    Use `minor` or `major` instead of `patch` when appropriate. This updates `package.json` and `package-lock.json`.
-
-4.  **Build for Production:**
-    To generate the executable file (installer):
-    ```bash
-    npm run dist
-    ```
-    Once the build finishes, check the newly created **`release`** folder in your project directory to find the installer (e.g., `.exe`, `.dmg`, or `.AppImage`).
-
-### Running as a PWA (Progressive Web App)
-
-You can deploy OpenAI Studio as a PWA for access on mobile devices (iPhone, Android) or any browser. The PWA version includes:
-- Installable home screen app on iOS/Android
-- Offline caching for faster loads
-- Responsive mobile layout
-- IndexedDB storage fallback for iOS Safari (which doesn't support OPFS)
-
-#### 1. Advance the Web Release Version
-
-The web app version shown in Settings also comes from `package.json`. Before deploying a new web release, bump the package version:
-
-```bash
-npm version patch
-```
-
-Use `minor` or `major` instead of `patch` when appropriate. This updates `package.json` and `package-lock.json`.
-
-#### 2. Build for Web
-
-```bash
-npm run build:web
-```
-
-This creates a production build in the `dist/` folder with:
-- Service worker for offline caching
-- Web app manifest for installation
-- Optimized assets
-
-#### 3. Test Locally
-
-Preview the production build locally after `npm run build:web`:
-
-```bash
-npm run preview
-```
-
-`npm run preview` serves the current `dist/` folder and does not rebuild. With the default GitHub Pages base path, open `http://localhost:4173/openai-studio/`.
-
-Localhost is a secure context for service workers, so it is useful for basic PWA checks. For final install/offline testing on mobile devices, deploy to HTTPS hosting.
-
-To serve `dist/` with a different static server:
-
-```bash
-npx serve dist
-```
-
-#### 4. Deploy to GitHub Pages
-
-**Step 1: Update Vite config for GitHub Pages**
-
-Edit `vite.config.ts` and update the base path for your repository name:
-
-```typescript
-// In the web mode section, change base from '/' to your repo name:
-const base = isElectron ? './' : '/openai-studio/';  // Replace 'openai-studio' with your repo name
-```
-
-**Step 2: Install gh-pages**
-
-```bash
-npm install -D gh-pages
-```
-
-**Step 3: Add deploy script to package.json**
-
-Add this to your `scripts` section:
-
-```json
-"deploy": "npm run build:web && gh-pages -d dist"
-```
-
-**Step 4: Deploy**
+Deploy the current web build to the configured `gh-pages` destination with:
 
 ```bash
 npm run deploy
 ```
 
-**Step 5: Enable GitHub Pages**
+The service worker caches the application shell and selected assets. OpenAI requests still require a network connection, so installation does not make model features available offline. Tailwind is loaded from `cdn.tailwindcss.com` and is not covered by the current runtime cache, so uncached styling also requires connectivity.
 
-1. Go to your repository on GitHub
-2. Navigate to **Settings** > **Pages**
-3. Under "Build and deployment", set:
-   - Source: **Deploy from a branch**
-   - Branch: **gh-pages** / **(root)**
-4. Click Save
+## Electron
 
-**Step 6: Access your PWA**
+Run the desktop application in development:
 
-Your app will be available at:
-```
-https://<your-username>.github.io/<repo-name>/
-```
-
-#### 5. Install on iPhone
-
-1. Open your deployed URL in Safari on iPhone
-2. Tap the **Share** button (square with arrow)
-3. Scroll down and tap **"Add to Home Screen"**
-4. Tap **Add**
-
-The app will now appear on your home screen and open without browser chrome.
-
-#### Alternative Deployment Options
-
-**Vercel (Recommended - easiest)**
 ```bash
-npx vercel --prod
+npm run electron:dev
 ```
 
-**Netlify**
+Electron development expects Vite on port 5173. Stop any process already using that port before starting the command.
+
+Package the application for the current host platform:
+
 ```bash
-npx netlify deploy --prod --dir=dist
+npm run dist
 ```
 
-**Cloudflare Pages**
-1. Connect your GitHub repo at dash.cloudflare.com
-2. Set build command: `npm run build:web`
-3. Set output directory: `dist`
+Electron Builder writes host-platform output to `release/`. This repository explicitly configures NSIS on Windows and AppImage on Linux; macOS uses Electron Builder's default target because no macOS target is specified. Cross-platform packaging and code signing may require additional host tooling and credentials.
 
-## Data Structure & Location
+The version displayed in Settings is compiled from `package.json`. Advance it with `npm version patch`, `npm version minor`, or `npm version major` as appropriate before a release.
 
-The application uses the **Origin Private File System (OPFS)**. While the app internally reads and writes to `sessions.json`, these are stored in a sandboxed, virtual file system managed by the operating system's web engine.
+## Persistence And Backups
 
-**Important:** You generally cannot access these files directly via your File Explorer as plain JSON. To backup or transfer your data, use the **Export/Import** buttons in the application Settings.
+`services/storage.ts` selects the storage backend at startup:
 
-### Desktop App (Physical Location)
-The raw, obfuscated data container is stored in the standard AppData directories:
+| Runtime | Backend behavior |
+| --- | --- |
+| Browser with OPFS | Uses a sandboxed logical `data/` directory. |
+| Browser without OPFS | Uses the `openai-studio-storage` IndexedDB database. |
+| Electron | Requires OPFS; it does not switch to an empty IndexedDB workspace if OPFS fails. |
 
-*   **Windows:** `%APPDATA%\OpenAI Studio`
-    *   *Path:* `C:\Users\<YourUser>\AppData\Roaming\OpenAI Studio`
-*   **macOS:** `~/Library/Application Support/OpenAI Studio`
-*   **Linux:** `~/.config/OpenAI Studio` (or `$XDG_CONFIG_HOME/openai-studio`)
+The logical files are:
 
-### Logical Structure (Internal)
-Inside the app, the data is organized as follows:
+- `sessions.json`: conversations, attachments, response metadata, and per-chat configuration.
+- `settings.json`: theme, API key, and last active session.
+- `system_instructions.json`: reusable instruction records.
 
-### Configuration
+Writes are debounced and each changed file keeps one previous `<filename>.bak` copy. If a primary file contains malformed JSON, the storage layer attempts to read its backup. These are browser-managed files rather than ordinary project files; use Settings -> Export for a portable backup.
 
-1.  Launch the application.
-2.  **API Key:** Click the user profile area in the bottom-left corner of the sidebar and enter your OpenAI API Key. The key is saved locally to `settings.json`.
+Import asks for confirmation and replaces the supplied workspace sections. The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Generated container files can expire, so download files that need to be retained.
 
-## Data Structure
+Chat deletion is immediate and has no in-app undo. Export the workspace before destructive cleanup.
 
-The application automatically manages these files in the browser's private file system:
+## Architecture
 
-*   `data/sessions.json`: Contains your complete chat history.
-*   `data/settings.json`: Stores your API Key, theme preference, and last active session.
-*   `data/system_instructions.json`: Stores your library of system prompts.
+```text
+index.tsx
+  -> App.tsx                 application state, persistence, request lifecycle
+      -> components/         chat, sidebar, configuration, Electron title bar
+      -> services/
+          storage.ts         OPFS/IndexedDB persistence and workspace backup
+          openaiService.ts   Responses API requests, streaming, tools, citations
+      -> utils/              conversation export and source URL handling
 
-## Project Structure
+electron/                    Electron main and preload processes
+types.ts                     application types and OpenAI SDK-backed aliases
+constants.ts                 model metadata and configuration normalization
+vite.config.ts               web/Electron asset modes and generated PWA config
+public/                      static icons
+scripts/                     maintenance utilities
+```
 
-*   **`App.tsx`**: The main application controller. Handles storage initialization, auto-saving, streaming message state, and stop-generation control.
-*   **`services/storage.ts`**: Manages the Origin Private File System (OPFS) connection.
-*   **`services/openaiService.ts`**: The Responses API layer. It uses OpenAI SDK request/response and streaming event types, streams text deltas, supports response cancellation, sends file inputs, threads state with `previous_response_id`, and parses web citations plus generated Code Interpreter files.
-*   **`components/`**: UI components (Sidebar, ChatArea, ConfigPanel).
+`App.tsx` owns the application state and passes it to functional React components. `services/openaiService.ts` threads compatible turns with `previous_response_id`, streams text deltas into placeholders, and parses the completed response for citations, usage, Code Interpreter output, and generated files.
 
-## License
+## Development Verification
 
-MIT
+Before submitting a change, run the mode-specific builds it affects. For shared TypeScript or React changes, run both:
+
+```bash
+npm run build
+npm run build:web
+```
+
+Smoke-test the web UI at desktop and mobile widths. Changes to Electron, persistence, PWA behavior, streaming, cancellation, attachments, or import/export should also be exercised in the corresponding runtime.
