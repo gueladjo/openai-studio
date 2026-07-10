@@ -434,7 +434,7 @@ const saveBlobAsFile = (blob: Blob, filename: string): void => {
 
 const isFailedAssistantMessage = (message: Message): boolean => (
     message.role === 'assistant' &&
-    (message.status === 'error' || message.content.startsWith('Error:'))
+    message.status === 'error'
 );
 
 const GeneratedFilesBlock = ({
