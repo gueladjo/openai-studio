@@ -25,6 +25,7 @@ One request may run per session, while different sessions may stream concurrentl
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
+- `services/openaiService.test.ts`: Vitest coverage for citation marker recognition, annotation application, and redundant source-label cleanup.
 - `services/storage.ts`: OPFS/IndexedDB abstraction, separate attachment records, rolling backups, and workspace backup/restore.
 - `utils/conversationExport.ts`: Markdown transcript export and filename handling.
 - `utils/sourceUrls.ts`: citation URL validation and display metadata.
@@ -32,6 +33,7 @@ One request may run per session, while different sessions may stream concurrentl
 - `constants.ts`: model catalog, defaults, and config normalization.
 - `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window policy, IPC, and the narrow renderer bridge.
 - `vite.config.ts`: mode-specific base paths, environment injection, app version, and authoritative generated PWA configuration.
+- `vitest.config.ts`: Node unit-test environment plus the test-only app-version definition.
 - `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
 - `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
 - `manifest.json`: an active second manifest explicitly linked by `index.html`; the web build also injects the Vite-generated `manifest.webmanifest`, so built HTML contains both until they are consolidated.
@@ -47,6 +49,7 @@ npm ci
 ```
 
 - `npm run dev`: web dev server at `http://localhost:5173/openai-studio/`.
+- `npm test`: run the Vitest unit suite once.
 - `npm run electron:dev`: Vite in Electron mode plus Electron. The Electron main process is fixed to port 5173.
 - `npm run build`: TypeScript check plus Electron-mode Vite output in `dist/`.
 - `npm run build:electron`: explicit equivalent of `npm run build`.
@@ -56,7 +59,7 @@ npm ci
 - `npm run deploy`: web build plus `gh-pages -d dist`.
 - `node scripts/generate-icons.js`: regenerate application icons; there is no npm alias.
 
-There is no lint, format, or automated test command. Do not invent one in documentation or verification notes.
+There is no lint or format command. Vitest is intentionally scoped to pure logic that does not require browser or live API setup.
 
 ## Coding Conventions
 
@@ -85,6 +88,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 - Generated-file downloads require the in-app API key state plus both container and file IDs. An environment-only key can authorize requests but leaves the download controls unavailable.
 - New-chat titles are a separate non-streaming GPT-5 Nano request.
 - `thinkingDuration` is time to the first streamed text token, not total reasoning time or chain-of-thought duration.
+- Citation post-processing helpers in `services/openaiService.ts` are pure and covered by `services/openaiService.test.ts`. Keep marker recognition, annotation replacement, source deduplication, and adjacent-label cleanup cases current when changing that pipeline.
 - Model capability rules plus the identity and knowledge-cutoff metadata used to build the automatic instruction preamble live in `constants.ts`. Verify cutoff changes against the official model reference, keep the preamble ahead of user-selected custom instructions, and normalize saved configs when model options change so older workspaces remain loadable.
 
 ## Storage And Data Integrity
@@ -119,9 +123,10 @@ There is no lint, format, or automated test command. Do not invent one in docume
 
 ## Verification
 
-For shared React, TypeScript, service, storage, or configuration changes, run both build modes:
+For shared React, TypeScript, service, storage, or configuration changes, run the unit suite and both build modes:
 
 ```bash
+npm test
 npm run build
 npm run build:web
 ```

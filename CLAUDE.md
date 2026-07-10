@@ -13,6 +13,7 @@ OpenAI Studio is a React 18 + TypeScript client for the OpenAI Responses API (GP
 ```bash
 npm ci                          # Install exact lockfile deps (Node 20.3+)
 npm run dev                     # Web dev server → http://localhost:5173/openai-studio/
+npm test                        # Run the Vitest unit suite once
 npm run electron:dev            # Vite (electron mode) + Electron; main process expects port 5173
 npm run build                   # tsc + Electron-mode bundle → dist/ (alias: build:electron)
 npm run build:web               # tsc + web/PWA bundle → dist/
@@ -22,7 +23,7 @@ npm run deploy                  # build:web + gh-pages -d dist
 node scripts/generate-icons.js  # Regenerate PNG icons (no npm alias)
 ```
 
-There is no lint, format, or test command — do not invent one in docs or verification notes.
+There is no lint or format command. Vitest currently covers pure citation post-processing logic without browser or live API setup.
 
 ## Architecture
 
@@ -42,12 +43,14 @@ User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → Ope
 - `components/ConfigPanel.tsx` — model, reasoning effort, verbosity, tools, system instructions
 - `components/TitleBar.tsx` — Electron-only window controls
 - `services/openaiService.ts` — SDK integration: streaming, cancellation, response threading, citations, generated-file retrieval, title generation
+- `services/openaiService.test.ts` — citation marker, annotation application, source deduplication, and source-label cleanup tests
 - `services/storage.ts` — OPFS/IndexedDB abstraction, `.bak` recovery, workspace backup/restore
 - `utils/conversationExport.ts` — Markdown transcript export (the chat "Share" button downloads a local file; it does not publish)
 - `utils/sourceUrls.ts` — citation URL validation and display metadata
 - `types.ts` — app types + Responses API SDK aliases; `constants.ts` — model catalog, defaults, config normalization
 - `electron/main.js` / `electron/preload.cjs` — Electron lifecycle and the narrow IPC bridge
 - `vite.config.ts` — mode-specific base paths, env injection, `__APP_VERSION__`, and the authoritative generated PWA manifest/service worker
+- `vitest.config.ts` — Node unit-test environment and test-only `__APP_VERSION__` definition
 - `manifest.json` — a second, hand-maintained manifest linked from `index.html`; it can drift from the Vite-generated one, so check both when touching PWA metadata.
 
 ## Key Types (types.ts)
@@ -88,6 +91,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 - New-chat titles are a separate non-streaming GPT-5 Nano request (minimal effort, low verbosity).
 - Web Search sends a hard-coded approximate New York, US location and `search_context_size: 'medium'`. Code Interpreter uses an auto container.
 - Generated-file downloads need both container and file IDs plus the in-app key state; an env-only key can authorize API calls but leaves download controls unavailable.
+- Citation post-processing helpers in `services/openaiService.ts` are pure and covered by `services/openaiService.test.ts`; update the marker, annotation, deduplication, and adjacent-label cases with any pipeline change.
 - Model capability rules live in `constants.ts` (`MODEL_CONFIGS`); `normalizeChatConfig` keeps older saved workspaces loadable — update it whenever model options change. Default config: GPT-5.6 Sol, medium effort/verbosity, Web Search on.
 
 ## Storage & Data Integrity (storage.ts, App.tsx)
@@ -124,10 +128,10 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 ## Verification
 
-For shared React/TypeScript/service/storage/config changes, run both build modes:
+For shared React/TypeScript/service/storage/config changes, run the unit suite and both build modes:
 
 ```bash
-npm run build && npm run build:web
+npm test && npm run build && npm run build:web
 ```
 
 Then smoke-test the affected area: UI → desktop and <768px widths, both themes; streaming → deltas, stop, retry, regenerate, mid-stream session switches, interrupted-request recovery; attachments/tools → images, files, citations, Code Interpreter output, generated-file downloads; storage → first load, reload, backup recovery, export/import; PWA → `build:web` + `preview`; Electron → `electron:dev` window controls, clipboard, external links. Live API smoke tests consume quota and create stored responses — use a personal test key and report any API-dependent paths not exercised.

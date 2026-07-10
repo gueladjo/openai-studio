@@ -285,7 +285,7 @@ const formatCitationMarkdownLink = (citationNumber: number, url: string): string
   return `[[${citationNumber}]](<${escapedUrl}>)`;
 };
 
-const isCitationMarkerSpan = (text: string): boolean => {
+export const isCitationMarkerSpan = (text: string): boolean => {
   const trimmedText = text.trim();
 
   if (!trimmedText) return false;
@@ -317,7 +317,7 @@ const isDomainLikeSourceLabel = (label: string): boolean => (
   /^(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(normalizeSourceLabel(label))
 );
 
-const stripAdjacentCitationSourceLabels = (content: string): string => {
+export const stripAdjacentCitationSourceLabels = (content: string): string => {
   const withoutAdjacentLabels = content
     .replace(
       /(^|[ \t])\(([^()\n]{3,160})\)([ \t]*(?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)/g,
@@ -328,7 +328,7 @@ const stripAdjacentCitationSourceLabels = (content: string): string => {
     .replace(
       /((?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)[ \t]*\(([^()\n]{3,160})\)/g,
       (match, marker, label) => (
-        isDomainLikeSourceLabel(label) ? marker : match
+        isDomainLikeSourceLabel(label) ? marker.trimEnd() : match
       )
     );
 
@@ -437,7 +437,7 @@ const extractMarkdownLinkCitations = (content: string): {
   };
 };
 
-interface CitationRegistry {
+export interface CitationRegistry {
   sources: Source[];
   sourceIndexByUrl: Map<string, number>;
 }
@@ -552,7 +552,7 @@ const buildCitationReplacements = (
   ));
 };
 
-const applyCitationAnnotations = (
+export const applyCitationAnnotations = (
   text: string,
   annotations: unknown[] | undefined,
   registry: CitationRegistry

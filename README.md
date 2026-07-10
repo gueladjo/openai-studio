@@ -71,6 +71,7 @@ Development and Electron modes compile this value into renderer JavaScript. Do n
 | --- | --- |
 | `npm ci` | Install the exact dependency versions from `package-lock.json`. |
 | `npm run dev` | Start the web dev server at `/openai-studio/`. |
+| `npm test` | Run the Vitest unit suite once. |
 | `npm run electron:dev` | Start Vite in Electron mode and launch Electron against it on port 5173. |
 | `npm run build` | Typecheck and create an Electron-mode bundle in `dist/`. |
 | `npm run build:electron` | Explicit alias for the Electron-mode build. |
@@ -80,7 +81,7 @@ Development and Electron modes compile this value into renderer JavaScript. Do n
 | `npm run deploy` | Build the web app and publish `dist/` with `gh-pages`. |
 | `node scripts/generate-icons.js` | Regenerate the PNG application icons. |
 
-There is currently no automated test, lint, or format script.
+The Vitest suite covers citation post-processing in `services/openaiService.test.ts`. There is currently no lint or format script.
 
 ## Web And PWA
 
@@ -159,12 +160,14 @@ index.tsx
       -> services/
           storage.ts         OPFS/IndexedDB persistence and workspace backup
           openaiService.ts   Responses API requests, streaming, tools, citations
+          openaiService.test.ts  citation post-processing unit tests
       -> utils/              conversation export and source URL handling
 
 electron/                    Electron main and preload processes
 types.ts                     application types and OpenAI SDK-backed aliases
 constants.ts                 model metadata and configuration normalization
 vite.config.ts               web/Electron asset modes and generated PWA config
+vitest.config.ts             Node unit-test configuration
 public/                      static icons
 scripts/                     maintenance utilities
 ```
@@ -173,11 +176,14 @@ scripts/                     maintenance utilities
 
 ## Development Verification
 
-Before submitting a change, run the mode-specific builds it affects. For shared TypeScript or React changes, run both:
+Before submitting a change, run the unit suite and the mode-specific builds the change affects. For shared TypeScript or React changes, run all three:
 
 ```bash
+npm test
 npm run build
 npm run build:web
 ```
+
+Changes to citation parsing or formatting must keep the citation post-processing suite passing. The tests cover marker recognition, source-label cleanup, annotation replacement, source ordering and deduplication, and malformed annotation handling without making live API calls.
 
 Smoke-test the web UI at desktop and mobile widths. Changes to Electron, persistence, PWA behavior, streaming, cancellation, attachments, or import/export should also be exercised in the corresponding runtime.
