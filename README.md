@@ -137,11 +137,14 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 
 The logical files are:
 
-- `sessions.json`: conversations, attachments, response metadata, and per-chat configuration.
+- `sessions.json`: conversations, attachment references, response metadata, and per-chat configuration.
 - `settings.json`: theme, API key, and last active session.
 - `system_instructions.json`: reusable instruction records.
+- `attachments/` (or `attachments/<id>` records in IndexedDB): immutable attachment bytes referenced from messages.
 
-Writes are debounced and each changed file keeps one previous `<filename>.bak` copy. If a primary file contains malformed JSON, the storage layer attempts to read its backup. These are browser-managed files rather than ordinary project files; use Settings -> Export for a portable backup.
+Session writes use a one-second trailing delay with a five-second maximum wait while responses stream; request start and terminal states are saved immediately. Settings and instructions use a 500 ms trailing delay. Pending writes are serialized, flushed when the page is hidden, and acknowledged before Electron closes. Each changed JSON file keeps one previous `<filename>.bak` copy. If a primary file contains malformed JSON, the storage layer attempts to read its backup.
+
+Older sessions with embedded data URLs are migrated to separate attachment records when loaded. Portable workspace exports remain self-contained JSON files by embedding attachment data during export; restore extracts those attachments back into local storage. These are browser-managed files rather than ordinary project files, so use Settings -> Export for a portable backup.
 
 Import asks for confirmation and replaces the supplied workspace sections. The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Generated container files can expire, so download files that need to be retained.
 

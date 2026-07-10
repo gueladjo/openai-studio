@@ -19,13 +19,13 @@ One request may run per session, while different sessions may stream concurrentl
 ## Repository Map
 
 - `index.tsx`: React bootstrap.
-- `App.tsx`: central state, storage initialization, debounced saves, response lifecycle, stop/retry/regenerate, and import/export.
+- `App.tsx`: central state, storage initialization, serialized/checkpointed saves, response lifecycle, stop/retry/regenerate, and import/export.
 - `components/ChatArea.tsx`: composer, attachments, message rendering, response details, citations, generated files, and conversation Markdown export.
 - `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
-- `services/storage.ts`: OPFS/IndexedDB abstraction, rolling backups, and workspace backup/restore.
+- `services/storage.ts`: OPFS/IndexedDB abstraction, separate attachment records, rolling backups, and workspace backup/restore.
 - `utils/conversationExport.ts`: Markdown transcript export and filename handling.
 - `utils/sourceUrls.ts`: citation URL validation and display metadata.
 - `types.ts`: application types plus aliases to Responses API SDK types.
@@ -91,10 +91,10 @@ There is no lint, format, or automated test command. Do not invent one in docume
 
 - Storage must load successfully before any writes are enabled. Do not allow initialization defaults to overwrite an unread workspace.
 - Prefer OPFS. Browsers may fall back to IndexedDB, but Electron intentionally fails instead of silently opening an empty fallback store when OPFS is unavailable.
-- The logical files are `sessions.json`, `settings.json`, and `system_instructions.json`. Each changed write preserves one `<filename>.bak` recovery copy.
+- The logical JSON files are `sessions.json`, `settings.json`, and `system_instructions.json`; attachment bytes live under `attachments/` or in separate IndexedDB records. Each changed JSON write preserves one `<filename>.bak` recovery copy.
 - Keep malformed-primary recovery through the backup file. Schema and migration changes must tolerate older persisted data.
-- Session writes are debounced by 1 second; settings and instructions by 500 ms. Account for those delays in close/reload behavior and manual tests.
-- Attachments are persisted as data URLs. Workspaces and exported backups can therefore be large and sensitive.
+- Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
+- Persisted sessions reference separate attachment blobs. Legacy embedded data URLs migrate on load, while workspace exports re-embed attachment data and can therefore still be large and sensitive.
 - Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
 - Chat deletion is immediate with no confirmation or undo. Preserve that risk in user-facing documentation unless the workflow changes.
 - Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
@@ -131,7 +131,7 @@ Then smoke-test the affected workflow. Use this risk-based matrix:
 - UI changes: web at desktop and below 768px; check overflow, drawers/modals, keyboard send behavior, and light/dark themes.
 - Streaming changes: text deltas, completion metadata, switching sessions mid-stream, stop, retry, regenerate, and interrupted-request recovery.
 - Attachment/tool changes: images, non-image files, citations, Code Interpreter output, and generated-file downloads.
-- Storage changes: first load, debounced persistence, reload, malformed-primary backup recovery, JSON export, and confirmed import replacement.
+- Storage changes: first load, checkpointed persistence, lifecycle/close flushing, reload, malformed-primary backup recovery, attachment migration, JSON export, and confirmed import replacement.
 - PWA changes: `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
 - Electron/preload changes: `npm run electron:dev`; exercise window controls, clipboard behavior, external links, and storage failure handling.
 - Packaging changes: `npm run dist` on the target host when the required packaging/signing tooling is available.

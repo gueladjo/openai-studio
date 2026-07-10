@@ -15,6 +15,7 @@ import {
 } from '../constants';
 import {
   ChatConfig,
+  FileAttachment,
   GeneratedFile,
   Message,
   ModelId,
@@ -60,6 +61,7 @@ interface GenerateResponseOptions {
   signal?: AbortSignal;
   onResponseCreated?: (responseId: string) => void;
   onTextDelta?: (delta: string) => void;
+  resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
 }
 
 type OpenAIReasoningConfig = NonNullable<OpenAIResponsesStreamingConfig['reasoning']>;
@@ -732,6 +734,21 @@ const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   };
 };
 
+const resolveMessageAttachmentContent = async (
+  message: Message,
+  resolver?: (attachment: FileAttachment) => Promise<string | undefined>
+): Promise<Message> => {
+  if (!resolver || !message.attachments?.length) return message;
+
+  return {
+    ...message,
+    attachments: await Promise.all(message.attachments.map(async attachment => ({
+      ...attachment,
+      content: attachment.content || await resolver(attachment)
+    })))
+  };
+};
+
 const getPreviousResponseId = (messages: Message[]): string | undefined => {
   const previousMessage = messages[messages.length - 2];
 
@@ -869,7 +886,10 @@ export const generateResponse = async (
   const modelConfig = getModelConfig(normalizedConfig.model);
   const previousResponseId = getPreviousResponseId(messages);
   const inputMessages = previousResponseId ? [latestMessage] : messages;
-  const apiInput = inputMessages.map(mapMessageToResponseInput);
+  const resolvedInputMessages = await Promise.all(inputMessages.map(message => (
+    resolveMessageAttachmentContent(message, options.resolveAttachmentContent)
+  )));
+  const apiInput = resolvedInputMessages.map(mapMessageToResponseInput);
 
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 

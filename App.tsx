@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
@@ -11,6 +11,10 @@ import {
   getStorageHandle,
   readJsonFile,
   writeJsonFile,
+  readSessions,
+  writeSessions,
+  storeAttachment,
+  getAttachmentDataUrl,
   getWorkspaceBackup,
   restoreWorkspaceBackup,
   STORAGE_FILES,
@@ -39,18 +43,6 @@ const useIsMobile = (breakpoint = 768) => {
   return isMobile;
 };
 
-const readFileAsDataURL = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') resolve(reader.result);
-      else reject(new Error('Failed to read file'));
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-};
-
 // Add global declaration for Electron API
 declare global {
   interface Window {
@@ -61,15 +53,41 @@ declare global {
       isMaximized: () => Promise<boolean>;
       onMaximizedChange: (callback: (isMaximized: boolean) => void) => void;
       writeClipboardText: (text: string) => Promise<void>;
+      onCloseRequested: (callback: () => void) => () => void;
+      confirmClose: () => void;
     }
   }
 }
+
+type SaveKey = 'sessions' | 'instructions' | 'settings';
+
+const SAVE_KEYS: SaveKey[] = ['sessions', 'instructions', 'settings'];
+const SAVE_DELAYS: Record<SaveKey, number> = {
+  sessions: 1000,
+  instructions: 500,
+  settings: 500
+};
+const SESSION_SAVE_MAX_WAIT_MS = 5000;
+
+const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
+  sessions.forEach(session => {
+    session.messages.forEach(message => {
+      message.attachments?.forEach(attachment => {
+        if (attachment.previewUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
+    });
+  });
+};
 
 interface ActiveChatRequest {
   controller: AbortController;
   assistantMessageId: string;
   apiKey: string;
   responseId?: string;
+  getPartialContent?: () => string;
+  checkpointPartialContent?: () => string;
 }
 
 const isAbortError = (error: unknown): boolean => {
@@ -84,6 +102,47 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Unknown error'
 );
 
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const isValidBackupSessions = (value: unknown): value is Session[] => (
+  Array.isArray(value) && value.every(session => (
+    isRecord(session) &&
+    typeof session.id === 'string' &&
+    typeof session.title === 'string' &&
+    typeof session.lastModified === 'number' &&
+    isRecord(session.config) &&
+    Array.isArray(session.messages) &&
+    session.messages.every(message => (
+      isRecord(message) &&
+      (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string' &&
+      typeof message.timestamp === 'number' &&
+      (
+        message.attachments === undefined ||
+        (
+          Array.isArray(message.attachments) &&
+          message.attachments.every(attachment => (
+            isRecord(attachment) &&
+            typeof attachment.name === 'string' &&
+            typeof attachment.type === 'string' &&
+            (
+              attachment.id === undefined ||
+              (typeof attachment.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(attachment.id))
+            ) &&
+            (
+              attachment.content === undefined ||
+              (typeof attachment.content === 'string' && attachment.content.startsWith('data:'))
+            ) &&
+            (attachment.id === undefined || attachment.content !== undefined)
+          ))
+        )
+      )
+    ))
+  ))
+);
+
 function App() {
   // Storage State
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
@@ -95,6 +154,9 @@ function App() {
   const [isWorkspaceLoaded, setIsWorkspaceLoaded] = useState(false);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const sessionsRef = useRef<Session[]>([]);
+  const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const isWorkspaceLoadedRef = useRef(false);
+  const initializationStartedRef = useRef(false);
 
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
@@ -105,6 +167,10 @@ function App() {
   const [apiKey, setApiKey] = useState('');
   const [systemInstructions, setSystemInstructions] = useState<SystemInstruction[]>([]);
   const systemInstructionsRef = useRef<SystemInstruction[]>([]);
+  const settingsRef = useRef<AppSettings>({
+    theme: 'dark',
+    apiKey: ''
+  });
 
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -119,13 +185,26 @@ function App() {
     }
   }, [isMobile]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     systemInstructionsRef.current = systemInstructions;
   }, [systemInstructions]);
+
+  useLayoutEffect(() => {
+    dirHandleRef.current = dirHandle;
+    isWorkspaceLoadedRef.current = isWorkspaceLoaded;
+  }, [dirHandle, isWorkspaceLoaded]);
+
+  useLayoutEffect(() => {
+    settingsRef.current = {
+      theme: isDarkMode ? 'dark' : 'light',
+      apiKey,
+      lastActiveSessionId: currentSessionId || undefined
+    };
+  }, [isDarkMode, apiKey, currentSessionId]);
 
   // Close sidebar when selecting a session on mobile
   const handleSelectSession = useCallback((id: string) => {
@@ -133,8 +212,176 @@ function App() {
     if (isMobile) setIsSidebarOpen(false);
   }, [isMobile]);
 
-  // Refs for debouncing writes
-  const saveTimeoutRef = useRef<{ [key: string]: number }>({});
+  const saveTimeoutRef = useRef<Partial<Record<SaveKey, number>>>({});
+  const saveDirtySinceRef = useRef<Partial<Record<SaveKey, number>>>({});
+  const saveVersionRef = useRef<Record<SaveKey, number>>({
+    sessions: 0,
+    instructions: 0,
+    settings: 0
+  });
+  const savedVersionRef = useRef<Record<SaveKey, number>>({
+    sessions: 0,
+    instructions: 0,
+    settings: 0
+  });
+  const immediateSaveVersionRef = useRef<Record<SaveKey, number>>({
+    sessions: 0,
+    instructions: 0,
+    settings: 0
+  });
+  const queuedSaveKeysRef = useRef<Set<SaveKey>>(new Set());
+  const saveDrainPromiseRef = useRef<Promise<void> | null>(null);
+  const forceImmediateSessionSaveRef = useRef(false);
+  const skipNextSessionEffectSaveRef = useRef(false);
+
+  const persistSaveKey = useCallback(async (key: SaveKey): Promise<void> => {
+    const handle = dirHandleRef.current;
+    if (!handle || !isWorkspaceLoadedRef.current) return;
+
+    if (key === 'sessions') {
+      await writeSessions(handle, sessionsRef.current);
+    } else if (key === 'instructions') {
+      await writeJsonFile(handle, STORAGE_FILES.INSTRUCTIONS, systemInstructionsRef.current);
+    } else {
+      await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
+    }
+  }, []);
+
+  const startSaveDrain = useCallback((): Promise<void> => {
+    if (saveDrainPromiseRef.current) return saveDrainPromiseRef.current;
+
+    const drain = (async () => {
+      while (queuedSaveKeysRef.current.size > 0) {
+        const keys = Array.from(queuedSaveKeysRef.current);
+        queuedSaveKeysRef.current.clear();
+        let firstError: unknown;
+
+        for (const key of keys) {
+          const version = saveVersionRef.current[key];
+
+          try {
+            await persistSaveKey(key);
+            savedVersionRef.current[key] = Math.max(savedVersionRef.current[key], version);
+
+            if (saveVersionRef.current[key] === version) {
+              queuedSaveKeysRef.current.delete(key);
+              delete saveDirtySinceRef.current[key];
+              if (immediateSaveVersionRef.current[key] <= version) {
+                immediateSaveVersionRef.current[key] = 0;
+              }
+
+              const timeout = saveTimeoutRef.current[key];
+              if (timeout !== undefined) {
+                window.clearTimeout(timeout);
+                delete saveTimeoutRef.current[key];
+              }
+            } else {
+              const timeout = saveTimeoutRef.current[key];
+              if (timeout !== undefined) window.clearTimeout(timeout);
+
+              if (immediateSaveVersionRef.current[key] > version) {
+                queuedSaveKeysRef.current.add(key);
+                delete saveTimeoutRef.current[key];
+              } else {
+                // A regular change landed while this snapshot was being written.
+                // Start a fresh window instead of writing continuously.
+                saveDirtySinceRef.current[key] = Date.now();
+                queuedSaveKeysRef.current.delete(key);
+                saveTimeoutRef.current[key] = window.setTimeout(() => {
+                  delete saveTimeoutRef.current[key];
+                  queuedSaveKeysRef.current.add(key);
+                  void startSaveDrain().catch(error => {
+                    console.error(`Failed to persist ${key}`, error);
+                  });
+                }, SAVE_DELAYS[key]);
+              }
+            }
+          } catch (error) {
+            if (!firstError) firstError = error;
+          }
+        }
+
+        if (firstError) throw firstError;
+      }
+    })();
+
+    const trackedDrain = drain.finally(() => {
+      if (saveDrainPromiseRef.current === trackedDrain) {
+        saveDrainPromiseRef.current = null;
+      }
+    });
+    saveDrainPromiseRef.current = trackedDrain;
+    return trackedDrain;
+  }, [persistSaveKey]);
+
+  const scheduleSave = useCallback((key: SaveKey, immediate = false): void => {
+    if (!dirHandleRef.current || !isWorkspaceLoadedRef.current) return;
+
+    saveVersionRef.current[key] += 1;
+    if (immediate) {
+      immediateSaveVersionRef.current[key] = saveVersionRef.current[key];
+    }
+
+    const now = Date.now();
+    if (saveDirtySinceRef.current[key] === undefined) {
+      saveDirtySinceRef.current[key] = now;
+    }
+
+    const existingTimeout = saveTimeoutRef.current[key];
+    if (existingTimeout !== undefined) window.clearTimeout(existingTimeout);
+
+    const delay = immediate
+      ? 0
+      : key === 'sessions'
+        ? Math.min(
+            SAVE_DELAYS[key],
+            Math.max(0, SESSION_SAVE_MAX_WAIT_MS - (now - (saveDirtySinceRef.current[key] || now)))
+          )
+        : SAVE_DELAYS[key];
+
+    saveTimeoutRef.current[key] = window.setTimeout(() => {
+      delete saveTimeoutRef.current[key];
+      queuedSaveKeysRef.current.add(key);
+      void startSaveDrain().catch(error => {
+        console.error(`Failed to persist ${key}`, error);
+      });
+    }, delay);
+  }, [startSaveDrain]);
+
+  const flushPendingSaves = useCallback(async (
+    keys: readonly SaveKey[] = SAVE_KEYS
+  ): Promise<void> => {
+    if (!dirHandleRef.current || !isWorkspaceLoadedRef.current) return;
+
+    const targetVersions = new Map<SaveKey, number>();
+
+    keys.forEach(key => {
+      targetVersions.set(key, saveVersionRef.current[key]);
+
+      const timeout = saveTimeoutRef.current[key];
+      if (timeout !== undefined) {
+        window.clearTimeout(timeout);
+        delete saveTimeoutRef.current[key];
+      }
+
+      if (savedVersionRef.current[key] < saveVersionRef.current[key]) {
+        queuedSaveKeysRef.current.add(key);
+      }
+    });
+
+    while (true) {
+      if (saveDrainPromiseRef.current || queuedSaveKeysRef.current.size > 0) {
+        await startSaveDrain();
+      }
+
+      const outstandingKeys = keys.filter(key => (
+        savedVersionRef.current[key] < (targetVersions.get(key) || 0)
+      ));
+      if (outstandingKeys.length === 0) return;
+
+      outstandingKeys.forEach(key => queuedSaveKeysRef.current.add(key));
+    }
+  }, [startSaveDrain]);
 
   const addProcessingSession = (sessionId: string) => {
     processingSessionIdsRef.current.add(sessionId);
@@ -195,37 +442,55 @@ function App() {
   const loadWorkspaceData = async (handle: FileSystemDirectoryHandle) => {
     // Parallel load
     const [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
-      readJsonFile<Session[]>(handle, STORAGE_FILES.SESSIONS),
+      readSessions(handle),
       readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
       readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
     ]);
 
-    const cleanedSessions = loadedSessions ? markPendingRequestsFailed(loadedSessions) : [];
+    const cleanedSessions = markPendingRequestsFailed(loadedSessions);
     const nextInstructions = loadedInstructions || [];
+    const nextCurrentSessionId = (
+      loadedSettings?.lastActiveSessionId &&
+      cleanedSessions.some(session => session.id === loadedSettings.lastActiveSessionId)
+    )
+      ? loadedSettings.lastActiveSessionId
+      : cleanedSessions[0]?.id || null;
+
+    revokeAttachmentPreviewUrls(sessionsRef.current);
+    sessionsRef.current = cleanedSessions;
+    systemInstructionsRef.current = nextInstructions;
+    settingsRef.current = {
+      theme: loadedSettings?.theme === 'light' ? 'light' : 'dark',
+      apiKey: loadedSettings?.apiKey || '',
+      lastActiveSessionId: nextCurrentSessionId || undefined
+    };
+    forceImmediateSessionSaveRef.current = cleanedSessions !== loadedSessions;
 
     setSessions(cleanedSessions);
     setSystemInstructions(nextInstructions);
     setIsDarkMode(loadedSettings ? loadedSettings.theme === 'dark' : true);
     setApiKey(loadedSettings?.apiKey || '');
-
-    if (loadedSettings?.lastActiveSessionId && cleanedSessions.find(s => s.id === loadedSettings.lastActiveSessionId)) {
-      setCurrentSessionId(loadedSettings.lastActiveSessionId);
-    } else {
-      setCurrentSessionId(cleanedSessions[0]?.id || null);
-    }
+    setCurrentSessionId(nextCurrentSessionId);
   };
 
   // 1. Initial Mount: Automatically access storage
   useEffect(() => {
+    if (initializationStartedRef.current) return;
+    initializationStartedRef.current = true;
+
     const init = async () => {
       try {
         const handle = await getStorageHandle();
         await loadWorkspaceData(handle);
+        dirHandleRef.current = handle;
+        isWorkspaceLoadedRef.current = true;
         setDirHandle(handle);
         setWorkspaceLoadError(null);
         setIsWorkspaceLoaded(true);
       } catch (e) {
         console.error("Critical: Failed to initialize storage", e);
+        dirHandleRef.current = null;
+        isWorkspaceLoadedRef.current = false;
         setDirHandle(null);
         setIsWorkspaceLoaded(false);
         setWorkspaceLoadError(getErrorMessage(e));
@@ -238,55 +503,91 @@ function App() {
     init();
   }, []);
 
-  // Debounced Save Helper
-  const scheduleSave = (key: string, fn: () => Promise<void>) => {
-    if (!dirHandle || !isWorkspaceLoaded) return;
-    
-    if (saveTimeoutRef.current[key]) {
-      clearTimeout(saveTimeoutRef.current[key]);
-    }
-
-    // Save delay: 1s for sessions (chatting), 500ms for settings
-    const delay = key === 'sessions' ? 1000 : 500;
-    
-    saveTimeoutRef.current[key] = window.setTimeout(async () => {
-      try {
-        await fn();
-      } catch (e) {
-        console.error(`Failed to persist ${key}`, e);
-      } finally {
-        delete saveTimeoutRef.current[key];
-      }
-    }, delay);
-  };
-
   // Effect: Persist Sessions
   useEffect(() => {
-    scheduleSave('sessions', async () => {
-      if (dirHandle) await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, sessions);
-    });
-  }, [sessions, dirHandle, isWorkspaceLoaded]);
+    if (skipNextSessionEffectSaveRef.current) {
+      skipNextSessionEffectSaveRef.current = false;
+      return;
+    }
+
+    const immediate = forceImmediateSessionSaveRef.current;
+    forceImmediateSessionSaveRef.current = false;
+    scheduleSave('sessions', immediate);
+  }, [sessions, dirHandle, isWorkspaceLoaded, scheduleSave]);
 
   // Effect: Persist Instructions
   useEffect(() => {
-    scheduleSave('instructions', async () => {
-      if (dirHandle) await writeJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS, systemInstructions);
-    });
-  }, [systemInstructions, dirHandle, isWorkspaceLoaded]);
+    scheduleSave('instructions');
+  }, [systemInstructions, dirHandle, isWorkspaceLoaded, scheduleSave]);
 
   // Effect: Persist Settings (Theme, API Key, Active Session)
   useEffect(() => {
-    scheduleSave('settings', async () => {
-      if (dirHandle) {
-        const settings: AppSettings = {
-          theme: isDarkMode ? 'dark' : 'light',
-          apiKey,
-          lastActiveSessionId: currentSessionId || undefined
+    scheduleSave('settings');
+  }, [isDarkMode, apiKey, currentSessionId, dirHandle, isWorkspaceLoaded, scheduleSave]);
+
+  useEffect(() => {
+    if (!isWorkspaceLoaded) return;
+
+    const flushForLifecycle = () => {
+      let hasStreamingChanges = false;
+      const checkpointedSessions = sessionsRef.current.map(session => {
+        const activeRequest = activeRequestsRef.current.get(session.id);
+        const partialContent = activeRequest?.checkpointPartialContent?.() ||
+          activeRequest?.getPartialContent?.();
+        if (!activeRequest || !partialContent) return session;
+
+        let didUpdateMessage = false;
+        const messages = session.messages.map(message => {
+          if (
+            message.id !== activeRequest.assistantMessageId ||
+            message.content === partialContent
+          ) {
+            return message;
+          }
+
+          didUpdateMessage = true;
+          return {
+            ...message,
+            content: partialContent,
+            status: 'streaming' as const
+          };
+        });
+        if (!didUpdateMessage) return session;
+
+        hasStreamingChanges = true;
+        return {
+          ...session,
+          messages,
+          lastModified: Date.now()
         };
-        await writeJsonFile(dirHandle, STORAGE_FILES.SETTINGS, settings);
+      });
+
+      if (hasStreamingChanges) {
+        sessionsRef.current = checkpointedSessions;
+        forceImmediateSessionSaveRef.current = false;
+        skipNextSessionEffectSaveRef.current = true;
+        setSessions(checkpointedSessions);
+        scheduleSave('sessions', true);
       }
-    });
-  }, [isDarkMode, apiKey, currentSessionId, dirHandle, isWorkspaceLoaded]);
+
+      void flushPendingSaves().catch(error => {
+        console.error('Failed to flush workspace data before suspension.', error);
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushForLifecycle();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', flushForLifecycle);
+    window.addEventListener('beforeunload', flushForLifecycle);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', flushForLifecycle);
+      window.removeEventListener('beforeunload', flushForLifecycle);
+    };
+  }, [flushPendingSaves, isWorkspaceLoaded, scheduleSave]);
 
 
   // --- App Logic ---
@@ -309,8 +610,11 @@ function App() {
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    const deletedSession = sessions.find(session => session.id === id);
     const newSessions = sessions.filter(s => s.id !== id);
+    forceImmediateSessionSaveRef.current = true;
     setSessions(newSessions);
+    if (deletedSession) revokeAttachmentPreviewUrls([deletedSession]);
     if (currentSessionId === id) {
       setCurrentSessionId(newSessions.length > 0 ? newSessions[0].id : null);
     }
@@ -371,6 +675,10 @@ function App() {
   ) => {
     const now = Date.now();
 
+    if (clearPendingRequest) {
+      forceImmediateSessionSaveRef.current = true;
+    }
+
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;
 
@@ -385,13 +693,17 @@ function App() {
     }));
   };
 
-  const markAssistantStopped = (sessionId: string, assistantMessageId: string) => {
+  const markAssistantStopped = (
+    sessionId: string,
+    assistantMessageId: string,
+    partialContent?: string
+  ) => {
     updateAssistantMessage(
       sessionId,
       assistantMessageId,
       message => ({
         ...message,
-        content: message.content || 'Stopped.',
+        content: partialContent || message.content || 'Stopped.',
         status: 'stopped',
         timestamp: Date.now()
       }),
@@ -419,18 +731,23 @@ function App() {
       apiKey
     });
 
-    // Streamed deltas are buffered and flushed at most once per animation frame;
-    // a setSessions call per SSE chunk re-renders the whole transcript. Flushes
-    // write the absolute accumulated text so a flush racing the stop path cannot
-    // append onto the 'Stopped.' placeholder.
+    // Streamed deltas flush once per animation frame while visible and on a
+    // short timer while hidden, where animation frames may be suspended.
     let streamedContent = '';
     let pendingDelta = '';
     let deltaFlushHandle: number | null = null;
+    let deltaFlushUsesTimeout = false;
+    const activeRequest = activeRequestsRef.current.get(targetSessionId);
+    if (activeRequest?.assistantMessageId === assistantMessageId) {
+      activeRequest.getPartialContent = () => streamedContent + pendingDelta;
+    }
 
     const cancelScheduledDeltaFlush = () => {
       if (deltaFlushHandle !== null) {
-        window.cancelAnimationFrame(deltaFlushHandle);
+        if (deltaFlushUsesTimeout) window.clearTimeout(deltaFlushHandle);
+        else window.cancelAnimationFrame(deltaFlushHandle);
         deltaFlushHandle = null;
+        deltaFlushUsesTimeout = false;
       }
     };
 
@@ -452,6 +769,15 @@ function App() {
         })
       );
     };
+
+    if (activeRequest?.assistantMessageId === assistantMessageId) {
+      activeRequest.checkpointPartialContent = () => {
+        cancelScheduledDeltaFlush();
+        streamedContent += pendingDelta;
+        pendingDelta = '';
+        return streamedContent;
+      };
+    }
 
     try {
       const selectedInstruction = systemInstructionsRef.current.find(si => (
@@ -490,8 +816,9 @@ function App() {
 
             if (deltaFlushHandle !== null) return;
 
-            deltaFlushHandle = window.requestAnimationFrame(() => {
+            const runDeltaFlush = () => {
               deltaFlushHandle = null;
+              deltaFlushUsesTimeout = false;
 
               // Skip when the request was stopped meanwhile; the catch path
               // flushes the remainder before marking the message stopped.
@@ -499,10 +826,29 @@ function App() {
               if (flushRequest?.assistantMessageId !== assistantMessageId) return;
 
               flushPendingDelta();
-            });
+            };
+
+            if (document.visibilityState === 'hidden') {
+              deltaFlushUsesTimeout = true;
+              deltaFlushHandle = window.setTimeout(runDeltaFlush, 100);
+            } else {
+              deltaFlushHandle = window.requestAnimationFrame(runDeltaFlush);
+            }
+          },
+          resolveAttachmentContent: async attachment => {
+            const handle = dirHandleRef.current;
+            if (!handle) throw new Error('Workspace storage is unavailable.');
+            return getAttachmentDataUrl(handle, attachment);
           }
         }
       );
+
+      const completedRequest = activeRequestsRef.current.get(targetSessionId);
+      if (completedRequest?.assistantMessageId !== assistantMessageId) {
+        cancelScheduledDeltaFlush();
+        pendingDelta = '';
+        return;
+      }
 
       // response.completed carries the authoritative full text; drop any unflushed tail.
       cancelScheduledDeltaFlush();
@@ -532,6 +878,13 @@ function App() {
         true
       );
     } catch (error) {
+      const failedRequest = activeRequestsRef.current.get(targetSessionId);
+      if (failedRequest?.assistantMessageId !== assistantMessageId) {
+        cancelScheduledDeltaFlush();
+        pendingDelta = '';
+        return;
+      }
+
       // Flush tokens received before the stop or failure so partial output survives.
       flushPendingDelta();
 
@@ -580,22 +933,21 @@ function App() {
     try {
       const session = sessionsRef.current.find(s => s.id === targetSessionId);
       if (!session) throw new Error("Session lost");
+      const handle = dirHandleRef.current;
+      if (!handle) throw new Error('Workspace storage is unavailable.');
 
-      const processedAttachments = await Promise.all(attachments.map(async (file) => {
-          let fileContent: string | undefined = undefined;
-
-          try {
-              fileContent = await readFileAsDataURL(file);
-          } catch (e) {
-              console.error("Failed to read attachment file", e);
-          }
-
-          return {
-              name: file.name,
-              type: file.type,
-              content: fileContent
-          };
-      }));
+      const storedAttachments = await Promise.all(attachments.map(async file => ({
+        file,
+        id: await storeAttachment(handle, file)
+      })));
+      const processedAttachments = storedAttachments.map(({ file, id }) => {
+        return {
+          id,
+          name: file.name,
+          type: file.type,
+          ...(file.type.startsWith('image/') ? { previewUrl: URL.createObjectURL(file) } : {})
+        };
+      });
 
       const requestId = uuidv4();
       const userMessageId = uuidv4();
@@ -629,6 +981,7 @@ function App() {
       }
 
       // 1. Optimistically update UI with user message + pending request marker
+      forceImmediateSessionSaveRef.current = true;
       setSessions(prev => prev.map(s => {
         if (s.id === targetSessionId) {
           return {
@@ -659,6 +1012,7 @@ function App() {
       });
 
     } catch (error) {
+      forceImmediateSessionSaveRef.current = true;
       const errorMessage: Message = {
         id: uuidv4(),
         role: 'assistant',
@@ -724,6 +1078,7 @@ function App() {
     );
 
     addProcessingSession(targetSessionId);
+    forceImmediateSessionSaveRef.current = true;
 
     setSessions(prev => prev.map(s => {
       if (s.id !== targetSessionId) return s;
@@ -788,6 +1143,7 @@ function App() {
     );
 
     addProcessingSession(targetSessionId);
+    forceImmediateSessionSaveRef.current = true;
 
     setSessions(prev => prev.map(s => {
       if (s.id !== targetSessionId) return s;
@@ -830,13 +1186,91 @@ function App() {
     activeRequest.controller.abort();
     activeRequestsRef.current.delete(targetSessionId);
     removeProcessingSession(targetSessionId);
-    markAssistantStopped(targetSessionId, activeRequest.assistantMessageId);
+    markAssistantStopped(
+      targetSessionId,
+      activeRequest.assistantMessageId,
+      activeRequest.checkpointPartialContent?.() || activeRequest.getPartialContent?.()
+    );
   };
+
+  useEffect(() => {
+    const electronApi = window.electronAPI;
+    if (!electronApi?.onCloseRequested) return;
+
+    let isClosing = false;
+    const unsubscribe = electronApi.onCloseRequested(() => {
+      if (isClosing) return;
+      isClosing = true;
+
+      const activeRequests = new Map(activeRequestsRef.current);
+      const now = Date.now();
+
+      activeRequests.forEach(request => {
+        if (request.responseId) {
+          cancelResponse(request.responseId, request.apiKey).catch(error => {
+            console.warn('Failed to cancel OpenAI response while closing:', error);
+          });
+        }
+        request.controller.abort();
+      });
+      activeRequestsRef.current.clear();
+      processingSessionIdsRef.current.clear();
+      setProcessingSessionIds(new Set());
+
+      if (activeRequests.size > 0) {
+        const stoppedSessions = sessionsRef.current.map(session => {
+          const activeRequest = activeRequests.get(session.id);
+          if (!activeRequest) return session;
+
+          return {
+            ...session,
+            messages: session.messages.map(message => (
+              message.id === activeRequest.assistantMessageId
+                ? {
+                    ...message,
+                    content: activeRequest.checkpointPartialContent?.() ||
+                      activeRequest.getPartialContent?.() ||
+                      message.content ||
+                      'Stopped.',
+                    status: 'stopped' as const,
+                    timestamp: now
+                  }
+                : message
+            )),
+            pendingRequest: undefined,
+            lastModified: now
+          };
+        });
+
+        sessionsRef.current = stoppedSessions;
+        forceImmediateSessionSaveRef.current = false;
+        skipNextSessionEffectSaveRef.current = true;
+        setSessions(stoppedSessions);
+        scheduleSave('sessions', true);
+      }
+
+      void flushPendingSaves()
+        .catch(error => {
+          console.error('Failed to flush workspace data before closing.', error);
+        })
+        .finally(() => electronApi.confirmClose());
+    });
+
+    return unsubscribe;
+  }, [flushPendingSaves, scheduleSave]);
+
+  useEffect(() => () => {
+    Object.values(saveTimeoutRef.current).forEach(timeout => {
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    });
+    revokeAttachmentPreviewUrls(sessionsRef.current);
+  }, []);
 
   // Data Import/Export Handlers
   const handleExportData = async () => {
     if (!dirHandle) return;
     try {
+      await flushPendingSaves();
       const backup = await getWorkspaceBackup(dirHandle);
       downloadTextFile(
         `openai-studio-backup-${new Date().toISOString().slice(0, 10)}.json`,
@@ -866,14 +1300,62 @@ function App() {
     if (!dirHandle) return;
     try {
       const text = await file.text();
-      const backup = JSON.parse(text) as WorkspaceBackup;
-      
-      // Basic validation
-      if (!Array.isArray(backup.sessions)) throw new Error("Invalid backup format");
+      const parsedBackup = JSON.parse(text) as unknown;
+
+      if (!isRecord(parsedBackup) || !isValidBackupSessions(parsedBackup.sessions)) {
+        throw new Error("Invalid backup format");
+      }
+      if (
+        parsedBackup.instructions !== undefined &&
+        (
+          !Array.isArray(parsedBackup.instructions) ||
+          !parsedBackup.instructions.every(instruction => (
+            isRecord(instruction) &&
+            typeof instruction.id === 'string' &&
+            typeof instruction.title === 'string' &&
+            typeof instruction.content === 'string'
+          ))
+        )
+      ) {
+        throw new Error("Invalid backup instructions");
+      }
+      if (
+        parsedBackup.settings !== undefined &&
+        parsedBackup.settings !== null &&
+        (
+          !isRecord(parsedBackup.settings) ||
+          (parsedBackup.settings.theme !== 'dark' && parsedBackup.settings.theme !== 'light') ||
+          (
+            parsedBackup.settings.lastActiveSessionId !== undefined &&
+            typeof parsedBackup.settings.lastActiveSessionId !== 'string'
+          ) ||
+          (
+            parsedBackup.settings.apiKey !== undefined &&
+            typeof parsedBackup.settings.apiKey !== 'string'
+          )
+        )
+      ) {
+        throw new Error("Invalid backup settings");
+      }
+
+      const backup = parsedBackup as unknown as WorkspaceBackup;
       
       // Confirm replacement
       if (!window.confirm("This will overwrite your current workspace with the backup data. Continue?")) return;
 
+      activeRequestsRef.current.forEach(request => {
+        if (request.responseId) {
+          cancelResponse(request.responseId, request.apiKey).catch(error => {
+            console.warn('Failed to cancel OpenAI response before import:', error);
+          });
+        }
+        request.controller.abort();
+      });
+      activeRequestsRef.current.clear();
+      processingSessionIdsRef.current.clear();
+      setProcessingSessionIds(new Set());
+
+      await flushPendingSaves();
       await restoreWorkspaceBackup(dirHandle, backup);
       await loadWorkspaceData(dirHandle);
       alert("Workspace restored successfully.");

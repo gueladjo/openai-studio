@@ -7,6 +7,42 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow = null;
+let closeRequestPending = false;
+let closeConfirmed = false;
+let appQuitPending = false;
+let closeFallbackTimeout = null;
+
+const finishWindowClose = (win) => {
+  if (!win || win.isDestroyed()) return;
+
+  closeConfirmed = true;
+  closeRequestPending = false;
+  if (closeFallbackTimeout) {
+    clearTimeout(closeFallbackTimeout);
+    closeFallbackTimeout = null;
+  }
+
+  if (appQuitPending) {
+    app.quit();
+  } else {
+    win.close();
+  }
+};
+
+const requestWindowClose = (win) => {
+  if (!win || win.isDestroyed() || closeConfirmed) return;
+  if (win.webContents.isDestroyed()) {
+    finishWindowClose(win);
+    return;
+  }
+
+  if (!closeRequestPending) {
+    closeRequestPending = true;
+    win.webContents.send('window-close-requested');
+    if (closeFallbackTimeout) clearTimeout(closeFallbackTimeout);
+    closeFallbackTimeout = setTimeout(() => finishWindowClose(win), 5000);
+  }
+};
 
 const focusMainWindow = () => {
   if (!mainWindow) return;
@@ -37,6 +73,11 @@ ipcMain.on('window-close', (event) => {
   if (win) win.close();
 });
 
+ipcMain.on('window-close-confirmed', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && win === mainWindow) finishWindowClose(win);
+});
+
 ipcMain.handle('window-is-maximized', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   return win ? win.isMaximized() : false;
@@ -63,7 +104,20 @@ function createWindow() {
   });
   mainWindow = win;
 
+  win.on('close', (event) => {
+    if (closeConfirmed) return;
+    event.preventDefault();
+    requestWindowClose(win);
+  });
+
   win.on('closed', () => {
+    if (closeFallbackTimeout) {
+      clearTimeout(closeFallbackTimeout);
+      closeFallbackTimeout = null;
+    }
+    closeRequestPending = false;
+    closeConfirmed = false;
+    appQuitPending = false;
     if (mainWindow === win) {
       mainWindow = null;
     }
@@ -178,6 +232,14 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  app.on('before-quit', (event) => {
+    if (closeConfirmed || !mainWindow) return;
+
+    event.preventDefault();
+    appQuitPending = true;
+    requestWindowClose(mainWindow);
+  });
+
   app.on('second-instance', () => {
     focusMainWindow();
   });

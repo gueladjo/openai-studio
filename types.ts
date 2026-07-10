@@ -93,9 +93,11 @@ export interface Message {
 }
 
 export interface FileAttachment {
+  id?: string;
   name: string;
   type: string;
-  content?: string; // Data URL used for Responses API image/file inputs
+  content?: string; // Legacy/backup data URL, or a transient Responses API input
+  previewUrl?: string; // Runtime-only object URL for locally stored images
 }
 
 export interface Session {

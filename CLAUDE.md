@@ -32,11 +32,11 @@ There is no lint, format, or test command — do not invent one in docs or verif
 ```
 User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → OpenAI Responses API
                             ↓
-                  storage.ts (OPFS/IndexedDB, debounced writes)
+                  storage.ts (OPFS/IndexedDB, coordinated writes)
 ```
 
 **Repository map**:
-- `App.tsx` — all state, storage init, debounced saves, request lifecycle (send/stop/retry/regenerate), import/export
+- `App.tsx` — all state, storage init, serialized/checkpointed saves, request lifecycle (send/stop/retry/regenerate), import/export
 - `components/ChatArea.tsx` — composer, attachments, message rendering, response details, citations, generated files
 - `components/Sidebar.tsx` — session list/search, theme, API key modal, workspace backup/restore, app version
 - `components/ConfigPanel.tsx` — model, reasoning effort, verbosity, tools, system instructions
@@ -94,10 +94,10 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 - Storage must load successfully before writes are enabled (`isWorkspaceLoaded` gates `scheduleSave`). Never let initialization defaults overwrite an unread workspace.
 - Backend selection: OPFS preferred (logical `data/` directory); browsers fall back to the `openai-studio-storage` IndexedDB database; Electron intentionally throws instead of silently opening an empty fallback store.
-- Logical files: `sessions.json`, `settings.json`, `system_instructions.json`. Each changed write preserves one `<filename>.bak`; a malformed primary is recovered from its backup. Schema changes must tolerate older persisted data.
-- Debounce: 1s for sessions, 500ms for settings/instructions. Account for these delays in close/reload behavior and manual testing.
-- Attachments persist as data URLs — workspaces and exports can be large and sensitive.
-- Workspace export strips `settings.apiKey`; restore ignores any key inside the backup file and keeps the workspace's current key. Import does only basic shape validation, then overwrites the supplied sections after confirmation.
+- Logical JSON files: `sessions.json`, `settings.json`, `system_instructions.json`. Each changed write preserves one `<filename>.bak`; a malformed primary is recovered from its backup. Schema changes must tolerate older persisted data.
+- Session writes have a 1s trailing delay, a 5s streaming checkpoint, and immediate request-boundary saves. Settings/instructions retain a 500ms trailing delay. Writes are serialized and flushed on page suspension and through an Electron close handshake.
+- Attachment bytes persist separately under `attachments/` (or separate IndexedDB records); `sessions.json` stores IDs and metadata. Legacy embedded data URLs migrate on load. Workspace exports deliberately re-embed attachment data so the JSON backup stays portable and sensitive.
+- Workspace export strips `settings.apiKey`; restore ignores any key inside the backup file and keeps the workspace's current key. Import validates core session/message/attachment, instruction, and settings shapes, then overwrites the supplied sections after confirmation.
 - Chat deletion is immediate with no confirmation or undo.
 - Persistence is origin-scoped: a different scheme, host, or port is a different workspace.
 

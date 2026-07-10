@@ -660,10 +660,10 @@ const MessageRow = React.memo(({
               <div className={`flex flex-col gap-2 mb-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
                   {/* Images Grid */}
                   <div className={`flex flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      {message.attachments.filter(a => a.type.startsWith('image/') && a.content).map((file, i) => (
+                      {message.attachments.filter(a => a.type.startsWith('image/') && (a.previewUrl || a.content)).map((file, i) => (
                           <img
-                            key={`img-${i}`}
-                            src={file.content}
+                            key={file.id || `img-${i}`}
+                            src={file.previewUrl || file.content}
                             alt={file.name}
                             className="max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
                           />
