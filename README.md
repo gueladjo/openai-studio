@@ -26,7 +26,7 @@ OpenAI Studio is a direct client, not a local-only inference application:
 - Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
 - Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
 - The API key entered in Settings is stored locally in `settings.json` and is not encrypted by this project.
-- A full workspace export includes any API key saved in Settings, conversations, system instructions, and attachment data. Treat exported JSON files as secrets.
+- A full workspace export includes conversations, system instructions, and attachment data, but never the API key saved in Settings. Importing a backup keeps your current key. Exports can still contain sensitive conversation content — treat them accordingly.
 - Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
 
 Do not put a shared or production API key into a publicly deployed build. Each user should enter their own key in Settings.

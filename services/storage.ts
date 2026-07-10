@@ -281,9 +281,13 @@ export const readJsonFile = async <T>(dirHandle: FileSystemDirectoryHandle, file
 };
 
 // Data Management
+// Exported backups never include the API key; apiKey stays optional so backups
+// created before this policy still parse, and restore discards it either way.
+export type BackupSettings = Omit<AppSettings, 'apiKey'> & { apiKey?: string };
+
 export interface WorkspaceBackup {
   sessions: Session[];
-  settings: AppSettings | null;
+  settings: BackupSettings | null;
   instructions: SystemInstruction[];
   timestamp: number;
 }
@@ -292,10 +296,16 @@ export const getWorkspaceBackup = async (dirHandle: FileSystemDirectoryHandle): 
   const sessions = await readJsonFile<Session[]>(dirHandle, STORAGE_FILES.SESSIONS) || [];
   const settings = await readJsonFile<AppSettings>(dirHandle, STORAGE_FILES.SETTINGS);
   const instructions = await readJsonFile<SystemInstruction[]>(dirHandle, STORAGE_FILES.INSTRUCTIONS) || [];
-  
+
+  let backupSettings: BackupSettings | null = null;
+  if (settings) {
+    backupSettings = { ...settings };
+    delete backupSettings.apiKey;
+  }
+
   return {
     sessions,
-    settings,
+    settings: backupSettings,
     instructions,
     timestamp: Date.now()
   };
@@ -303,6 +313,13 @@ export const getWorkspaceBackup = async (dirHandle: FileSystemDirectoryHandle): 
 
 export const restoreWorkspaceBackup = async (dirHandle: FileSystemDirectoryHandle, backup: WorkspaceBackup): Promise<void> => {
   if (backup.sessions) await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, backup.sessions);
-  if (backup.settings) await writeJsonFile(dirHandle, STORAGE_FILES.SETTINGS, backup.settings);
+  if (backup.settings) {
+    const currentSettings = await readJsonFile<AppSettings>(dirHandle, STORAGE_FILES.SETTINGS);
+    const restoredSettings: AppSettings = {
+      ...backup.settings,
+      apiKey: currentSettings?.apiKey || ''
+    };
+    await writeJsonFile(dirHandle, STORAGE_FILES.SETTINGS, restoredSettings);
+  }
   if (backup.instructions) await writeJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS, backup.instructions);
 };

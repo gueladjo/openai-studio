@@ -98,7 +98,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 - Logical files: `sessions.json`, `settings.json`, `system_instructions.json`. Each changed write preserves one `<filename>.bak`; a malformed primary is recovered from its backup. Schema changes must tolerate older persisted data.
 - Debounce: 1s for sessions, 500ms for settings/instructions. Account for these delays in close/reload behavior and manual testing.
 - Attachments persist as data URLs — workspaces and exports can be large and sensitive.
-- Full workspace export includes `settings.apiKey`; import does only basic shape validation, then overwrites the supplied sections after confirmation.
+- Workspace export strips `settings.apiKey`; restore ignores any key inside the backup file and keeps the workspace's current key. Import does only basic shape validation, then overwrites the supplied sections after confirmation.
 - Chat deletion is immediate with no confirmation or undo.
 - Persistence is origin-scoped: a different scheme, host, or port is a different workspace.
 
@@ -113,7 +113,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 - Never commit API keys, real user data, or workspace exports. `.env*` files are ignored.
 - Development and Electron modes inline `OPENAI_API_KEY` from Vite env files into renderer JavaScript — never package or publish a build carrying a developer key. Production web mode excludes the env key; users enter their own in Settings.
-- The Settings key is stored unencrypted in `settings.json` and included in full workspace exports. Do not log it or surface it in diagnostics.
+- The Settings key is stored unencrypted in `settings.json` but excluded from workspace exports and ignored on import. Do not log it or surface it in diagnostics.
 - This direct-client architecture is for user-owned keys; a shared deployment key would require moving API calls behind an authenticated server.
 
 ## Styling & Conventions

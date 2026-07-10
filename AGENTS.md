@@ -97,7 +97,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 - Keep malformed-primary recovery through the backup file. Schema and migration changes must tolerate older persisted data.
 - Session writes are debounced by 1 second; settings and instructions by 500 ms. Account for those delays in close/reload behavior and manual tests.
 - Attachments are persisted as data URLs. Workspaces and exported backups can therefore be large and sensitive.
-- Full workspace export includes `settings.apiKey`. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
+- Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
 - Chat deletion is immediate with no confirmation or undo. Preserve that risk in user-facing documentation unless the workflow changes.
 - Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
 
@@ -115,7 +115,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 
 - Never commit API keys, real user data, or workspace exports. Local `.env*` files are ignored; `.env.example` is explicitly allowed but is not currently present.
 - Development and Electron modes may inline `OPENAI_API_KEY` from Vite environment files into renderer JavaScript. Never package or distribute a developer key. Production web mode excludes the environment key.
-- The Settings key is stored locally without application-level encryption and is included in full workspace exports. Do not log it or expose it in diagnostics.
+- The Settings key is stored locally without application-level encryption but is excluded from workspace exports and ignored on import. Do not log it or expose it in diagnostics.
 - This direct-client architecture is intended for user-owned keys. Do not add a shared deployment key without moving API calls behind an authenticated server.
 - Prompts and attachments are sent to OpenAI, and requests use server-side response storage. Keep privacy claims and backup warnings accurate when behavior changes.
 
