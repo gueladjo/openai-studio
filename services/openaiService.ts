@@ -958,7 +958,9 @@ export const generateResponse = async (
           timeToFirstToken = getMonotonicTime() - startTime;
         }
         options.onTextDelta?.(event.delta);
-      } else if (event.type === 'response.completed') {
+      } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+        // Incomplete responses (token limit, content filter) still carry the
+        // partial output, citations, and usage — surface them like completions.
         completedResponse = event.response;
       } else if (event.type === 'response.failed' || event.type === 'error') {
         throw new Error(getStreamEventErrorMessage(event) || 'OpenAI response failed.');

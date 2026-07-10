@@ -499,7 +499,9 @@ function App() {
           assistantMessageId,
           message => ({
             ...message,
-            content: `Error: ${errorMessage}`,
+            content: message.content
+              ? `${message.content}\n\nError: ${errorMessage}`
+              : `Error: ${errorMessage}`,
             status: 'error',
             timestamp: Date.now(),
             model: session.config.model,
