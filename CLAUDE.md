@@ -2,71 +2,133 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+`AGENTS.md` covers the same ground in more depth (full verification matrix, commit/PR conventions). Keep the two consistent when updating either.
+
 ## Project Overview
 
-OpenAI Studio is a React + TypeScript desktop/web chat interface for OpenAI's models (GPT-5 series and o3). It uses OpenAI's Responses API through SDK-backed types, streams assistant responses into the UI, and stores data client-side via the browser's Origin Private File System (OPFS).
+OpenAI Studio is a React 18 + TypeScript client for the OpenAI Responses API (GPT-5.x series and o3). Vite produces either a web/PWA bundle or an Electron renderer bundle. There is no application server: the OpenAI SDK runs directly in the browser/Electron renderer with a user-supplied API key, and all data persists client-side (OPFS, with IndexedDB fallback in browsers).
 
 ## Commands
 
 ```bash
-npm run dev           # Start Vite dev server (port 5173)
-npm run build         # TypeScript check + Vite production build → dist/
-npm run electron:dev  # Run Vite + Electron together (recommended for development)
-npm run dist          # Build and package as installer → release/
+npm ci                          # Install exact lockfile deps (Node 20.3+)
+npm run dev                     # Web dev server → http://localhost:5173/openai-studio/
+npm run electron:dev            # Vite (electron mode) + Electron; main process expects port 5173
+npm run build                   # tsc + Electron-mode bundle → dist/ (alias: build:electron)
+npm run build:web               # tsc + web/PWA bundle → dist/
+npm run preview                 # Serve existing dist/ → http://localhost:4173/openai-studio/ (run build:web first)
+npm run dist                    # Electron build + host-platform installer → release/
+npm run deploy                  # build:web + gh-pages -d dist
+node scripts/generate-icons.js  # Regenerate PNG icons (no npm alias)
 ```
+
+There is no lint, format, or test command — do not invent one in docs or verification notes.
 
 ## Architecture
 
-**State Management**: Centralized in `App.tsx` using React `useState` hooks. No Redux/Context - state flows via props drilling to child components.
+**State**: centralized in `App.tsx` with `useState`; flows to functional components via props. No router, context, Redux, or external state library. One in-flight request per session, but different sessions can stream concurrently (per-request `AbortController` map). Mobile breakpoint is 768px.
 
-**Data Flow**:
+**Data flow**:
 ```
-User Input (ChatArea) → App.tsx (state) → openaiService.ts (streaming API) → OpenAI Responses API
-                                       ↓
-                           storage.ts (OPFS) ← Final parse + streamed deltas ← Update state
+User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → OpenAI Responses API
+                            ↓
+                  storage.ts (OPFS/IndexedDB, debounced writes)
 ```
 
-**Persistence**: Debounced writes (1s for sessions, 500ms for settings) to three JSON files in OPFS:
-- `data/sessions.json` - Chat conversations
-- `data/settings.json` - Theme, API key, last session
-- `data/system_instructions.json` - System prompt library
-
-**Key Services**:
-- `services/openaiService.ts`: Responses API integration using OpenAI SDK types. Handles streamed text deltas, response creation callbacks for cancellation, `previous_response_id` state threading, top-level `instructions`, multimodal input (`input_text`, `input_image`, `input_file`), reasoning effort config, tool options (`web_search`, `code_interpreter`), URL citations, and generated Code Interpreter files.
-- `services/storage.ts`: OPFS file operations, backup/restore
-
-**Components**:
-- `App.tsx`: Master controller, all state management, OPFS I/O
-- `components/ChatArea.tsx`: Message list, input, file attachments, markdown rendering
-- `components/Sidebar.tsx`: Session list, theme toggle, API key modal, export/import
-- `components/ConfigPanel.tsx`: Model selector, reasoning effort slider, tools toggles, system instructions
-- `components/TitleBar.tsx`: Electron-only custom window controls
+**Repository map**:
+- `App.tsx` — all state, storage init, debounced saves, request lifecycle (send/stop/retry/regenerate), import/export
+- `components/ChatArea.tsx` — composer, attachments, message rendering, response details, citations, generated files
+- `components/Sidebar.tsx` — session list/search, theme, API key modal, workspace backup/restore, app version
+- `components/ConfigPanel.tsx` — model, reasoning effort, verbosity, tools, system instructions
+- `components/TitleBar.tsx` — Electron-only window controls
+- `components/WorkspaceSelector.tsx` — unused legacy folder-selection UI; not part of the active flow
+- `services/openaiService.ts` — SDK integration: streaming, cancellation, response threading, citations, generated-file retrieval, title generation
+- `services/storage.ts` — OPFS/IndexedDB abstraction, `.bak` recovery, workspace backup/restore
+- `utils/conversationExport.ts` — Markdown transcript export (the chat "Share" button downloads a local file; it does not publish)
+- `utils/sourceUrls.ts` — citation URL validation and display metadata
+- `types.ts` — app types + Responses API SDK aliases; `constants.ts` — model catalog, defaults, config normalization
+- `electron/main.js` / `electron/preload.cjs` — Electron lifecycle and the narrow IPC bridge
+- `vite.config.ts` — mode-specific base paths, env injection, `__APP_VERSION__`, and the authoritative generated PWA manifest/service worker
+- `manifest.json` — a second, hand-maintained manifest linked from `index.html`; it can drift from the Vite-generated one, so check both when touching PWA metadata. `metadata.json` is not imported by the app.
 
 ## Key Types (types.ts)
 
 ```typescript
-enum ModelId { GPT_5_6_SOL, GPT_5_6_TERRA, GPT_5_5, GPT_5_MINI, GPT_5_NANO, GPT_O3 }
+enum ModelId { GPT_5_6_SOL, GPT_5_6_TERRA, GPT_5_5, GPT_5_MINI, GPT_5_NANO, GPT_O3 }  // values are API model strings
 
 interface ChatConfig {
   model: ModelId;
-  reasoningEffort: string;  // Model-dependent (none/low/medium/high/xhigh/max)
-  textVerbosity: 'low' | 'medium' | 'high';
-  tools: { webSearch: boolean; codeInterpreter: boolean; };
+  reasoningEffort: string;  // per family: GPT-5.6 none..xhigh+max; GPT-5.5 none..xhigh; mini/nano minimal..high; o3 low..high
+  textVerbosity: 'low' | 'medium' | 'high';  // o3 does not support verbosity
+  tools: { webSearch: boolean; codeInterpreter: boolean };
   systemInstructionId?: string;
 }
 
-interface Source { title: string; url: string }
-interface GeneratedFile { filename, fileId, containerId, displayName?, mimeType? }
 interface Session { id, title, messages: Message[], config: ChatConfig, lastModified, pendingRequest? }
-interface Message { role, content, status?, openaiResponseId?, thinking?, sources?, generatedFiles?, attachments?, timestamp }
+interface Message {
+  role, content, timestamp,
+  status?,                       // 'streaming' | 'complete' | 'error' | 'stopped' — drives partial render, retry, regenerate
+  requestId?, openaiResponseId?,
+  thinking?, thinkingDuration?,  // thinkingDuration = ms to first streamed text token, NOT total reasoning time
+  usage?, sources?, generatedFiles?, attachments?, model?, reasoningEffort?
+}
 ```
 
-Message `status` tracks streaming lifecycle (`streaming`, `complete`, `error`, `stopped`) so the UI can render partial responses, retries/regeneration, and stopped generations correctly.
+Responses request/input/tool/usage/stream-event types in `types.ts` must stay aliased to the installed OpenAI SDK exports from `openai/resources/responses/responses` — never re-declare parallel API schemas. (`max` effort is cast because openai@6.x typings don't list it yet.)
 
-Responses request/input/tool/stream event types in `types.ts` should stay aliased to the installed OpenAI SDK exports from `openai/resources/responses/responses` instead of being re-declared locally.
+## Responses API Invariants (openaiService.ts)
 
-## Styling
+- The SDK client is created per request in the renderer with `dangerouslyAllowBrowser: true`. The UI-entered key takes precedence over `process.env.OPENAI_API_KEY`.
+- Streamed generation and cancellation use `maxRetries: 0` (prevents duplicate calls) and a 1-hour timeout. Title generation and generated-file retrieval keep SDK default retries — coordinate any retry-policy change with persisted request IDs and UI state.
+- Streamed lifecycle: create an assistant placeholder → record the ID from `response.created` (enables cancel) → append `response.output_text.delta` → parse `response.completed` as the authoritative final content, citations, usage, and generated files.
+- `previous_response_id` is used only when the immediately preceding assistant message has an `openaiResponseId`; then only the newest user turn is sent. Otherwise the full local transcript is sent.
+- Requests intentionally use `store: true` — response threading depends on it. Changing storage policy means redesigning continuation and updating user docs.
+- System prompts go in top-level `instructions`. Images map to `input_image`; other attachments with content map to base64 data-URL `input_file` parts; attachments without content degrade to a filename note in the text.
+- Stop generation calls `responses.cancel(responseId)` when available, aborts the local stream, and keeps partial content with `stopped` status.
+- Persisted `pendingRequest` records are marked failed and retryable on next startup — preserve this recovery when changing message state.
+- New-chat titles are a separate non-streaming GPT-5 Nano request (minimal effort, low verbosity).
+- Web Search sends a hard-coded approximate New York, US location and `search_context_size: 'medium'`. Code Interpreter uses an auto container.
+- Generated-file downloads need both container and file IDs plus the in-app key state; an env-only key can authorize API calls but leaves download controls unavailable.
+- Model capability rules live in `constants.ts` (`MODEL_CONFIGS`); `normalizeChatConfig` keeps older saved workspaces loadable — update it whenever model options change. Default config: GPT-5.6 Sol, medium effort/verbosity, Web Search on.
 
-- Tailwind CSS via CDN (inline classes, no separate CSS files except `index.css` for globals)
-- Dark mode: `.dark` class on root, `dark:` prefix for variants
-- Fonts: Inter (sans), JetBrains Mono (code)
+## Storage & Data Integrity (storage.ts, App.tsx)
+
+- Storage must load successfully before writes are enabled (`isWorkspaceLoaded` gates `scheduleSave`). Never let initialization defaults overwrite an unread workspace.
+- Backend selection: OPFS preferred (logical `data/` directory); browsers fall back to the `openai-studio-storage` IndexedDB database; Electron intentionally throws instead of silently opening an empty fallback store.
+- Logical files: `sessions.json`, `settings.json`, `system_instructions.json`. Each changed write preserves one `<filename>.bak`; a malformed primary is recovered from its backup. Schema changes must tolerate older persisted data.
+- Debounce: 1s for sessions, 500ms for settings/instructions. Account for these delays in close/reload behavior and manual testing.
+- Attachments persist as data URLs — workspaces and exports can be large and sensitive.
+- Full workspace export includes `settings.apiKey`; import does only basic shape validation, then overwrites the supplied sections after confirmation.
+- Chat deletion is immediate with no confirmation or undo.
+- Persistence is origin-scoped: a different scheme, host, or port is a different workspace.
+
+## Build Modes, PWA, Electron
+
+- Vite `electron` mode: relative base `./`, PWA plugin disabled. All other modes: hard-coded base `/openai-studio/` (matches GitHub Pages). Generated PWA `scope`/`start_url` derive from `base` — deploying elsewhere means changing `base` and aligning/removing the root `manifest.json`.
+- `__APP_VERSION__` is injected from `package.json` at build time; bump with `npm version patch|minor|major` before a release.
+- The PWA caches the built shell; model requests require connectivity. Tailwind loads from its CDN at runtime and is not covered by the Workbox runtime cache.
+- Electron: frameless single-instance window, `nodeIntegration` off, `contextIsolation` on, Chromium sandbox currently disabled — keep the preload bridge narrow (window controls, maximize state, clipboard) and external navigation in the system browser.
+
+## Security
+
+- Never commit API keys, real user data, or workspace exports. `.env*` files are ignored.
+- Development and Electron modes inline `OPENAI_API_KEY` from Vite env files into renderer JavaScript — never package or publish a build carrying a developer key. Production web mode excludes the env key; users enter their own in Settings.
+- The Settings key is stored unencrypted in `settings.json` and included in full workspace exports. Do not log it or surface it in diagnostics.
+- This direct-client architecture is for user-owned keys; a shared deployment key would require moving API calls behind an authenticated server.
+
+## Styling & Conventions
+
+- Tailwind CSS via CDN, configured in `index.html` (no local Tailwind build); utilities written inline. Reserve `index.css` for globals and complex reusable rules.
+- Dark mode: `.dark` class on root + `dark:` variants. Fonts: Inter (sans), JetBrains Mono (code). Icons: `lucide-react`, with accessible names/tooltips on icon-only controls.
+- 2-space indent, semicolons, single quotes; PascalCase components, camelCase functions/utilities.
+- Keep state in `App.tsx` unless genuinely component-local; follow the existing prop-driven flow and component/service/utility boundaries. Comments only for non-obvious intent.
+
+## Verification
+
+For shared React/TypeScript/service/storage/config changes, run both build modes:
+
+```bash
+npm run build && npm run build:web
+```
+
+Then smoke-test the affected area: UI → desktop and <768px widths, both themes; streaming → deltas, stop, retry, regenerate, mid-stream session switches, interrupted-request recovery; attachments/tools → images, files, citations, Code Interpreter output, generated-file downloads; storage → first load, reload, backup recovery, export/import; PWA → `build:web` + `preview`; Electron → `electron:dev` window controls, clipboard, external links. Live API smoke tests consume quota and create stored responses — use a personal test key and report any API-dependent paths not exercised.
