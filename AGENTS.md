@@ -33,7 +33,7 @@ One request may run per session, while different sessions may stream concurrentl
 - `constants.ts`: model catalog, defaults, and config normalization.
 - `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window policy, IPC, and the narrow renderer bridge.
 - `vite.config.ts`: mode-specific base paths, environment injection, app version, and authoritative generated PWA configuration.
-- `index.html` and `index.css`: document shell, CDN Tailwind configuration/fonts, and global/custom CSS.
+- `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
 - `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
 - `manifest.json`: an active second manifest explicitly linked by `index.html`; the web build also injects the Vite-generated `manifest.webmanifest`, so built HTML contains both until they are consolidated.
 - `metadata.json`: supplemental project metadata not imported by the TypeScript application.
@@ -67,7 +67,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 - Use PascalCase for component files and components; use camelCase for functions and utilities.
 - Keep state in `App.tsx` unless a component-local concern is genuinely isolated. Follow the current prop-driven data flow before adding a new state abstraction.
 - Prefer the existing component, service, and utility boundaries. Avoid unrelated refactors.
-- Tailwind utilities are written inline, but Tailwind is loaded/configured from `index.html`, not through a local Tailwind build pipeline. Reserve `index.css` for global and complex reusable rules.
+- Tailwind utilities are written inline and compiled at build time (Tailwind v3 through Vite's PostCSS pipeline; config in `tailwind.config.js`). Class names must appear as complete literal strings so the JIT content scan can find them. Reserve `index.css` for global and complex reusable rules.
 - Use `lucide-react` for UI icons and preserve accessible names/tooltips on icon-only controls.
 - Keep fixed controls and responsive layouts stable at desktop and mobile widths. The mobile breakpoint in `App.tsx` is 768px.
 - Add brief comments only for logic whose intent is not apparent from the code.
@@ -106,7 +106,7 @@ There is no lint, format, or automated test command. Do not invent one in docume
 - Electron mode uses relative asset paths and disables the PWA plugin. Every non-Electron Vite mode currently uses the hard-coded `/openai-studio/` base.
 - Generated PWA `scope` and `start_url` derive from `base`. For another hosting path, update `base` and align or remove the separate root manifest linked by `index.html`.
 - `vite.config.ts` is authoritative for the generated PWA manifest and service worker. The root `manifest.json` and explicit link in `index.html` can drift from it; verify both when touching metadata.
-- The PWA caches the built shell and selected assets, but model requests require connectivity. Tailwind is fetched from its CDN at runtime and is not explicitly covered by the current Workbox runtime cache.
+- The PWA caches the built shell and selected assets, including the compiled Tailwind CSS, but model requests require connectivity. Google Fonts remain external and are runtime-cached by Workbox.
 - `__APP_VERSION__` is read from `package.json` at build time.
 - Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes only window controls, maximize state, and clipboard writes.
 - Keep external navigation in the system browser and keep renderer IPC narrow. Electron's Chromium sandbox is currently disabled, which makes bridge and navigation discipline especially important.

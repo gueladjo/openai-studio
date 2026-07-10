@@ -106,7 +106,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 - Vite `electron` mode: relative base `./`, PWA plugin disabled. All other modes: hard-coded base `/openai-studio/` (matches GitHub Pages). Generated PWA `scope`/`start_url` derive from `base` — deploying elsewhere means changing `base` and aligning/removing the root `manifest.json`.
 - `__APP_VERSION__` is injected from `package.json` at build time; bump with `npm version patch|minor|major` before a release.
-- The PWA caches the built shell; model requests require connectivity. Tailwind loads from its CDN at runtime and is not covered by the Workbox runtime cache.
+- The PWA caches the built shell, including the compiled Tailwind CSS; model requests require connectivity. Google Fonts remain external and runtime-cached by Workbox (Electron falls back to system fonts when offline cold).
 - Electron: frameless single-instance window, `nodeIntegration` off, `contextIsolation` on, Chromium sandbox currently disabled — keep the preload bridge narrow (window controls, maximize state, clipboard) and external navigation in the system browser.
 
 ## Security
@@ -118,7 +118,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 ## Styling & Conventions
 
-- Tailwind CSS via CDN, configured in `index.html` (no local Tailwind build); utilities written inline. Reserve `index.css` for globals and complex reusable rules.
+- Tailwind CSS v3 compiled at build time (`tailwind.config.js` + `postcss.config.js`, processed through Vite); utilities written inline. Class names must appear as complete literal strings — the JIT content scan cannot see names built from fragments. `index.css` opens with the `@tailwind` directives; reserve it for globals and complex reusable rules.
 - Dark mode: `.dark` class on root + `dark:` variants. Fonts: Inter (sans), JetBrains Mono (code). Icons: `lucide-react`, with accessible names/tooltips on icon-only controls.
 - 2-space indent, semicolons, single quotes; PascalCase components, camelCase functions/utilities.
 - Keep state in `App.tsx` unless genuinely component-local; follow the existing prop-driven flow and component/service/utility boundaries. Comments only for non-obvious intent.
