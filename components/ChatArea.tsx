@@ -597,22 +597,29 @@ const ConversationHeader = ({
   );
 };
 
-const markdownComponents = {
-    code: ({node, inline, className, children, ...props}: any) => {
-        const codeBlockLabel = getCodeBlockLabel(className);
+export const markdownComponents = {
+    pre: ({node, children, ...props}: any) => {
+        const codeElement = React.Children.toArray(children).find(React.isValidElement) as React.ReactElement<{
+            className?: string;
+            children?: React.ReactNode;
+        }> | undefined;
+        const className = codeElement?.props.className;
 
-        return !inline ? (
+        return (
             <div className="my-2 bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
-                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{codeBlockLabel}</div>
-                <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300">
-                    <code className={className} {...props}>{children}</code>
+                <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{getCodeBlockLabel(className)}</div>
+                <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300" {...props}>
+                    <code className={className}>{codeElement?.props.children ?? children}</code>
                 </pre>
             </div>
-        ) : (
+        );
+    },
+    code: ({node, children, ...props}: any) => {
+        return (
             <code className="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded text-xs font-mono text-blue-600 dark:text-blue-300" {...props}>
                 {children}
             </code>
-        )
+        );
     },
     table: ({node, children, ...props}: any) => (
         <div className="markdown-table-wrapper">
