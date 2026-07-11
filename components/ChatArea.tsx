@@ -10,7 +10,7 @@ import { getSourcePresentation } from '../utils/sourceUrls';
 
 interface ChatAreaProps {
   session: Session | null;
-  onSendMessage: (content: string, attachments: File[]) => void;
+  onSendMessage: (content: string, attachments: File[]) => Promise<boolean>;
   onStopGenerating: () => void;
   onRetryFailedMessage: (assistantMessageId: string) => void;
   onRegenerateResponse: () => void;
@@ -903,18 +903,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     resizePromptTextarea(textareaRef.current);
   }, [inputValue]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if ((!inputValue.trim() && attachments.length === 0) || isLoading) return;
     isPinnedToBottomRef.current = true;
-    onSendMessage(inputValue, attachments);
+    const submittedContent = inputValue;
+    const submittedAttachments = attachments;
     setInputValue('');
     setAttachments([]);
+
+    const accepted = await onSendMessage(submittedContent, submittedAttachments);
+    if (!accepted) {
+      setInputValue(current => current
+        ? `${submittedContent}\n${current}`
+        : submittedContent
+      );
+      setAttachments(current => [...submittedAttachments, ...current]);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 

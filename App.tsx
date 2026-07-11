@@ -961,11 +961,11 @@ function App() {
   };
 
   const handleSendMessage = async (content: string, attachments: File[]) => {
-    if (!currentSessionId) return;
+    if (!currentSessionId) return false;
 
     // Capture the session ID to allow context switching while processing
     const targetSessionId = currentSessionId;
-    if (processingSessionIdsRef.current.has(targetSessionId)) return;
+    if (processingSessionIdsRef.current.has(targetSessionId)) return false;
     addProcessingSession(targetSessionId);
     let didStartResponse = false;
 
@@ -1042,13 +1042,14 @@ function App() {
       // 2. Perform API Call Detached from current UI State
       const messagesForApi = [...session.messages, newUserMessage];
       didStartResponse = true;
-      await startAssistantResponse({
+      void startAssistantResponse({
         targetSessionId,
         session,
         messagesForApi,
         requestId,
         assistantMessageId
       });
+      return true;
 
     } catch (error) {
       forceImmediateSessionSaveRef.current = true;
@@ -1070,6 +1071,7 @@ function App() {
         }
         return s;
       }));
+      return false;
     } finally {
       if (!didStartResponse) {
         removeProcessingSession(targetSessionId);
