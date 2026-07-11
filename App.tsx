@@ -26,6 +26,7 @@ import {
   downloadTextFile,
   formatConversationMarkdown
 } from './utils/conversationExport';
+import { normalizeChatConfig } from './constants';
 import { AlertTriangle, Loader2, Menu, Settings, X } from 'lucide-react';
 
 // Hook for detecting mobile viewport
@@ -440,6 +441,26 @@ function App() {
     return hasChanges ? updatedSessions : loadedSessions;
   };
 
+  const normalizeSessionConfigs = (loadedSessions: Session[]): Session[] => {
+    let hasChanges = false;
+    const normalizedSessions = loadedSessions.map(session => {
+      const config = normalizeChatConfig(session.config);
+      const isNormalized = (
+        session.config?.model === config.model &&
+        session.config?.reasoningEffort === config.reasoningEffort &&
+        session.config?.textVerbosity === config.textVerbosity &&
+        session.config?.tools?.webSearch === config.tools.webSearch &&
+        session.config?.tools?.codeInterpreter === config.tools.codeInterpreter
+      );
+
+      if (isNormalized) return session;
+      hasChanges = true;
+      return { ...session, config };
+    });
+
+    return hasChanges ? normalizedSessions : loadedSessions;
+  };
+
   // Helper: Load all data from disk
   const loadWorkspaceData = async (handle: FileSystemDirectoryHandle) => {
     // Parallel load
@@ -449,7 +470,8 @@ function App() {
       readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
     ]);
 
-    const cleanedSessions = markPendingRequestsFailed(loadedSessions);
+    const normalizedSessions = normalizeSessionConfigs(loadedSessions);
+    const cleanedSessions = markPendingRequestsFailed(normalizedSessions);
     const nextInstructions = loadedInstructions || [];
     const nextCurrentSessionId = (
       loadedSettings?.lastActiveSessionId &&

@@ -1,6 +1,7 @@
 
 import {
   ChatConfig,
+  DEFAULT_CONFIG,
   ModelConfig,
   ModelId,
   ReasoningEffort,
@@ -10,6 +11,10 @@ import {
   ReasoningEffortO3,
   TextVerbosity
 } from './types';
+
+type ChatConfigInput = Partial<Omit<ChatConfig, 'tools'>> & {
+  tools?: Partial<ChatConfig['tools']>;
+};
 
 export const APP_VERSION = __APP_VERSION__;
 export const REASONING_EFFORT_FLAGSHIP: ReasoningEffortFlagship[] = ['none', 'low', 'medium', 'high', 'xhigh'];
@@ -108,15 +113,26 @@ export const getNormalizedReasoningEffort = (
   return modelConfig.defaultReasoningEffort;
 };
 
-export const normalizeChatConfig = (config: ChatConfig): ChatConfig => {
-  const textVerbosity = TEXT_VERBOSITY.includes(config.textVerbosity)
-    ? config.textVerbosity
-    : 'medium';
+export const normalizeChatConfig = (
+  config: ChatConfigInput | null | undefined
+): ChatConfig => {
+  const source = config || {};
+  const textVerbosity = source.textVerbosity && TEXT_VERBOSITY.includes(source.textVerbosity)
+    ? source.textVerbosity
+    : DEFAULT_CONFIG.textVerbosity;
 
   return {
-    ...config,
-    model: getModelConfig(config.model).id,
-    reasoningEffort: getNormalizedReasoningEffort(config.model, config.reasoningEffort),
-    textVerbosity
+    ...source,
+    model: getModelConfig(source.model || DEFAULT_CONFIG.model).id,
+    reasoningEffort: getNormalizedReasoningEffort(source.model || DEFAULT_CONFIG.model, source.reasoningEffort),
+    textVerbosity,
+    tools: {
+      webSearch: typeof source.tools?.webSearch === 'boolean'
+        ? source.tools.webSearch
+        : DEFAULT_CONFIG.tools.webSearch,
+      codeInterpreter: typeof source.tools?.codeInterpreter === 'boolean'
+        ? source.tools.codeInterpreter
+        : DEFAULT_CONFIG.tools.codeInterpreter
+    }
   };
 };
