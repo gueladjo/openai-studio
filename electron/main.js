@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, clipboard } from 'electron';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { isSafeExternalUrl, isSameAppDocument } from './urlPolicy.js';
 
 // Define __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -136,18 +137,24 @@ function createWindow() {
 
   // Check if we're in development mode
   const isDev = !app.isPackaged;
+  const appUrl = isDev
+    ? 'http://localhost:5173/'
+    : pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
 
   // Open external links in default browser instead of in the app
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 
   // Handle navigation to external URLs
   win.webContents.on('will-navigate', (event, url) => {
-    const appUrl = isDev ? 'http://localhost:5173' : 'file://';
-    if (!url.startsWith(appUrl)) {
-      event.preventDefault();
+    if (isSameAppDocument(url, appUrl)) return;
+
+    event.preventDefault();
+    if (isSafeExternalUrl(url)) {
       shell.openExternal(url);
     }
   });
@@ -162,10 +169,12 @@ function createWindow() {
         label: 'Copy URL',
         click: () => clipboard.writeText(params.linkURL)
       });
-      menuItems.push({
-        label: 'Open in Browser',
-        click: () => shell.openExternal(params.linkURL)
-      });
+      if (isSafeExternalUrl(params.linkURL)) {
+        menuItems.push({
+          label: 'Open in Browser',
+          click: () => shell.openExternal(params.linkURL)
+        });
+      }
       menuItems.push({ type: 'separator' });
     }
 
@@ -217,11 +226,11 @@ function createWindow() {
   // In production, we load the index.html file
   if (isDev) {
     // You might need to adjust the port if Vite uses something other than 5173
-    win.loadURL('http://localhost:5173');
+    win.loadURL(appUrl);
     // Open DevTools in dev mode
     // win.webContents.openDevTools();
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    win.loadURL(appUrl);
   }
 
   return win;
