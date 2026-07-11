@@ -930,6 +930,10 @@ export const generateResponse = async (
     throw new Error('A user message is required to generate a response.');
   }
 
+  // Error rows are local UI state, not assistant output. Replaying them when
+  // response threading is unavailable would present failures as conversation.
+  const replayableMessages = messages.filter(message => message.status !== 'error');
+
   // Initialize OpenAI Client per request to support dynamic keys
   const openai = new OpenAI({
     apiKey: apiKey,
@@ -939,8 +943,8 @@ export const generateResponse = async (
   });
   const normalizedConfig = normalizeChatConfig(config);
   const modelConfig = getModelConfig(normalizedConfig.model);
-  const previousResponseId = getPreviousResponseId(messages);
-  const inputMessages = previousResponseId ? [latestMessage] : messages;
+  const previousResponseId = getPreviousResponseId(replayableMessages);
+  const inputMessages = previousResponseId ? [latestMessage] : replayableMessages;
   const resolvedInputMessages = await Promise.all(inputMessages.map(message => (
     resolveMessageAttachmentContent(message, options.resolveAttachmentContent)
   )));

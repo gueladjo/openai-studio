@@ -186,3 +186,74 @@ describe('generateResponse reasoning summaries', () => {
     consoleError.mockRestore();
   });
 });
+
+describe('generateResponse conversation history', () => {
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it('does not replay local assistant error rows', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-error',
+        role: 'assistant',
+        content: 'Error: Rate limit exceeded.',
+        status: 'error',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Try a different approach.',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'user', content: 'Try a different approach.' }
+    ]);
+  });
+
+  it('keeps stopped partial assistant output in local history', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-stopped',
+        role: 'assistant',
+        content: 'A useful partial answer.',
+        status: 'stopped',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue from there.',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'assistant', content: 'A useful partial answer.' },
+      { role: 'user', content: 'Continue from there.' }
+    ]);
+  });
+});
