@@ -36,7 +36,6 @@ One request may run per session, while different sessions may stream concurrentl
 - `vitest.config.ts`: Node unit-test environment plus the test-only app-version definition.
 - `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
 - `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
-- `manifest.json`: an active second manifest explicitly linked by `index.html`; the web build also injects the Vite-generated `manifest.webmanifest`, so built HTML contains both until they are consolidated.
 
 Generated `node_modules/`, `dist/`, and `release/` content is ignored and should not be edited.
 
@@ -106,8 +105,8 @@ There is no lint or format command. Vitest is intentionally scoped to pure logic
 ## Web, PWA, And Electron Constraints
 
 - Electron mode uses relative asset paths and disables the PWA plugin. Every non-Electron Vite mode currently uses the hard-coded `/openai-studio/` base.
-- Generated PWA `scope` and `start_url` derive from `base`. For another hosting path, update `base` and align or remove the separate root manifest linked by `index.html`.
-- `vite.config.ts` is authoritative for the generated PWA manifest and service worker. The root `manifest.json` and explicit link in `index.html` can drift from it; verify both when touching metadata.
+- Generated PWA `scope` and `start_url` derive from `base`. For another hosting path, update `base`.
+- `vite.config.ts` is authoritative for the generated PWA manifest and service worker.
 - The PWA caches the built shell and selected assets, including the compiled Tailwind CSS, but model requests require connectivity. Google Fonts remain external and are runtime-cached by Workbox.
 - `__APP_VERSION__` is read from `package.json` at build time.
 - Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes only window controls, maximize state, and clipboard writes.

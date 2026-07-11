@@ -51,7 +51,6 @@ User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → Ope
 - `electron/main.js` / `electron/preload.cjs` — Electron lifecycle and the narrow IPC bridge
 - `vite.config.ts` — mode-specific base paths, env injection, `__APP_VERSION__`, and the authoritative generated PWA manifest/service worker
 - `vitest.config.ts` — Node unit-test environment and test-only `__APP_VERSION__` definition
-- `manifest.json` — a second, hand-maintained manifest linked from `index.html`; it can drift from the Vite-generated one, so check both when touching PWA metadata.
 
 ## Key Types (types.ts)
 
@@ -107,7 +106,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 
 ## Build Modes, PWA, Electron
 
-- Vite `electron` mode: relative base `./`, PWA plugin disabled. All other modes: hard-coded base `/openai-studio/` (matches GitHub Pages). Generated PWA `scope`/`start_url` derive from `base` — deploying elsewhere means changing `base` and aligning/removing the root `manifest.json`.
+- Vite `electron` mode: relative base `./`, PWA plugin disabled. All other modes: hard-coded base `/openai-studio/` (matches GitHub Pages). Generated PWA `scope`/`start_url` derive from `base` — deploying elsewhere means changing `base`.
 - `__APP_VERSION__` is injected from `package.json` at build time; bump with `npm version patch|minor|major` before a release.
 - The PWA caches the built shell, including the compiled Tailwind CSS; model requests require connectivity. Google Fonts remain external and runtime-cached by Workbox (Electron falls back to system fonts when offline cold).
 - Electron: frameless single-instance window, `nodeIntegration` off, `contextIsolation` on, Chromium sandbox currently disabled — keep the preload bridge narrow (window controls, maximize state, clipboard) and external navigation in the system browser.
