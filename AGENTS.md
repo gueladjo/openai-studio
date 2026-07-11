@@ -25,6 +25,7 @@ One request may run per session, while different sessions may stream concurrentl
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
+- `services/openaiService.generate.test.ts`: mocked-SDK Vitest coverage for reasoning-summary streaming, optional-capability retry behavior, and conversation-history construction.
 - `services/openaiService.test.ts`: Vitest coverage for citation marker recognition, annotation application, and redundant source-label cleanup.
 - `services/storage.ts`: OPFS/IndexedDB abstraction, separate attachment records, rolling backups, and workspace backup/restore.
 - `utils/conversationExport.ts`: Markdown transcript export and filename handling.
@@ -58,7 +59,7 @@ npm ci
 - `npm run deploy`: web build plus `gh-pages -d dist`.
 - `node scripts/generate-icons.js`: regenerate application icons; there is no npm alias.
 
-There is no lint or format command. Vitest is intentionally scoped to pure logic that does not require browser or live API setup.
+There is no lint or format command. Vitest covers pure logic, server-rendered component behavior, and mocked-SDK generation behavior without requiring a browser or live API setup.
 
 ## Coding Conventions
 

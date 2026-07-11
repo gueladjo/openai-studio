@@ -23,7 +23,7 @@ npm run deploy                  # build:web + gh-pages -d dist
 node scripts/generate-icons.js  # Regenerate PNG icons (no npm alias)
 ```
 
-There is no lint or format command. Vitest currently covers pure citation post-processing logic without browser or live API setup.
+There is no lint or format command. Vitest covers pure logic, server-rendered component behavior, and mocked-SDK generation behavior without requiring a browser or live API setup.
 
 ## Architecture
 
@@ -43,6 +43,7 @@ User input (ChatArea) → App.tsx state → openaiService.ts (streaming) → Ope
 - `components/ConfigPanel.tsx` — model, reasoning effort, verbosity, tools, system instructions
 - `components/TitleBar.tsx` — Electron-only window controls
 - `services/openaiService.ts` — SDK integration: streaming, cancellation, response threading, citations, generated-file retrieval, title generation
+- `services/openaiService.generate.test.ts` — mocked-SDK reasoning-summary streaming, optional-capability retry, and conversation-history tests
 - `services/openaiService.test.ts` — citation marker, annotation application, source deduplication, and source-label cleanup tests
 - `services/storage.ts` — OPFS/IndexedDB abstraction, `.bak` recovery, workspace backup/restore
 - `utils/conversationExport.ts` — Markdown transcript export (the chat "Share" button downloads a local file; it does not publish)
