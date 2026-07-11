@@ -41,7 +41,7 @@ Generated `node_modules/`, `dist/`, and `release/` content is ignored and should
 
 ## Install And Commands
 
-Use Node.js 20.3+ and install the lockfile exactly:
+Use Node.js 20.19+ and install the lockfile exactly:
 
 ```bash
 npm ci

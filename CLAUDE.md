@@ -11,7 +11,7 @@ OpenAI Studio is a React 18 + TypeScript client for the OpenAI Responses API (GP
 ## Commands
 
 ```bash
-npm ci                          # Install exact lockfile deps (Node 20.3+)
+npm ci                          # Install exact lockfile deps (Node 20.19+)
 npm run dev                     # Web dev server → http://localhost:5173/openai-studio/
 npm test                        # Run the Vitest unit suite once
 npm run electron:dev            # Vite (electron mode) + Electron; main process expects port 5173
