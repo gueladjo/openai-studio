@@ -1091,6 +1091,7 @@ function App() {
 
     if (
       assistantMessageIndex < 1 ||
+      assistantMessageIndex !== session.messages.length - 1 ||
       assistantMessage?.role !== 'assistant' ||
       userMessage?.role !== 'user'
     ) {

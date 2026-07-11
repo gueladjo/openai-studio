@@ -996,6 +996,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             const hasPrecedingUserMessage = idx > 0 && session.messages[idx - 1]?.role === 'user';
             const canRetry = (
                 isFailedAssistantMessage(msg) &&
+                isLatestMessage &&
                 !isLoading &&
                 Boolean(msg.id) &&
                 hasPrecedingUserMessage
