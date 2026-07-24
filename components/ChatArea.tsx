@@ -1,5 +1,13 @@
 
-import React, { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import React, {
+  useRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useState
+} from 'react';
 import { GeneratedFile, Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -12,10 +20,19 @@ import {
   isSupportedImageAttachment,
   validateAttachments
 } from '../utils/attachmentValidation';
+import {
+  chatDraftsReducer,
+  getChatDraft
+} from '../utils/chatDrafts';
 
 interface ChatAreaProps {
   session: Session | null;
-  onSendMessage: (content: string, attachments: File[]) => Promise<boolean>;
+  availableSessionIds: string[];
+  onSendMessage: (
+    sessionId: string,
+    content: string,
+    attachments: File[]
+  ) => Promise<boolean>;
   onStopGenerating: () => void;
   onRetryFailedMessage: (assistantMessageId: string) => void;
   onRemoveFailedAttachment: (userMessageId: string, attachmentIndex: number) => void;
@@ -41,6 +58,22 @@ const resizePromptTextarea = (textarea: HTMLTextAreaElement): void => {
     Math.max(textarea.scrollHeight, PROMPT_INPUT_MIN_HEIGHT_PX),
     PROMPT_INPUT_MAX_HEIGHT_PX
   )}px`;
+};
+
+const DraftImagePreview: React.FC<{ file: File }> = ({ file }) => {
+  const imageUrl = useMemo(() => URL.createObjectURL(file), [file]);
+
+  useEffect(() => () => {
+    URL.revokeObjectURL(imageUrl);
+  }, [imageUrl]);
+
+  return (
+    <img
+      src={imageUrl}
+      alt={file.name}
+      className="w-16 h-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+    />
+  );
 };
 
 const formatDuration = (ms: number): string => {
@@ -923,6 +956,7 @@ export const MessageRow = React.memo(({
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
   session,
+  availableSessionIds,
   onSendMessage,
   onStopGenerating,
   onRetryFailedMessage,
@@ -935,18 +969,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   isMobile = false,
   readOnly = false
 }) => {
-  const [inputValue, setInputValue] = useState('');
-  const [attachments, setAttachments] = useState<File[]>([]);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [drafts, dispatchDraft] = useReducer(chatDraftsReducer, {});
   const [fileInputKey, setFileInputKey] = useState(0);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileSelectionSessionIdRef = useRef<string | null>(null);
+  const availableSessionIdsRef = useRef(new Set(availableSessionIds));
+  availableSessionIdsRef.current = new Set(availableSessionIds);
   const isPinnedToBottomRef = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
   const latestMessage = session?.messages[session.messages.length - 1];
+  const activeSessionId = session?.id || null;
+  const activeDraft = getChatDraft(drafts, activeSessionId);
+  const inputValue = activeDraft.content;
+  const attachments = activeDraft.attachments;
+  const attachmentError = activeDraft.attachmentError;
+  const availableSessionIdsKey = availableSessionIds.join('\u0000');
 
   // App recreates these handlers on every render; hand memoized rows
   // stable wrappers instead so streaming updates don't defeat React.memo.
@@ -1027,6 +1068,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    dispatchDraft({
+      type: 'prune',
+      sessionIds: availableSessionIds
+    });
+  }, [availableSessionIdsKey]);
+
   useLayoutEffect(() => {
     if (!textareaRef.current) return;
 
@@ -1034,39 +1082,59 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, [inputValue]);
 
   const handleSend = async () => {
-    if (readOnly || (!inputValue.trim() && attachments.length === 0) || isLoading) return;
+    if (
+      readOnly ||
+      !activeSessionId ||
+      (!inputValue.trim() && attachments.length === 0) ||
+      isLoading
+    ) {
+      return;
+    }
     try {
       validateAttachments(attachments);
     } catch (error) {
-      setAttachmentError(
-        error instanceof Error ? error.message : 'Attachments could not be sent.'
-      );
+      dispatchDraft({
+        type: 'set-attachment-error',
+        sessionId: activeSessionId,
+        attachmentError: error instanceof Error
+          ? error.message
+          : 'Attachments could not be sent.'
+      });
       return;
     }
     isPinnedToBottomRef.current = true;
+    const targetSessionId = activeSessionId;
     const submittedContent = inputValue;
     const submittedAttachments = attachments;
-    setInputValue('');
-    setAttachments([]);
-    setAttachmentError(null);
+    dispatchDraft({
+      type: 'clear',
+      sessionId: targetSessionId
+    });
 
-    const accepted = await onSendMessage(submittedContent, submittedAttachments);
-    if (!accepted) {
-      setInputValue(current => current
-        ? `${submittedContent}\n${current}`
-        : submittedContent
-      );
-      setAttachments(current => [...submittedAttachments, ...current]);
+    const accepted = await onSendMessage(
+      targetSessionId,
+      submittedContent,
+      submittedAttachments
+    );
+    if (!accepted && availableSessionIdsRef.current.has(targetSessionId)) {
+      dispatchDraft({
+        type: 'restore-submission',
+        sessionId: targetSessionId,
+        content: submittedContent,
+        attachments: submittedAttachments
+      });
     }
   };
 
-  const addAttachments = (files: File[]) => {
+  const addAttachments = (sessionId: string, files: File[]) => {
+    if (!availableSessionIdsRef.current.has(sessionId)) return;
+    const targetDraft = getChatDraft(drafts, sessionId);
     const acceptedFiles: File[] = [];
     const errors: string[] = [];
 
     files.forEach(file => {
       try {
-        validateAttachments([...attachments, ...acceptedFiles, file]);
+        validateAttachments([...targetDraft.attachments, ...acceptedFiles, file]);
         acceptedFiles.push(file);
       } catch (error) {
         errors.push(
@@ -1075,10 +1143,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       }
     });
 
-    if (acceptedFiles.length > 0) {
-      setAttachments([...attachments, ...acceptedFiles]);
-    }
-    setAttachmentError(errors.length > 0 ? errors.join(' ') : null);
+    dispatchDraft({
+      type: 'set-attachments',
+      sessionId,
+      attachments: [...targetDraft.attachments, ...acceptedFiles],
+      attachmentError: errors.length > 0 ? errors.join(' ') : null
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1089,9 +1159,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (readOnly) return;
-    if (e.target.files && e.target.files.length > 0) {
-      addAttachments(Array.from(e.target.files));
+    const targetSessionId = fileSelectionSessionIdRef.current;
+    fileSelectionSessionIdRef.current = null;
+    if (
+      !readOnly &&
+      targetSessionId &&
+      e.target.files &&
+      e.target.files.length > 0
+    ) {
+      addAttachments(targetSessionId, Array.from(e.target.files));
     }
     setFileInputKey(prev => prev + 1);
   };
@@ -1119,15 +1195,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       }
     }
 
-    if (files.length > 0) {
-      addAttachments(files);
+    if (files.length > 0 && activeSessionId) {
+      addAttachments(activeSessionId, files);
     }
   };
 
   const removeAttachment = (index: number) => {
-    if (readOnly) return;
-    setAttachments(prev => prev.filter((_, i) => i !== index));
-    setAttachmentError(null);
+    if (readOnly || !activeSessionId) return;
+    dispatchDraft({
+      type: 'remove-attachment',
+      sessionId: activeSessionId,
+      attachmentIndex: index
+    });
+  };
+
+  const openFilePicker = () => {
+    if (readOnly || !activeSessionId) return;
+    fileSelectionSessionIdRef.current = activeSessionId;
+    fileInputRef.current?.click();
   };
 
   if (!session) {
@@ -1222,16 +1307,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">
                   {attachments.map((file, index) => {
                       const isImage = isSupportedImageAttachment(file);
-                      const imageUrl = isImage ? URL.createObjectURL(file) : null;
 
                       return isImage ? (
                           <div key={index} className="relative group" title={file.name}>
-                              <img
-                                  src={imageUrl!}
-                                  alt={file.name}
-                                  className="w-16 h-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-                                  onLoad={() => URL.revokeObjectURL(imageUrl!)}
-                              />
+                              <DraftImagePreview file={file} />
                               <button
                                   onClick={() => removeAttachment(index)}
                                   disabled={readOnly}
@@ -1272,7 +1351,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <textarea
               ref={textareaRef}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                if (!activeSessionId) return;
+                dispatchDraft({
+                  type: 'set-content',
+                  sessionId: activeSessionId,
+                  content: e.target.value
+                });
+              }}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               disabled={readOnly}
@@ -1284,7 +1370,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             
             <div className="absolute right-2 bottom-1.5 flex items-center gap-1">
                <button 
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={openFilePicker}
                   disabled={readOnly}
                   className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   title="Attach file"

@@ -214,6 +214,7 @@ function App() {
   const [isWorkspaceLoaded, setIsWorkspaceLoaded] = useState(false);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [isWorkspaceReadOnly, setIsWorkspaceReadOnly] = useState(false);
+  const [draftWorkspaceEpoch, setDraftWorkspaceEpoch] = useState(0);
   const [saveFailure, setSaveFailure] = useState<SaveQueueFailure<SaveKey> | null>(null);
   const [isRetryingSave, setIsRetryingSave] = useState(false);
   const [closeSaveError, setCloseSaveError] = useState<string | null>(null);
@@ -589,6 +590,7 @@ function App() {
       : cleanedSessions[0]?.id || null;
 
     if (!isStillCurrent()) throw createOperationAbortError();
+    setDraftWorkspaceEpoch(epoch => epoch + 1);
     revokeAttachmentPreviewUrls(sessionsRef.current);
     sessionsRef.current = cleanedSessions;
     systemInstructionsRef.current = nextInstructions;
@@ -1325,17 +1327,18 @@ function App() {
     }
   };
 
-  const handleSendMessage = async (content: string, attachments: File[]) => {
+  const handleSendMessage = async (
+    targetSessionId: string,
+    content: string,
+    attachments: File[]
+  ) => {
     if (
       !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
-      !currentSessionIdRef.current
+      workspaceMutationBlockedRef.current
     ) {
       return false;
     }
 
-    // Capture the session ID to allow context switching while processing
-    const targetSessionId = currentSessionIdRef.current;
     if (processingSessionIdsRef.current.has(targetSessionId)) return false;
     const initialSession = sessionsRef.current.find(s => s.id === targetSessionId);
     if (!initialSession) return false;
@@ -2155,7 +2158,9 @@ function App() {
 
           <main className="flex-1 flex min-w-0 w-full overflow-hidden">
             <ChatArea
+              key={draftWorkspaceEpoch}
               session={currentSession}
+              availableSessionIds={sessions.map(session => session.id)}
               onSendMessage={handleSendMessage}
               onStopGenerating={handleStopGenerating}
               onRetryFailedMessage={handleRetryFailedMessage}
