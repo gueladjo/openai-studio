@@ -66,6 +66,33 @@ interface GenerateResponseOptions {
   resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
 }
 
+interface OpenAIErrorDetails {
+  message: string;
+  status?: number;
+  code?: string;
+  param?: string;
+  type?: string;
+  requestId?: string;
+}
+
+export class OpenAIServiceError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  readonly param?: string;
+  readonly type?: string;
+  readonly requestId?: string;
+
+  constructor(details: OpenAIErrorDetails) {
+    super(details.message);
+    this.name = 'OpenAIServiceError';
+    this.status = details.status;
+    this.code = details.code;
+    this.param = details.param;
+    this.type = details.type;
+    this.requestId = details.requestId;
+  }
+}
+
 type OpenAIReasoningConfig = NonNullable<OpenAIResponsesStreamingConfig['reasoning']>;
 type OpenAIReasoningEffort = NonNullable<OpenAIReasoningConfig['effort']>;
 
@@ -848,28 +875,113 @@ const createAbortError = (): Error => {
   return error;
 };
 
-const getErrorMessageFromValue = (value: unknown): string | undefined => {
-  if (typeof value === 'string') return value;
-  if (!isRecord(value)) return undefined;
+const getOpenAIErrorDetails = (error: unknown): OpenAIErrorDetails => {
+  const root = isRecord(error) ? error : undefined;
+  const nestedError = root && isRecord(root.error) ? root.error : undefined;
+  const status = root && typeof root.status === 'number' && Number.isFinite(root.status)
+    ? root.status
+    : undefined;
 
-  return getStringProperty(value, 'message') ||
-    getStringProperty(value, 'code') ||
-    getStringProperty(value, 'type');
+  return {
+    message: (
+      error instanceof Error
+        ? error.message
+        : undefined
+    ) ||
+      (nestedError && getStringProperty(nestedError, 'message')) ||
+      (root && getStringProperty(root, 'message')) ||
+      'OpenAI request failed.',
+    status,
+    code: (
+      root && getStringProperty(root, 'code')
+    ) || (
+      nestedError && getStringProperty(nestedError, 'code')
+    ),
+    param: (
+      root && getStringProperty(root, 'param')
+    ) || (
+      nestedError && getStringProperty(nestedError, 'param')
+    ),
+    type: (
+      nestedError && getStringProperty(nestedError, 'type')
+    ) || (
+      root && getStringProperty(root, 'type')
+    ),
+    requestId: root && (
+      getStringProperty(root, 'requestID') ||
+      getStringProperty(root, 'request_id')
+    )
+  };
 };
 
-const getStreamEventErrorMessage = (
+const getStreamEventError = (
   event: OpenAIResponsesStreamEvent
-): string | undefined => {
-  if (!isRecord(event)) return undefined;
-
-  const eventError = getErrorMessageFromValue(event.error);
-  if (eventError) return eventError;
-
-  if (isRecord(event.response)) {
-    return getErrorMessageFromValue(event.response.error);
+): OpenAIServiceError => {
+  if (!isRecord(event)) {
+    return new OpenAIServiceError({ message: 'OpenAI response failed.' });
   }
 
-  return undefined;
+  const eventError = isRecord(event.error) ? event.error : undefined;
+  const responseError = isRecord(event.response) && isRecord(event.response.error)
+    ? event.response.error
+    : undefined;
+  const errorValue = eventError || responseError || event;
+  const details = getOpenAIErrorDetails(errorValue);
+
+  if (errorValue === event && details.type === event.type) {
+    details.type = undefined;
+  }
+
+  return new OpenAIServiceError(details);
+};
+
+const PREVIOUS_RESPONSE_NOT_FOUND_CODES = new Set([
+  'previous_response_not_found',
+  'response_not_found',
+  'not_found'
+]);
+
+const isUnresolvablePreviousResponseError = (error: unknown): boolean => {
+  const details = getOpenAIErrorDetails(error);
+  const code = details.code?.toLowerCase();
+  const param = details.param?.toLowerCase();
+
+  if (code === 'previous_response_not_found') return true;
+  if (
+    param === 'previous_response_id' &&
+    code &&
+    PREVIOUS_RESPONSE_NOT_FOUND_CODES.has(code)
+  ) {
+    return true;
+  }
+  if (
+    details.status !== 400 &&
+    details.status !== 403 &&
+    details.status !== 404 &&
+    details.status !== 422
+  ) {
+    return false;
+  }
+
+  const normalizedMessage = details.message.toLowerCase();
+  const identifiesPreviousResponse = (
+    param === 'previous_response_id' ||
+    normalizedMessage.includes('previous_response_id') ||
+    normalizedMessage.includes('previous response')
+  );
+  const cannotResolveResponse = (
+    normalizedMessage.includes('not found') ||
+    normalizedMessage.includes('cannot be resolved') ||
+    normalizedMessage.includes('could not be resolved') ||
+    normalizedMessage.includes('does not exist') ||
+    normalizedMessage.includes('no longer exists') ||
+    normalizedMessage.includes('expired') ||
+    normalizedMessage.includes('not accessible') ||
+    normalizedMessage.includes('different project') ||
+    normalizedMessage.includes('another project')
+  );
+
+  return identifiesPreviousResponse && cannotResolveResponse;
 };
 
 const isReasoningSummaryUnavailableError = (error: unknown): boolean => {
@@ -944,11 +1056,25 @@ export const generateResponse = async (
   const normalizedConfig = normalizeChatConfig(config);
   const modelConfig = getModelConfig(normalizedConfig.model);
   const previousResponseId = getPreviousResponseId(replayableMessages);
-  const inputMessages = previousResponseId ? [latestMessage] : replayableMessages;
-  const resolvedInputMessages = await Promise.all(inputMessages.map(message => (
-    resolveMessageAttachmentContent(message, options.resolveAttachmentContent)
-  )));
-  const apiInput = resolvedInputMessages.map(mapMessageToResponseInput);
+  const resolvedMessageCache = new Map<Message, Promise<Message>>();
+  const getResolvedMessage = (message: Message): Promise<Message> => {
+    let resolvedMessage = resolvedMessageCache.get(message);
+    if (!resolvedMessage) {
+      resolvedMessage = resolveMessageAttachmentContent(
+        message,
+        options.resolveAttachmentContent
+      );
+      resolvedMessageCache.set(message, resolvedMessage);
+    }
+    return resolvedMessage;
+  };
+  const buildApiInput = async (inputMessages: Message[]): Promise<OpenAIResponsesInput[]> => (
+    Promise.all(inputMessages.map(getResolvedMessage))
+      .then(resolvedMessages => resolvedMessages.map(mapMessageToResponseInput))
+  );
+  const apiInput = await buildApiInput(
+    previousResponseId ? [latestMessage] : replayableMessages
+  );
 
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 
@@ -1025,18 +1151,44 @@ export const generateResponse = async (
         options.signal ? { signal: options.signal } : undefined
       )
     );
+    const createStreamWithCapabilityFallback = async (
+      streamPayload: OpenAIResponsesStreamingConfig
+    ): Promise<Awaited<ReturnType<typeof createStream>>> => {
+      try {
+        return await createStream(streamPayload);
+      } catch (error) {
+        if (
+          !streamPayload.reasoning?.summary ||
+          !isReasoningSummaryUnavailableError(error)
+        ) {
+          throw error;
+        }
+
+        // Some accounts or models cannot request summaries. The first request was
+        // rejected before a stream existed, so retry once without that optional field.
+        return createStream(withoutReasoningSummary(streamPayload));
+      }
+    };
     let stream: Awaited<ReturnType<typeof createStream>>;
 
     try {
-      stream = await createStream(payload);
+      stream = await createStreamWithCapabilityFallback(payload);
     } catch (error) {
-      if (!payload.reasoning?.summary || !isReasoningSummaryUnavailableError(error)) {
+      if (
+        !previousResponseId ||
+        !isUnresolvablePreviousResponseError(error)
+      ) {
         throw error;
       }
 
-      // Some accounts or models cannot request summaries. The first request was
-      // rejected before a stream existed, so retry once without that optional field.
-      stream = await createStream(withoutReasoningSummary(payload));
+      if (options.signal?.aborted) throw createAbortError();
+
+      const fallbackPayload: OpenAIResponsesStreamingConfig = {
+        ...payload,
+        input: await buildApiInput(replayableMessages)
+      };
+      delete fallbackPayload.previous_response_id;
+      stream = await createStreamWithCapabilityFallback(fallbackPayload);
     }
 
     let completedResponse: OpenAIResponse | undefined;
@@ -1071,7 +1223,7 @@ export const generateResponse = async (
         // partial output, citations, and usage — surface them like completions.
         completedResponse = event.response;
       } else if (event.type === 'response.failed' || event.type === 'error') {
-        throw new Error(getStreamEventErrorMessage(event) || 'OpenAI response failed.');
+        throw getStreamEventError(event);
       }
     }
 
@@ -1095,7 +1247,8 @@ export const generateResponse = async (
     }
 
     console.error('OpenAI API Error:', error);
-    throw new Error(error instanceof Error ? error.message : 'Failed to generate response');
+    if (error instanceof Error) throw error;
+    throw new OpenAIServiceError(getOpenAIErrorDetails(error));
   }
 };
 

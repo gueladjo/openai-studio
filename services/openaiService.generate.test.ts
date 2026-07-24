@@ -172,17 +172,49 @@ describe('generateResponse reasoning summaries', () => {
 
   it('does not retry unrelated API failures', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    createResponseMock.mockRejectedValue(Object.assign(
+    const apiError = Object.assign(
       new Error('Rate limit exceeded.'),
-      { status: 429 }
-    ));
+      {
+        status: 429,
+        code: 'rate_limit_exceeded',
+        param: 'input',
+        type: 'requests'
+      }
+    );
+    createResponseMock.mockRejectedValue(apiError);
 
     await expect(generateResponse(
       [userMessage],
       DEFAULT_CONFIG,
       'rate-limited-key'
-    )).rejects.toThrow('Rate limit exceeded.');
+    )).rejects.toBe(apiError);
     expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(apiError.code).toBe('rate_limit_exceeded');
+    consoleError.mockRestore();
+  });
+
+  it('preserves structured errors emitted by the response stream', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'error',
+      code: 'rate_limit_exceeded',
+      message: 'Rate limit exceeded.',
+      param: 'input',
+      sequence_number: 1
+    }]));
+
+    let caught: unknown;
+    try {
+      await generateResponse([userMessage], DEFAULT_CONFIG, 'rate-limited-key');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      message: 'Rate limit exceeded.',
+      code: 'rate_limit_exceeded',
+      param: 'input'
+    });
     consoleError.mockRestore();
   });
 });
@@ -255,5 +287,181 @@ describe('generateResponse conversation history', () => {
       { role: 'assistant', content: 'A useful partial answer.' },
       { role: 'user', content: 'Continue from there.' }
     ]);
+  });
+
+  it('retries an unresolvable previous response once with full local history', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    const staleResponseError = Object.assign(
+      new Error("Previous response with id 'resp-expired' not found."),
+      {
+        status: 404,
+        code: 'previous_response_not_found',
+        param: 'previous_response_id',
+        type: 'invalid_request_error'
+      }
+    );
+    createResponseMock
+      .mockRejectedValueOnce(staleResponseError)
+      .mockResolvedValueOnce(createStream([{
+        type: 'response.completed',
+        sequence_number: 1,
+        response: completedResponse
+      }]));
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'The earlier answer.',
+        status: 'complete',
+        openaiResponseId: 'resp-expired',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Build on that answer.',
+        timestamp: 3
+      }
+    ];
+
+    const result = await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(result.content).toBe('The answer is 42.');
+    expect(createResponseMock).toHaveBeenCalledTimes(2);
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      previous_response_id: 'resp-expired',
+      input: [{ role: 'user', content: 'Build on that answer.' }]
+    });
+    expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
+    expect(createResponseMock.mock.calls[1][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'assistant', content: 'The earlier answer.' },
+      { role: 'user', content: 'Build on that answer.' }
+    ]);
+  });
+
+  it('recognizes a foreign response from a definite HTTP error message', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock
+      .mockRejectedValueOnce(Object.assign(
+        new Error(
+          "Previous response 'resp-foreign' is not accessible from this project."
+        ),
+        {
+          status: 403,
+          code: 'invalid_request_error',
+          param: 'previous_response_id'
+        }
+      ))
+      .mockResolvedValueOnce(createStream([{
+        type: 'response.completed',
+        sequence_number: 1,
+        response: completedResponse
+      }]));
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'The earlier answer.',
+        openaiResponseId: 'resp-foreign',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue.',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(createResponseMock).toHaveBeenCalledTimes(2);
+    expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
+  });
+
+  it('does not retry ambiguous previous_response_id validation failures', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const validationError = Object.assign(
+      new Error('previous_response_id cannot be used with this request.'),
+      {
+        status: 400,
+        code: 'invalid_request_error',
+        param: 'previous_response_id'
+      }
+    );
+    createResponseMock.mockRejectedValue(validationError);
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'The earlier answer.',
+        openaiResponseId: 'resp-current',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue.',
+        timestamp: 3
+      }
+    ];
+
+    await expect(generateResponse(
+      messages,
+      DEFAULT_CONFIG,
+      'history-key'
+    )).rejects.toBe(validationError);
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
+  it('attempts the full-history recovery only once', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const firstError = Object.assign(
+      new Error('Previous response cannot be resolved.'),
+      {
+        status: 404,
+        code: 'previous_response_not_found',
+        param: 'previous_response_id'
+      }
+    );
+    const fallbackError = Object.assign(
+      new Error('Fallback request failed.'),
+      {
+        status: 500,
+        code: 'server_error'
+      }
+    );
+    createResponseMock
+      .mockRejectedValueOnce(firstError)
+      .mockRejectedValueOnce(fallbackError);
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'The earlier answer.',
+        openaiResponseId: 'resp-expired',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue.',
+        timestamp: 3
+      }
+    ];
+
+    await expect(generateResponse(
+      messages,
+      DEFAULT_CONFIG,
+      'history-key'
+    )).rejects.toBe(fallbackError);
+    expect(createResponseMock).toHaveBeenCalledTimes(2);
+    consoleError.mockRestore();
   });
 });
