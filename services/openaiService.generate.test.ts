@@ -1,21 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
-import { DEFAULT_CONFIG, type Message } from '../types';
+import {
+  DEFAULT_CONFIG,
+  ModelId,
+  type GeneratedFile,
+  type Message
+} from '../types';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
-const { createResponseMock } = vi.hoisted(() => ({
-  createResponseMock: vi.fn()
+const {
+  cancelResponseMock,
+  createResponseMock,
+  openAIConstructorMock,
+  retrieveContainerFileMock
+} = vi.hoisted(() => ({
+  cancelResponseMock: vi.fn(),
+  createResponseMock: vi.fn(),
+  openAIConstructorMock: vi.fn(),
+  retrieveContainerFileMock: vi.fn()
 }));
 
 vi.mock('openai', () => ({
   default: class MockOpenAI {
+    constructor(options: unknown) {
+      openAIConstructorMock(options);
+    }
+
     responses = {
+      cancel: cancelResponseMock,
       create: createResponseMock
+    };
+
+    containers = {
+      files: {
+        content: {
+          retrieve: retrieveContainerFileMock
+        }
+      }
     };
   }
 }));
 
-import { generateChatTitle, generateResponse } from './openaiService';
+import {
+  cancelResponse,
+  fetchGeneratedFileContent,
+  generateChatTitle,
+  generateResponse
+} from './openaiService';
 
 const userMessage: Message = {
   id: 'user-1',
@@ -50,6 +81,361 @@ const messageOutput = {
     logprobs: []
   }]
 } as OpenAIResponse['output'][number];
+
+describe('OpenAI request contracts', () => {
+  beforeEach(() => {
+    cancelResponseMock.mockReset();
+    createResponseMock.mockReset();
+    openAIConstructorMock.mockReset();
+    retrieveContainerFileMock.mockReset();
+  });
+
+  it('builds the complete stored streaming payload for enabled tools', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([
+      {
+        type: 'response.created',
+        sequence_number: 1,
+        response: { id: 'resp-created' }
+      },
+      {
+        type: 'response.completed',
+        sequence_number: 2,
+        response: completedResponse
+      }
+    ]));
+    const onResponseCreated = vi.fn();
+
+    await generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        model: ModelId.GPT_5_6_SOL,
+        reasoningEffort: 'max',
+        textVerbosity: 'high',
+        tools: {
+          webSearch: true,
+          codeInterpreter: true
+        }
+      },
+      'request-contract-key',
+      'Respond with concise examples.',
+      { onResponseCreated }
+    );
+
+    expect(openAIConstructorMock).toHaveBeenCalledWith({
+      apiKey: 'request-contract-key',
+      dangerouslyAllowBrowser: true,
+      maxRetries: 0,
+      timeout: 60 * 60 * 1000
+    });
+    expect(createResponseMock.mock.calls[0][0]).toEqual({
+      model: ModelId.GPT_5_6_SOL,
+      input: [{ role: 'user', content: 'Solve this problem.' }],
+      tools: [
+        {
+          type: 'web_search',
+          user_location: {
+            type: 'approximate',
+            country: 'US',
+            region: 'NY',
+            city: 'New York'
+          },
+          search_context_size: 'medium'
+        },
+        {
+          type: 'code_interpreter',
+          container: { type: 'auto' }
+        }
+      ],
+      store: true,
+      stream: true,
+      include: [
+        'code_interpreter_call.outputs',
+        'web_search_call.action.sources'
+      ],
+      text: {
+        format: { type: 'text' },
+        verbosity: 'high'
+      },
+      instructions: (
+        'You are GPT-5.6 Sol, an OpenAI model. '
+        + 'Your knowledge cutoff is February 16, 2026.\n\n'
+        + 'Respond with concise examples.'
+      ),
+      reasoning: {
+        effort: 'max',
+        summary: 'auto'
+      }
+    });
+    expect(onResponseCreated).toHaveBeenCalledWith('resp-created');
+  });
+
+  it('normalizes unsupported options and omits verbosity for o3', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+
+    await generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        model: ModelId.GPT_O3,
+        reasoningEffort: 'none',
+        textVerbosity: 'high',
+        tools: {
+          webSearch: false,
+          codeInterpreter: false
+        }
+      },
+      'o3-contract-key'
+    );
+
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      model: ModelId.GPT_O3,
+      tools: [],
+      text: {
+        format: { type: 'text' }
+      },
+      reasoning: {
+        effort: 'medium',
+        summary: 'auto'
+      }
+    });
+    expect(createResponseMock.mock.calls[0][0].text).not.toHaveProperty(
+      'verbosity'
+    );
+  });
+
+  it('maps resolved images and documents to their SDK input parts once', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+    const resolveAttachmentContent = vi.fn(async attachment => (
+      attachment.type === 'image/png'
+        ? 'data:image/png;base64,AA=='
+        : 'data:application/pdf;base64,AA=='
+    ));
+    const message: Message = {
+      ...userMessage,
+      attachments: [
+        {
+          id: 'image-1',
+          name: 'diagram.png',
+          type: 'image/png',
+          size: 1
+        },
+        {
+          id: 'file-1',
+          name: 'report.pdf',
+          type: 'application/pdf',
+          size: 1
+        }
+      ]
+    };
+
+    await generateResponse(
+      [message],
+      DEFAULT_CONFIG,
+      'attachment-contract-key',
+      undefined,
+      { resolveAttachmentContent }
+    );
+
+    expect(resolveAttachmentContent.mock.calls.map(([attachment]) => (
+      attachment.name
+    ))).toEqual(['diagram.png', 'report.pdf']);
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'Solve this problem.' },
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,AA==',
+          detail: 'auto'
+        },
+        {
+          type: 'input_file',
+          filename: 'report.pdf',
+          file_data: 'data:application/pdf;base64,AA=='
+        }
+      ]
+    }]);
+  });
+
+  it('returns Code Interpreter output and deduplicated generated files', async () => {
+    const generatedFileAnnotation = {
+      type: 'container_file_citation',
+      file_id: 'file-result',
+      container_id: 'container-1',
+      filename: '/mnt/data/result.csv'
+    };
+    const annotatedMessage = {
+      id: 'msg-generated-file',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{
+        type: 'output_text',
+        text: 'The analysis is ready.',
+        annotations: [
+          generatedFileAnnotation,
+          { ...generatedFileAnnotation }
+        ],
+        logprobs: []
+      }]
+    } as unknown as OpenAIResponse['output'][number];
+    const codeInterpreterOutput = {
+      id: 'code-1',
+      type: 'code_interpreter_call',
+      status: 'completed',
+      container_id: 'container-1',
+      code: 'print("done")',
+      outputs: [
+        { type: 'logs', logs: 'done\n' },
+        { type: 'image', url: 'https://example.com/chart.png' }
+      ]
+    } as unknown as OpenAIResponse['output'][number];
+    const completedResponse = createCompletedResponse([
+      annotatedMessage,
+      codeInterpreterOutput
+    ]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+
+    const result = await generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        tools: {
+          webSearch: false,
+          codeInterpreter: true
+        }
+      },
+      'generated-file-key'
+    );
+
+    expect(result.content).toContain('The analysis is ready.');
+    expect(result.content).toContain('**Code Interpreter**');
+    expect(result.content).toContain('```python\nprint("done")\n```');
+    expect(result.content).toContain('```output\ndone\n```');
+    expect(result.content).toContain(
+      '![Code Interpreter output 2](https://example.com/chart.png)'
+    );
+    expect(result.generatedFiles).toEqual([{
+      filename: '/mnt/data/result.csv',
+      fileId: 'file-result',
+      containerId: 'container-1',
+      displayName: 'result.csv',
+      mimeType: 'text/csv',
+      source: 'container_file_citation'
+    }]);
+  });
+
+  it('uses the non-retrying cancellation and generated-file endpoints', async () => {
+    cancelResponseMock.mockResolvedValue(undefined);
+    retrieveContainerFileMock.mockResolvedValue(
+      new Response('generated bytes', { status: 200 })
+    );
+    const generatedFile: GeneratedFile = {
+      filename: 'result.txt',
+      fileId: 'file-result',
+      containerId: 'container-1'
+    };
+
+    await cancelResponse('resp-1', 'cancel-key');
+    const blob = await fetchGeneratedFileContent(
+      generatedFile,
+      'download-key'
+    );
+
+    expect(openAIConstructorMock.mock.calls).toEqual([
+      [{
+        apiKey: 'cancel-key',
+        dangerouslyAllowBrowser: true,
+        maxRetries: 0
+      }],
+      [{
+        apiKey: 'download-key',
+        dangerouslyAllowBrowser: true
+      }]
+    ]);
+    expect(cancelResponseMock).toHaveBeenCalledWith('resp-1');
+    expect(retrieveContainerFileMock).toHaveBeenCalledWith(
+      'file-result',
+      { container_id: 'container-1' }
+    );
+    expect(await blob.text()).toBe('generated bytes');
+  });
+
+  it('uses the fixed lightweight title-generation contract', async () => {
+    createResponseMock.mockResolvedValue({
+      output_text: 'Concise title'
+    });
+
+    await expect(generateChatTitle(
+      'A long first message',
+      'title-contract-key'
+    )).resolves.toBe('Concise title');
+
+    expect(openAIConstructorMock).toHaveBeenCalledWith({
+      apiKey: 'title-contract-key',
+      dangerouslyAllowBrowser: true
+    });
+    expect(createResponseMock.mock.calls[0][0]).toEqual({
+      model: ModelId.GPT_5_NANO,
+      instructions: (
+        'Summarize the following message into a short, concise title '
+        + '(max 5 words). Do not use quotes.'
+      ),
+      input: [{
+        role: 'user',
+        content: 'A long first message'
+      }],
+      text: {
+        format: { type: 'text' },
+        verbosity: 'low'
+      },
+      reasoning: {
+        effort: 'minimal'
+      },
+      store: true
+    });
+  });
+
+  it('rejects incomplete or unsuccessful generated-file downloads', async () => {
+    await expect(fetchGeneratedFileContent(
+      {
+        filename: 'result.txt',
+        fileId: '',
+        containerId: 'container-1'
+      },
+      'download-key'
+    )).rejects.toThrow('Generated file metadata is incomplete');
+    expect(openAIConstructorMock).not.toHaveBeenCalled();
+
+    retrieveContainerFileMock.mockResolvedValue(
+      new Response('missing', { status: 404 })
+    );
+    await expect(fetchGeneratedFileContent(
+      {
+        filename: 'result.txt',
+        fileId: 'file-missing',
+        containerId: 'container-1'
+      },
+      'download-key'
+    )).rejects.toThrow('Failed to download generated file (404)');
+  });
+});
 
 describe('generateResponse reasoning summaries', () => {
   beforeEach(() => {
