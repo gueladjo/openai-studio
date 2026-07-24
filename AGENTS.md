@@ -20,20 +20,24 @@ One request may run per session, while different sessions may stream concurrentl
 
 - `index.tsx`: React bootstrap.
 - `App.tsx`: central state, storage initialization, serialized/checkpointed saves, response lifecycle, stop/retry/regenerate, and import/export.
+- `App.integration.test.tsx`: happy-dom controller coverage with mocked child components, storage, workspace coordination, and OpenAI calls; protects startup writes, request routing/termination, destructive races, and close flushing.
 - `components/ChatArea.tsx`: composer, attachments, message rendering, response details, citations, generated files, and conversation Markdown export.
 - `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
-- `services/openaiService.generate.test.ts`: mocked-SDK Vitest coverage for reasoning-summary streaming, optional-capability retry behavior, and conversation-history construction.
+- `services/openaiService.generate.test.ts`: mocked-SDK Vitest coverage for request payloads, model/tool capabilities, attachment input parts, streaming/terminal output, cancellation/download endpoints, optional-capability retry behavior, and conversation-history construction.
 - `services/openaiService.test.ts`: Vitest coverage for citation marker recognition, annotation application, and redundant source-label cleanup.
 - `services/storage.ts`: OPFS/IndexedDB abstraction, separate attachment records, rolling backups, and workspace backup/restore.
+- `services/storage.integration.test.ts`: public storage contracts against an in-memory OPFS and `fake-indexeddb`, including revisions, recovery, attachments, restore rollback, backend migration, and Electron fallback refusal.
 - `utils/conversationExport.ts`: Markdown transcript export and filename handling.
 - `utils/sourceUrls.ts`: citation URL validation and display metadata.
 - `types.ts`: application types plus aliases to Responses API SDK types.
 - `constants.ts`: model catalog, defaults, and config normalization.
 - `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window policy, IPC, and the narrow renderer bridge.
+- `electron/main.test.js`: mocked Electron main-process coverage for BrowserWindow isolation, navigation policy, and the renderer-confirmed close/quit handshake.
 - `vite.config.ts`: mode-specific base paths, environment injection, app version, and authoritative generated PWA configuration.
+- `buildPolicy.test.ts`: production-web key exclusion, mode-specific base paths, and generated PWA navigation metadata.
 - `vitest.config.ts`: Node unit-test environment plus the test-only app-version definition.
 - `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
 - `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
@@ -59,7 +63,11 @@ npm ci
 - `npm run deploy`: web build plus `gh-pages -d dist`.
 - `node scripts/generate-icons.js`: regenerate application icons; there is no npm alias.
 
-There is no lint or format command. Vitest covers pure logic, server-rendered component behavior, and mocked-SDK generation behavior without requiring a browser or live API setup.
+There is no lint or format command. Vitest covers pure logic, server-rendered
+component behavior, mocked-SDK generation, the App controller in `happy-dom`,
+and storage through in-memory OPFS/IndexedDB doubles. The suite must not require
+a live API key, real browser profile, real user storage, or Electron process.
+Prefer fake timers and deferred promises over real waits.
 
 ## Coding Conventions
 
@@ -134,11 +142,11 @@ npm run build:web
 Then smoke-test the affected workflow. Use this risk-based matrix:
 
 - UI changes: web at desktop and below 768px; check overflow, drawers/modals, keyboard send behavior, and light/dark themes.
-- Streaming changes: text deltas, completion metadata, switching sessions mid-stream, stop, retry, regenerate, and interrupted-request recovery.
-- Attachment/tool changes: images, non-image files, citations, Code Interpreter output, and generated-file downloads.
-- Storage changes: first load, checkpointed persistence, lifecycle/close flushing, reload, malformed-primary backup recovery, attachment migration, JSON export, and confirmed import replacement.
-- PWA changes: `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
-- Electron/preload changes: `npm run electron:dev`; exercise window controls, clipboard behavior, external links, and storage failure handling.
+- App request/state changes: extend `App.integration.test.tsx`; cover text deltas, authoritative completion metadata, cross-session routing, stop/failure, retry/regenerate, interrupted-request recovery, destructive operations, and close checkpointing.
+- Attachment/tool/service changes: extend the mocked SDK contracts in `services/openaiService.generate.test.ts`; cover images, non-image files, citations, Code Interpreter output, generated-file downloads, optional-capability fallback, and history/thread construction.
+- Storage changes: extend `services/storage.integration.test.ts` using only its in-memory backends; cover first load, revisions, backup recovery, attachments, atomic restore, export/import key semantics, backend migration, and injected failures. Then smoke-test checkpointed persistence, lifecycle/close flushing, and reload.
+- PWA/config changes: keep `buildPolicy.test.ts` current, then run `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
+- Electron/preload changes: keep `electron/main.test.js` current, then run `npm run electron:dev`; exercise window controls, clipboard behavior, external links, close-save failure handling, and storage failure handling.
 - Packaging changes: `npm run dist` on the target host when the required packaging/signing tooling is available.
 
 Live API smoke tests consume account quota and can create stored responses. Use a personal test key and report when API-dependent paths were not exercised.

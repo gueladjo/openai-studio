@@ -81,7 +81,11 @@ Development and Electron modes compile this value into renderer JavaScript. Do n
 | `npm run deploy` | Build the web app and publish `dist/` with `gh-pages`. |
 | `node scripts/generate-icons.js` | Regenerate the PNG application icons. |
 
-The Vitest suite covers citation post-processing in `services/openaiService.test.ts`. There is currently no lint or format script.
+The Vitest suite is deterministic and does not require a live API key, browser
+profile, OPFS directory, or Electron process. It covers the App request
+lifecycle, Responses API payloads and stream parsing, storage and migration
+contracts, build security policy, Electron window policy, and focused utility
+and component behavior. There is currently no lint or format script.
 
 ## Web And PWA
 
@@ -156,17 +160,22 @@ Chat deletion asks for confirmation and has no in-app undo. Export the workspace
 ```text
 index.tsx
   -> App.tsx                 application state, persistence, request lifecycle
+      App.integration.test.tsx  mocked request, persistence, and race contracts
       -> components/         chat, sidebar, configuration, Electron title bar
       -> services/
           storage.ts         OPFS/IndexedDB persistence and workspace backup
+          storage.integration.test.ts  in-memory OPFS/IndexedDB contracts
           openaiService.ts   Responses API requests, streaming, tools, citations
+          openaiService.generate.test.ts  mocked SDK request/stream contracts
           openaiService.test.ts  citation post-processing unit tests
       -> utils/              conversation export and source URL handling
 
 electron/                    Electron main and preload processes
+  main.test.js               window, navigation, and close-handshake policy
 types.ts                     application types and OpenAI SDK-backed aliases
 constants.ts                 model metadata and configuration normalization
 vite.config.ts               web/Electron asset modes and generated PWA config
+buildPolicy.test.ts          API-key injection, base-path, and PWA contracts
 vitest.config.ts             Node unit-test configuration
 public/                      static icons
 scripts/                     maintenance utilities
@@ -184,6 +193,28 @@ npm run build
 npm run build:web
 ```
 
-Changes to citation parsing or formatting must keep the citation post-processing suite passing. The tests cover marker recognition, source-label cleanup, annotation replacement, source ordering and deduplication, and malformed annotation handling without making live API calls.
+Use targeted Vitest files while iterating, then run the complete suite before
+handoff. The default environment is Node; `App.integration.test.tsx` opts into
+`happy-dom`, mocks its child components and I/O boundaries, and uses fake
+timers. `services/storage.integration.test.ts` uses an in-memory OPFS plus
+`fake-indexeddb`. Keep those tests isolated from real user storage and never put
+a real API key or workspace export into a fixture.
+
+When changing a protected boundary, update its contract suite:
+
+- `App.integration.test.tsx`: startup write protection, pending-request
+  recovery, cross-session routing, stop/failure behavior, destructive races,
+  and Electron close persistence.
+- `services/openaiService.generate.test.ts`: SDK payloads, model capabilities,
+  attachment parts, streaming events, cancellation, titles, and generated
+  files.
+- `services/storage.integration.test.ts`: revisions and backups, conflict
+  detection, atomic restore, attachment/key handling, backend migration, and
+  rollback.
+- `electron/main.test.js` and `buildPolicy.test.ts`: renderer/navigation/close
+  policy and production build secret/base-path policy.
+- `services/openaiService.test.ts`: citation markers, annotation replacement,
+  source ordering and deduplication, adjacent-label cleanup, and malformed
+  annotations.
 
 Smoke-test the web UI at desktop and mobile widths. Changes to Electron, persistence, PWA behavior, streaming, cancellation, attachments, or import/export should also be exercised in the corresponding runtime.
