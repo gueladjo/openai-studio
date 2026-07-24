@@ -1,4 +1,17 @@
 import { FileAttachment, Session, SystemInstruction } from '../types';
+import {
+  selectStorageBackend,
+  StorageBackend,
+  StorageBackendChoice,
+  StorageBackendChoiceRequest,
+  StorageBackendSnapshot
+} from './storageBackend';
+
+export type {
+  StorageBackend,
+  StorageBackendChoice,
+  StorageBackendChoiceRequest
+} from './storageBackend';
 
 export interface AppSettings {
   theme: 'dark' | 'light';
@@ -14,7 +27,6 @@ export const STORAGE_FILES = {
 };
 
 // Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
-type StorageBackend = 'opfs' | 'indexeddb';
 let storageBackend: StorageBackend | null = null;
 let idbDatabase: IDBDatabase | null = null;
 let workspaceRevision: number | null = null;
@@ -22,6 +34,8 @@ let workspaceRevision: number | null = null;
 const IDB_NAME = 'openai-studio-storage';
 const IDB_STORE = 'files';
 const IDB_VERSION = 1;
+const BACKEND_IDENTITY_KEY = 'openai-studio-storage-backend-v1';
+const BACKEND_IDENTITY_VERSION = 1;
 const BACKUP_SUFFIX = '.bak';
 const ATTACHMENTS_DIRECTORY = 'attachments';
 const ATTACHMENT_KEY_PREFIX = `${ATTACHMENTS_DIRECTORY}/`;
@@ -37,6 +51,30 @@ interface StoredFileRecord {
 
 interface WorkspaceRevisionRecord {
   revision: number;
+}
+
+interface StorageBackendIdentity {
+  version: number;
+  backend: StorageBackend;
+}
+
+interface BackendRecord {
+  filename: string;
+  data: string | Blob;
+}
+
+interface BackendInspection {
+  snapshot: StorageBackendSnapshot;
+  records: BackendRecord[];
+  opfsRoot?: FileSystemDirectoryHandle;
+  opfsDataDir?: FileSystemDirectoryHandle | null;
+}
+
+export interface StorageInitializationOptions {
+  readOnly?: boolean;
+  resolveBackendChoice?: (
+    request: StorageBackendChoiceRequest
+  ) => StorageBackendChoice | Promise<StorageBackendChoice>;
 }
 
 export class WorkspaceRevisionConflictError extends Error {
@@ -104,19 +142,42 @@ const parseStoredJsonWithBackup = async <T>(
   }
 };
 
-// Check if OPFS is supported
+const createOpfsProbeName = (): string => {
+  const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
+  const id = cryptoWithUuid.randomUUID
+    ? cryptoWithUuid.randomUUID()
+    : Array.from(
+        crypto.getRandomValues(new Uint8Array(12)),
+        byte => byte.toString(16).padStart(2, '0')
+      ).join('');
+  return `__opfs_test_${id}`;
+};
+
+// Check if OPFS is supported without sharing a probe path across tabs.
 const checkOPFSSupport = async (): Promise<boolean> => {
+  let root: FileSystemDirectoryHandle | null = null;
+  let probeName: string | null = null;
+  let probeCreated = false;
+
   try {
     if (!navigator.storage || !navigator.storage.getDirectory) {
       return false;
     }
-    const root = await navigator.storage.getDirectory();
-    // Try to create a test directory to verify full OPFS support
-    await root.getDirectoryHandle('__opfs_test__', { create: true });
-    await root.removeEntry('__opfs_test__');
+    root = await navigator.storage.getDirectory();
+    probeName = createOpfsProbeName();
+    await root.getDirectoryHandle(probeName, { create: true });
+    probeCreated = true;
     return true;
   } catch {
     return false;
+  } finally {
+    if (root && probeName && probeCreated) {
+      try {
+        await root.removeEntry(probeName);
+      } catch (error) {
+        console.warn(`Failed to remove OPFS capability probe ${probeName}.`, error);
+      }
+    }
   }
 };
 
@@ -137,26 +198,12 @@ const initIndexedDB = (): Promise<IDBDatabase> => {
   });
 };
 
-// Get storage backend - initializes on first call
+// Storage must be explicitly initialized so calls cannot silently select a
+// different backend after startup.
 const getStorageBackend = async (): Promise<StorageBackend> => {
-  if (storageBackend !== null) {
-    return storageBackend;
+  if (storageBackend === null) {
+    throw new Error('Workspace storage backend has not been initialized.');
   }
-
-  const hasOPFS = await checkOPFSSupport();
-  if (hasOPFS) {
-    storageBackend = 'opfs';
-    console.log('Using OPFS storage backend');
-  } else {
-    if (isElectronDesktop()) {
-      throw new Error('OPFS storage is unavailable in Electron. Workspace loading was stopped to avoid switching to an empty fallback store.');
-    }
-
-    storageBackend = 'indexeddb';
-    idbDatabase = await initIndexedDB();
-    console.log('Using IndexedDB storage backend (OPFS not available)');
-  }
-
   return storageBackend;
 };
 
@@ -217,7 +264,7 @@ const idbDeleteRawFile = async (filename: string): Promise<void> => {
   });
 };
 
-const idbListRawFiles = async (prefix: string): Promise<Array<{ filename: string; updatedAt: number }>> => {
+const idbListAllRawData = async (): Promise<StoredFileRecord[]> => {
   if (!idbDatabase) {
     idbDatabase = await initIndexedDB();
   }
@@ -226,7 +273,7 @@ const idbListRawFiles = async (prefix: string): Promise<Array<{ filename: string
     const transaction = idbDatabase!.transaction([IDB_STORE], 'readonly');
     const store = transaction.objectStore(IDB_STORE);
     const request = store.openCursor();
-    const records: Array<{ filename: string; updatedAt: number }> = [];
+    const records: StoredFileRecord[] = [];
 
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
@@ -237,15 +284,22 @@ const idbListRawFiles = async (prefix: string): Promise<Array<{ filename: string
       }
 
       const record = cursor.value as StoredFileRecord;
-      if (record.filename.startsWith(prefix)) {
-        records.push({
-          filename: record.filename,
-          updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
-        });
-      }
+      records.push(record);
       cursor.continue();
     };
   });
+};
+
+const idbListRawFiles = async (
+  prefix: string
+): Promise<Array<{ filename: string; updatedAt: number }>> => {
+  const records = await idbListAllRawData();
+  return records
+    .filter(record => record.filename.startsWith(prefix))
+    .map(record => ({
+      filename: record.filename,
+      updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
+    }));
 };
 
 const idbWriteFile = async (filename: string, data: any): Promise<void> => {
@@ -275,8 +329,10 @@ let opfsDataDir: FileSystemDirectoryHandle | null = null;
 
 // Access the Origin Private File System (OPFS)
 // This creates a sandboxed 'data' folder automatically without user prompts.
-export const getStorageHandle = async (): Promise<FileSystemDirectoryHandle> => {
-  const backend = await getStorageBackend();
+export const getStorageHandle = async (
+  options: StorageInitializationOptions = {}
+): Promise<FileSystemDirectoryHandle> => {
+  const backend = storageBackend || await initializeStorageBackend(options);
 
   if (backend === 'indexeddb') {
     // Return a dummy handle for IndexedDB - actual operations use idb functions
@@ -287,16 +343,9 @@ export const getStorageHandle = async (): Promise<FileSystemDirectoryHandle> => 
     return opfsDataDir;
   }
 
-  try {
-    // Get the root of the OPFS
-    const root = await navigator.storage.getDirectory();
-    // Create or retrieve the 'data' directory
-    opfsDataDir = await root.getDirectoryHandle('data', { create: true });
-    return opfsDataDir;
-  } catch (e) {
-    console.error("Failed to access OPFS", e);
-    throw e;
-  }
+  const root = await navigator.storage.getDirectory();
+  opfsDataDir = await root.getDirectoryHandle('data', { create: true });
+  return opfsDataDir;
 };
 
 const readOpfsTextFile = async (
@@ -325,6 +374,471 @@ const writeOpfsTextFile = async (
   await writable.write(text);
   await writable.close();
 };
+
+const readBackendIdentity = (value: string | null): StorageBackendIdentity | null => {
+  if (!value) return null;
+
+  try {
+    const identity = JSON.parse(value) as Partial<StorageBackendIdentity>;
+    if (
+      identity.version !== BACKEND_IDENTITY_VERSION ||
+      (identity.backend !== 'opfs' && identity.backend !== 'indexeddb')
+    ) {
+      return null;
+    }
+    return {
+      version: identity.version,
+      backend: identity.backend
+    };
+  } catch {
+    return null;
+  }
+};
+
+const getPersistedBackend = (): StorageBackend | null => {
+  try {
+    return readBackendIdentity(window.localStorage.getItem(BACKEND_IDENTITY_KEY))?.backend || null;
+  } catch (error) {
+    throw new Error(`Storage backend identity could not be read: ${getErrorMessage(error)}`);
+  }
+};
+
+const persistBackend = (backend: StorageBackend): void => {
+  const identity: StorageBackendIdentity = {
+    version: BACKEND_IDENTITY_VERSION,
+    backend
+  };
+  const serialized = JSON.stringify(identity);
+
+  try {
+    window.localStorage.setItem(BACKEND_IDENTITY_KEY, serialized);
+    if (window.localStorage.getItem(BACKEND_IDENTITY_KEY) !== serialized) {
+      throw new Error('The stored value could not be verified.');
+    }
+  } catch (error) {
+    throw new Error(`Storage backend identity could not be persisted: ${getErrorMessage(error)}`);
+  }
+};
+
+export const getActiveStorageBackend = (): StorageBackend | null => storageBackend;
+
+export const subscribeToStorageBackendChanges = (
+  listener: (backend: StorageBackend) => void
+): (() => void) => {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== BACKEND_IDENTITY_KEY) return;
+    const identity = readBackendIdentity(event.newValue);
+    if (identity) listener(identity.backend);
+  };
+
+  window.addEventListener('storage', handleStorage);
+  return () => window.removeEventListener('storage', handleStorage);
+};
+
+const getErrorMessage = (error: unknown): string => (
+  error instanceof Error ? error.message : String(error)
+);
+
+const hashText = (text: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const getRecordsFingerprint = (
+  records: BackendRecord[],
+  extraDescriptors: string[] = []
+): string => {
+  const descriptors = records.map(record => (
+    typeof record.data === 'string'
+      ? `${record.filename}:text:${record.data.length}:${hashText(record.data)}`
+      : `${record.filename}:blob:${record.data.size}`
+  ));
+  return [...descriptors, ...extraDescriptors].sort().join('|');
+};
+
+const getBlobDigest = async (blob: Blob): Promise<string> => {
+  const bytes = await blob.arrayBuffer();
+  if (crypto.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), byte => (
+      byte.toString(16).padStart(2, '0')
+    )).join('');
+  }
+
+  let hash = 2166136261;
+  for (const byte of new Uint8Array(bytes)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const backendRecordsMatch = async (
+  leftRecords: BackendRecord[],
+  rightRecords: BackendRecord[]
+): Promise<boolean> => {
+  if (leftRecords.length !== rightRecords.length) return false;
+  const rightByFilename = new Map(
+    rightRecords.map(record => [record.filename, record])
+  );
+
+  for (const left of leftRecords) {
+    const right = rightByFilename.get(left.filename);
+    if (!right || typeof left.data !== typeof right.data) return false;
+
+    if (typeof left.data === 'string' && typeof right.data === 'string') {
+      if (left.data !== right.data) return false;
+      continue;
+    }
+
+    if (!(left.data instanceof Blob) || !(right.data instanceof Blob)) return false;
+    if (left.data.size !== right.data.size) return false;
+    if (await getBlobDigest(left.data) !== await getBlobDigest(right.data)) return false;
+  }
+
+  return true;
+};
+
+const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
+  const revisionRecord = records.find(record => record.filename === STORAGE_FILES.REVISION);
+  if (!revisionRecord || typeof revisionRecord.data !== 'string') return null;
+
+  try {
+    return parseWorkspaceRevision(revisionRecord.data);
+  } catch {
+    return null;
+  }
+};
+
+const createSnapshot = (
+  backend: StorageBackend,
+  available: boolean,
+  records: BackendRecord[],
+  extraDescriptors: string[] = []
+): StorageBackendSnapshot => ({
+  backend,
+  available,
+  hasWorkspace: records.length > 0 || extraDescriptors.length > 0,
+  fingerprint: records.length > 0 || extraDescriptors.length > 0
+    ? getRecordsFingerprint(records, extraDescriptors)
+    : null,
+  revision: getRevisionFromRecords(records),
+  recordCount: records.length + extraDescriptors.length
+});
+
+const inspectIndexedDbBackend = async (): Promise<BackendInspection> => {
+  if (typeof indexedDB === 'undefined') {
+    return {
+      snapshot: createSnapshot('indexeddb', false, []),
+      records: []
+    };
+  }
+
+  idbDatabase = await initIndexedDB();
+  const storedRecords = await idbListAllRawData();
+  const extraDescriptors: string[] = [];
+  const records = storedRecords
+    .flatMap(record => {
+      if (
+        typeof record.filename !== 'string' ||
+        (typeof record.data !== 'string' && !(record.data instanceof Blob))
+      ) {
+        extraDescriptors.push(`invalid-record:${String(record.filename)}`);
+        return [];
+      }
+      return [{
+        filename: record.filename,
+        data: record.data
+      }];
+    });
+
+  return {
+    snapshot: createSnapshot('indexeddb', true, records, extraDescriptors),
+    records
+  };
+};
+
+const getExistingOpfsDataDirectory = async (
+  root: FileSystemDirectoryHandle
+): Promise<FileSystemDirectoryHandle | null> => {
+  try {
+    return await root.getDirectoryHandle('data');
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+};
+
+const inspectOpfsBackend = async (supported: boolean): Promise<BackendInspection> => {
+  if (!supported) {
+    return {
+      snapshot: createSnapshot('opfs', false, []),
+      records: []
+    };
+  }
+
+  const root = await navigator.storage.getDirectory();
+  const dataDir = await getExistingOpfsDataDirectory(root);
+  if (!dataDir) {
+    return {
+      snapshot: createSnapshot('opfs', true, []),
+      records: [],
+      opfsRoot: root,
+      opfsDataDir: null
+    };
+  }
+
+  const records: BackendRecord[] = [];
+  const extraDescriptors: string[] = [];
+
+  for await (const [name, entry] of (dataDir as any).entries()) {
+    if (entry.kind === 'file') {
+      const file = await entry.getFile();
+      records.push({
+        filename: name,
+        data: await file.text()
+      });
+      continue;
+    }
+
+    if (entry.kind !== 'directory' || name !== ATTACHMENTS_DIRECTORY) {
+      extraDescriptors.push(`${entry.kind}:${name}`);
+      continue;
+    }
+
+    for await (const [attachmentName, attachmentEntry] of entry.entries()) {
+      if (attachmentEntry.kind !== 'file') {
+        extraDescriptors.push(
+          `attachments/${attachmentEntry.kind}:${attachmentName}`
+        );
+        continue;
+      }
+
+      records.push({
+        filename: `${ATTACHMENT_KEY_PREFIX}${attachmentName}`,
+        data: await attachmentEntry.getFile()
+      });
+    }
+  }
+
+  return {
+    snapshot: createSnapshot('opfs', true, records, extraDescriptors),
+    records,
+    opfsRoot: root,
+    opfsDataDir: dataDir
+  };
+};
+
+const rollbackOpfsMigration = async (
+  dataDir: FileSystemDirectoryHandle,
+  writtenRecords: BackendRecord[]
+): Promise<void> => {
+  const attachmentNames = writtenRecords
+    .filter(record => record.filename.startsWith(ATTACHMENT_KEY_PREFIX))
+    .map(record => record.filename.slice(ATTACHMENT_KEY_PREFIX.length));
+  const topLevelNames = writtenRecords
+    .filter(record => !record.filename.startsWith(ATTACHMENT_KEY_PREFIX))
+    .map(record => record.filename);
+
+  for (const filename of topLevelNames) {
+    try {
+      await dataDir.removeEntry(filename);
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+
+  if (attachmentNames.length === 0) return;
+  const attachmentsDir = await getOpfsAttachmentsDirectory(dataDir, false);
+  if (!attachmentsDir) return;
+
+  for (const filename of attachmentNames) {
+    try {
+      await attachmentsDir.removeEntry(filename);
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+
+  try {
+    await dataDir.removeEntry(ATTACHMENTS_DIRECTORY);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      console.warn('Failed to remove the empty migration attachment directory.', error);
+    }
+  }
+};
+
+const copyIndexedDbWorkspaceToOpfs = async (
+  indexeddb: BackendInspection,
+  opfs: BackendInspection
+): Promise<() => Promise<void>> => {
+  if (!opfs.opfsRoot || opfs.snapshot.hasWorkspace) {
+    throw new Error('OPFS migration requires an available, empty destination.');
+  }
+
+  const dataDir = opfs.opfsDataDir ||
+    await opfs.opfsRoot.getDirectoryHandle('data', { create: true });
+  const writtenRecords: BackendRecord[] = [];
+
+  try {
+    for (const record of indexeddb.records) {
+      if (record.filename.startsWith(ATTACHMENT_KEY_PREFIX)) {
+        const attachmentName = record.filename.slice(ATTACHMENT_KEY_PREFIX.length);
+        if (!isValidAttachmentId(attachmentName) || !(record.data instanceof Blob)) {
+          throw new Error(`IndexedDB attachment record ${record.filename} is invalid.`);
+        }
+
+        const attachmentsDir = await getOpfsAttachmentsDirectory(dataDir, true);
+        if (!attachmentsDir) throw new Error('OPFS attachment directory is unavailable.');
+        const fileHandle = await attachmentsDir.getFileHandle(attachmentName, { create: true });
+        const writable = await (fileHandle as any).createWritable();
+        await writable.write(record.data);
+        await writable.close();
+      } else {
+        if (
+          record.filename.includes('/') ||
+          typeof record.data !== 'string'
+        ) {
+          throw new Error(`IndexedDB file record ${record.filename} is invalid.`);
+        }
+        await writeOpfsTextFile(dataDir, record.filename, record.data);
+      }
+
+      writtenRecords.push(record);
+    }
+
+    const verified = await inspectOpfsBackend(true);
+    if (
+      !verified.snapshot.hasWorkspace ||
+      verified.snapshot.fingerprint !== indexeddb.snapshot.fingerprint ||
+      !(await backendRecordsMatch(indexeddb.records, verified.records))
+    ) {
+      throw new Error('The OPFS migration copy did not match the IndexedDB source.');
+    }
+
+    opfsDataDir = dataDir;
+    return () => rollbackOpfsMigration(dataDir, writtenRecords);
+  } catch (error) {
+    try {
+      await rollbackOpfsMigration(dataDir, writtenRecords);
+    } catch (rollbackError) {
+      console.error('Failed to roll back an incomplete OPFS migration.', rollbackError);
+    }
+    throw error;
+  }
+};
+
+async function initializeStorageBackend(
+  options: StorageInitializationOptions
+): Promise<StorageBackend> {
+  const persistedBackend = getPersistedBackend();
+  const hasOpfs = await checkOPFSSupport();
+  const [opfs, indexeddb] = await Promise.all([
+    inspectOpfsBackend(hasOpfs),
+    inspectIndexedDbBackend()
+  ]);
+
+  const needsContentComparison = (
+    opfs.snapshot.hasWorkspace &&
+    indexeddb.snapshot.hasWorkspace &&
+    opfs.snapshot.fingerprint === indexeddb.snapshot.fingerprint &&
+    (persistedBackend === null || persistedBackend === 'indexeddb')
+  );
+  if (
+    needsContentComparison &&
+    !(await backendRecordsMatch(opfs.records, indexeddb.records))
+  ) {
+    opfs.snapshot = {
+      ...opfs.snapshot,
+      fingerprint: `${opfs.snapshot.fingerprint}:different-content`
+    };
+  }
+
+  const selection = selectStorageBackend({
+    persistedBackend,
+    opfs: opfs.snapshot,
+    indexeddb: indexeddb.snapshot,
+    isElectron: isElectronDesktop(),
+    readOnly: Boolean(options.readOnly)
+  });
+
+  if (selection.kind === 'error') throw new Error(selection.message);
+
+  let selectedBackend: StorageBackend;
+  let rollbackMigration: (() => Promise<void>) | null = null;
+
+  if (selection.kind === 'use') {
+    selectedBackend = selection.backend;
+  } else {
+    if (!options.resolveBackendChoice) {
+      throw new Error('Storage backend selection requires confirmation in the writer tab.');
+    }
+
+    const choice = await options.resolveBackendChoice(selection.request);
+    if (choice === 'cancel') {
+      throw new Error('Storage backend selection was cancelled.');
+    }
+
+    if (selection.request.kind === 'migration') {
+      if (choice === 'indexeddb') {
+        selectedBackend = 'indexeddb';
+      } else if (choice === 'migrate-to-opfs' || choice === 'opfs') {
+        if (opfs.snapshot.fingerprint !== indexeddb.snapshot.fingerprint) {
+          rollbackMigration = await copyIndexedDbWorkspaceToOpfs(indexeddb, opfs);
+        }
+        selectedBackend = 'opfs';
+      } else {
+        throw new Error(`Unsupported storage migration choice: ${choice}`);
+      }
+    } else if (choice === 'opfs' || choice === 'indexeddb') {
+      selectedBackend = choice;
+    } else {
+      throw new Error(`Unsupported storage conflict choice: ${choice}`);
+    }
+  }
+
+  if (selectedBackend === 'opfs' && !opfs.snapshot.available) {
+    throw new Error('OPFS was selected but is unavailable.');
+  }
+  if (selectedBackend === 'indexeddb' && !indexeddb.snapshot.available) {
+    throw new Error('IndexedDB was selected but is unavailable.');
+  }
+  if (isElectronDesktop() && selectedBackend !== 'opfs') {
+    throw new Error('Electron requires OPFS and will not open an IndexedDB fallback workspace.');
+  }
+
+  if (!options.readOnly) {
+    try {
+      persistBackend(selectedBackend);
+    } catch (error) {
+      if (rollbackMigration) {
+        try {
+          await rollbackMigration();
+        } catch (rollbackError) {
+          console.error('Failed to roll back OPFS after identity persistence failed.', rollbackError);
+        }
+      }
+      throw error;
+    }
+  }
+
+  storageBackend = selectedBackend;
+  workspaceRevision = null;
+
+  if (selectedBackend === 'opfs') {
+    const root = opfs.opfsRoot || await navigator.storage.getDirectory();
+    opfsDataDir = opfsDataDir || opfs.opfsDataDir ||
+      await root.getDirectoryHandle('data', { create: true });
+  }
+
+  console.log(`Using ${selectedBackend === 'opfs' ? 'OPFS' : 'IndexedDB'} storage backend`);
+  return selectedBackend;
+}
 
 const parseWorkspaceRevision = (text: string | null): number => {
   if (text === null) return 0;

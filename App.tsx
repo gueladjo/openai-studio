@@ -9,6 +9,8 @@ import { Session, ChatConfig, Message, DEFAULT_CONFIG, SystemInstruction } from 
 import { cancelResponse, generateResponse, generateChatTitle } from './services/openaiService';
 import {
   getStorageHandle,
+  getActiveStorageBackend,
+  subscribeToStorageBackendChanges,
   readJsonFile,
   writeJsonFile,
   readSessions,
@@ -20,6 +22,8 @@ import {
   synchronizeWorkspaceRevision,
   getWorkspaceRevision,
   WorkspaceRevisionConflictError,
+  StorageBackendChoice,
+  StorageBackendChoiceRequest,
   STORAGE_FILES,
   AppSettings,
   WorkspaceBackup
@@ -110,6 +114,46 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Unknown error'
 );
 
+const resolveStorageBackendChoice = (
+  request: StorageBackendChoiceRequest
+): StorageBackendChoice => {
+  if (request.kind === 'migration') {
+    const shouldMigrate = window.confirm(
+      [
+        'This workspace is stored in IndexedDB, and OPFS is now available.',
+        '',
+        'Select OK to copy and verify the entire workspace in OPFS before switching.',
+        window.electronAPI
+          ? 'The IndexedDB source will be retained. Select Cancel to stop loading without switching stores.'
+          : 'The IndexedDB source will be retained. Select Cancel to keep using IndexedDB.'
+      ].join('\n')
+    );
+    return shouldMigrate ? 'migrate-to-opfs' : 'indexeddb';
+  }
+
+  const formatSnapshot = (
+    label: string,
+    snapshot: StorageBackendChoiceRequest['opfs']
+  ): string => (
+    `${label}: ${snapshot.recordCount} stored record${snapshot.recordCount === 1 ? '' : 's'}` +
+    `${snapshot.revision === null ? '' : `, revision ${snapshot.revision}`}`
+  );
+  const persistedLabel = request.persistedBackend
+    ? `The saved backend choice is ${request.persistedBackend === 'opfs' ? 'OPFS' : 'IndexedDB'}, but its workspace is empty.`
+    : 'No saved backend choice is available.';
+  const useOpfs = window.confirm(
+    [
+      'Different workspace data was found in OPFS and IndexedDB.',
+      persistedLabel,
+      formatSnapshot('OPFS', request.opfs),
+      formatSnapshot('IndexedDB', request.indexeddb),
+      '',
+      'No data will be deleted. Select OK to use OPFS or Cancel to use IndexedDB.'
+    ].join('\n')
+  );
+  return useOpfs ? 'opfs' : 'indexeddb';
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
@@ -168,6 +212,7 @@ function App() {
   const workspaceCanWriteRef = useRef(false);
   const workspaceCoordinatorRef = useRef<WorkspaceCoordinator | null>(null);
   const workspaceReloadPromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const unsubscribeBackendChangesRef = useRef<(() => void) | null>(null);
   const initializationStartedRef = useRef(false);
 
   // Replaced single boolean with a Set to track multiple active sessions
@@ -560,7 +605,31 @@ function App() {
       try {
         const coordinator = await WorkspaceCoordinator.create();
         workspaceCoordinatorRef.current = coordinator;
-        const handle = await getStorageHandle();
+        let announcedBackend: ReturnType<typeof getActiveStorageBackend> = null;
+        unsubscribeBackendChangesRef.current = subscribeToStorageBackendChanges(backend => {
+          announcedBackend = backend;
+          const activeBackend = getActiveStorageBackend();
+          if (
+            (
+              !activeBackend ||
+              activeBackend !== backend
+            ) &&
+            !workspaceCanWriteRef.current
+          ) {
+            window.location.reload();
+          }
+        });
+        const handle = await getStorageHandle({
+          readOnly: !coordinator.canWrite,
+          resolveBackendChoice: coordinator.canWrite
+            ? resolveStorageBackendChoice
+            : undefined
+        });
+        const activeBackend = getActiveStorageBackend();
+        if (announcedBackend && activeBackend !== announcedBackend) {
+          window.location.reload();
+          return;
+        }
         dirHandleRef.current = handle;
         const initialRole = coordinator.currentRole;
         workspaceCanWriteRef.current = initialRole === 'writer';
@@ -1400,6 +1469,7 @@ function App() {
       if (timeout !== undefined) window.clearTimeout(timeout);
     });
     workspaceCoordinatorRef.current?.dispose();
+    unsubscribeBackendChangesRef.current?.();
     revokeAttachmentPreviewUrls(sessionsRef.current);
   }, []);
 
@@ -1534,7 +1604,7 @@ function App() {
                 <div className="min-w-0">
                   <h1 className="text-base font-semibold text-red-900 dark:text-red-100">Workspace storage could not be loaded</h1>
                   <p className="mt-2 text-sm leading-6 text-red-800 dark:text-red-200">
-                    OpenAI Studio did not write an empty workspace. Close the app, back up your AppData folder, then retry.
+                    OpenAI Studio did not write an empty workspace. Resolve the storage issue below, then retry.
                   </p>
                   <pre className="mt-3 max-h-32 overflow-auto rounded-md bg-white/70 p-3 text-xs text-red-950 dark:bg-black/20 dark:text-red-100">
                     {workspaceLoadError}
