@@ -31,7 +31,14 @@ const MAX_TIMESTAMP = 8_640_000_000_000_000;
 const LOCAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
-const MESSAGE_STATUSES = new Set(['streaming', 'complete', 'error', 'stopped']);
+const MESSAGE_STATUSES = new Set([
+  'streaming',
+  'complete',
+  'incomplete',
+  'error',
+  'stopped'
+]);
+const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
 
@@ -310,6 +317,8 @@ const parseMessage = (
       'requestId',
       'openaiResponseId',
       'thinking',
+      'refusal',
+      'incompleteReason',
       'thinkingDuration',
       'usage',
       'sources',
@@ -349,6 +358,27 @@ const parseMessage = (
     `${path}.thinking`,
     MAX_MESSAGE_CONTENT_LENGTH
   );
+  assertOptionalString(
+    message.refusal,
+    `${path}.refusal`,
+    MAX_MESSAGE_CONTENT_LENGTH,
+    false
+  );
+  if (
+    message.incompleteReason !== undefined &&
+    (
+      typeof message.incompleteReason !== 'string' ||
+      !INCOMPLETE_REASONS.has(message.incompleteReason)
+    )
+  ) {
+    fail(`${path}.incompleteReason`, 'has an unsupported value');
+  }
+  if (
+    message.incompleteReason !== undefined &&
+    message.status !== 'incomplete'
+  ) {
+    fail(`${path}.incompleteReason`, 'requires an incomplete message status');
+  }
   if (message.thinkingDuration !== undefined) {
     assertFiniteNumber(
       message.thinkingDuration,

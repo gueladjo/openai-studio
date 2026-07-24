@@ -66,6 +66,18 @@ const formatMessageTimestamp = (timestamp: number): string => {
   return `${dateLabel}, ${timeLabel}`;
 };
 
+const getIncompleteResponseMessage = (
+  reason: Message['incompleteReason']
+): string => {
+  if (reason === 'max_output_tokens') {
+    return 'Response incomplete: the output token limit was reached.';
+  }
+  if (reason === 'content_filter') {
+    return 'Response incomplete: some output was filtered.';
+  }
+  return 'Response incomplete.';
+};
+
 const getCodeBlockLabel = (className?: string): string => {
   const language = className?.match(/language-(\S+)/)?.[1];
 
@@ -741,6 +753,16 @@ export const MessageRow = React.memo(({
                 message.content
                 )}
             </div>
+
+            {message.role === 'assistant' && message.status === 'incomplete' && (
+                <div
+                    role="status"
+                    className="flex max-w-full items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+                >
+                    <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                    <span>{getIncompleteResponseMessage(message.incompleteReason)}</span>
+                </div>
+            )}
 
             {/* Sources Chips */}
             {message.role === 'assistant' && message.sources && message.sources.length > 0 && (

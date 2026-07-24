@@ -27,6 +27,7 @@ import {
   OpenAIResponsesStreamingConfig,
   OpenAIResponsesUsage,
   ReasoningEffort,
+  ResponseIncompleteReason,
   Source
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
@@ -51,6 +52,9 @@ type OpenAIResponseContainerFileCitationCandidate =
 interface GenerateResponseResult {
   content: string;
   thinking?: string;
+  refusal?: string;
+  status: 'complete' | 'incomplete';
+  incompleteReason?: ResponseIncompleteReason;
   sources?: Source[];
   generatedFiles?: GeneratedFile[];
   thinkingDuration: number;
@@ -627,17 +631,32 @@ export const applyCitationAnnotations = (
   return stripAdjacentCitationSourceLabels(updatedText);
 };
 
-const getResponseOutputMessageText = (
+interface ResponseOutputMessageContent {
+  content: string;
+  refusal: string;
+}
+
+const getResponseOutputMessageContent = (
   message: ResponseOutputMessage,
   citationRegistry?: CitationRegistry
-): string => {
+): ResponseOutputMessageContent => {
   const messageContent: unknown = message.content;
 
-  if (typeof messageContent === 'string') return messageContent;
-  if (!Array.isArray(messageContent)) return '';
+  if (typeof messageContent === 'string') {
+    return { content: messageContent, refusal: '' };
+  }
+  if (!Array.isArray(messageContent)) {
+    return { content: '', refusal: '' };
+  }
 
-  return messageContent.map((part) => {
+  let refusal = '';
+  const content = messageContent.map((part) => {
     if (!isRecord(part)) return '';
+
+    if (part.type === 'refusal' && typeof part.refusal === 'string') {
+      refusal += part.refusal;
+      return part.refusal;
+    }
 
     const text = typeof part.text === 'string' ? part.text : '';
 
@@ -651,7 +670,14 @@ const getResponseOutputMessageText = (
 
     return text;
   }).join('');
+
+  return { content, refusal };
 };
+
+const getResponseOutputMessageText = (
+  message: ResponseOutputMessage,
+  citationRegistry?: CitationRegistry
+): string => getResponseOutputMessageContent(message, citationRegistry).content;
 
 const getLongestBacktickRun = (content: string): number => {
   const backtickRuns = content.match(/`+/g);
@@ -802,14 +828,22 @@ const getReasoningSummaryText = (item: ResponseReasoningItem): string => (
     .join('\n\n')
 );
 
+interface GenerateResponseStreamState {
+  thinking: string;
+  content: string;
+  refusal: string;
+  terminalStatus: 'complete' | 'incomplete';
+}
+
 const parseGenerateResponse = (
   response: OpenAIResponse,
   thinkingDuration: number,
   normalizedConfig: ChatConfig,
-  streamedThinking = ''
+  streamState: GenerateResponseStreamState
 ): GenerateResponseResult => {
   let thinking = '';
   let content = '';
+  let refusal = '';
   const rawSources: OpenAIResponseSource[] = [];
   const citationRegistry: CitationRegistry = {
     sources: [],
@@ -821,10 +855,15 @@ const parseGenerateResponse = (
   if (responseOutput) {
     for (const item of responseOutput) {
       if (item.type === 'message') {
+        const messageContent = getResponseOutputMessageContent(
+          item,
+          citationRegistry
+        );
         content = appendMarkdownSection(
           content,
-          getResponseOutputMessageText(item, citationRegistry)
+          messageContent.content
         );
+        refusal = appendMarkdownSection(refusal, messageContent.refusal);
       } else if (isReasoningResponseItem(item)) {
         thinking = appendMarkdownSection(thinking, getReasoningSummaryText(item));
       } else if (isCodeInterpreterResponseItem(item)) {
@@ -836,6 +875,13 @@ const parseGenerateResponse = (
   } else {
     if (response.output_text) content = response.output_text;
     else content = getLegacyStringProperty(response, 'content') || '';
+  }
+
+  if (!content && streamState.content) {
+    content = streamState.content;
+  }
+  if (!refusal && streamState.refusal) {
+    refusal = streamState.refusal;
   }
 
   if (rawSources.length === 0) {
@@ -860,7 +906,12 @@ const parseGenerateResponse = (
 
   return {
     content,
-    thinking: thinking || streamedThinking,
+    thinking: thinking || streamState.thinking,
+    refusal: refusal || undefined,
+    status: streamState.terminalStatus,
+    incompleteReason: streamState.terminalStatus === 'incomplete'
+      ? response.incomplete_details?.reason
+      : undefined,
     sources,
     generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
     thinkingDuration,
@@ -1193,6 +1244,9 @@ export const generateResponse = async (
 
     let completedResponse: OpenAIResponse | undefined;
     let streamedThinking = '';
+    let streamedContent = '';
+    let streamedRefusal = '';
+    let terminalStatus: GenerateResponseStreamState['terminalStatus'] | undefined;
     let activeReasoningSummaryPart: string | undefined;
     let timeToFirstToken = 0;
 
@@ -1217,11 +1271,21 @@ export const generateResponse = async (
         if (timeToFirstToken === 0 && event.delta.length > 0) {
           timeToFirstToken = getMonotonicTime() - startTime;
         }
+        streamedContent += event.delta;
         options.onTextDelta?.(event.delta);
-      } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
-        // Incomplete responses (token limit, content filter) still carry the
-        // partial output, citations, and usage — surface them like completions.
+      } else if (event.type === 'response.refusal.delta') {
+        if (timeToFirstToken === 0 && event.delta.length > 0) {
+          timeToFirstToken = getMonotonicTime() - startTime;
+        }
+        streamedContent += event.delta;
+        streamedRefusal += event.delta;
+        options.onTextDelta?.(event.delta);
+      } else if (event.type === 'response.completed') {
         completedResponse = event.response;
+        terminalStatus = 'complete';
+      } else if (event.type === 'response.incomplete') {
+        completedResponse = event.response;
+        terminalStatus = 'incomplete';
       } else if (event.type === 'response.failed' || event.type === 'error') {
         throw getStreamEventError(event);
       }
@@ -1231,7 +1295,7 @@ export const generateResponse = async (
       throw createAbortError();
     }
 
-    if (!completedResponse) {
+    if (!completedResponse || !terminalStatus) {
       throw new Error('Response stream ended before completion.');
     }
 
@@ -1239,7 +1303,12 @@ export const generateResponse = async (
       completedResponse,
       timeToFirstToken,
       normalizedConfig,
-      streamedThinking
+      {
+        thinking: streamedThinking,
+        content: streamedContent,
+        refusal: streamedRefusal,
+        terminalStatus
+      }
     );
   } catch (error: unknown) {
     if (error instanceof Error && error.name === 'AbortError') {

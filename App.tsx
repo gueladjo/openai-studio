@@ -928,6 +928,9 @@ function App() {
       const {
         content: responseText,
         thinking,
+        refusal,
+        status: responseStatus,
+        incompleteReason,
         sources,
         generatedFiles,
         thinkingDuration,
@@ -979,7 +982,7 @@ function App() {
         return;
       }
 
-      // response.completed carries the authoritative full text; drop any unflushed tail.
+      // The terminal event carries the authoritative full output; drop any unflushed tail.
       cancelScheduledDeltaFlush();
       pendingDelta = '';
       pendingThinkingDelta = '';
@@ -989,9 +992,11 @@ function App() {
         requestId,
         role: 'assistant',
         content: responseText,
-        status: 'complete',
+        status: responseStatus,
         openaiResponseId: responseId,
         thinking,
+        refusal,
+        incompleteReason,
         thinkingDuration,
         usage,
         sources,

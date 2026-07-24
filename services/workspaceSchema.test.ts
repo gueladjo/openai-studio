@@ -164,6 +164,31 @@ describe('workspace runtime schema', () => {
     );
   });
 
+  it('accepts bounded refusal and incomplete-response metadata', () => {
+    const backup = createBackup();
+    const assistantMessage = backup.sessions[0].messages[1];
+    assistantMessage.status = 'incomplete';
+    assistantMessage.refusal = 'I cannot help with that request.';
+    assistantMessage.incompleteReason = 'content_filter';
+
+    expect(parseWorkspaceBackup(backup).sessions[0].messages[1]).toMatchObject({
+      status: 'incomplete',
+      refusal: 'I cannot help with that request.',
+      incompleteReason: 'content_filter'
+    });
+
+    assistantMessage.incompleteReason = 'unknown_reason' as any;
+    expect(() => parseWorkspaceBackup(backup)).toThrow(
+      'incompleteReason has an unsupported value'
+    );
+
+    assistantMessage.incompleteReason = 'max_output_tokens';
+    assistantMessage.status = 'complete';
+    expect(() => parseWorkspaceBackup(backup)).toThrow(
+      'incompleteReason requires an incomplete message status'
+    );
+  });
+
   it('validates system-instruction references after all sections are loaded', () => {
     const session = createSession();
     session.config = {

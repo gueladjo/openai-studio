@@ -1,5 +1,6 @@
 import type {
   EasyInputMessage,
+  Response,
   ResponseCreateParamsNonStreaming,
   ResponseCreateParamsStreaming,
   ResponseInputContent,
@@ -74,14 +75,27 @@ export interface GeneratedFile {
   source?: 'container_file_citation';
 }
 
+export type ResponseIncompleteReason = NonNullable<
+  NonNullable<Response['incomplete_details']>['reason']
+>;
+
+export type MessageStatus =
+  | 'streaming'
+  | 'complete'
+  | 'incomplete'
+  | 'error'
+  | 'stopped';
+
 export interface Message {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
-  status?: 'streaming' | 'complete' | 'error' | 'stopped';
+  status?: MessageStatus;
   requestId?: string;
   openaiResponseId?: string;
   thinking?: string;
+  refusal?: string;
+  incompleteReason?: ResponseIncompleteReason;
   thinkingDuration?: number; // Time to first streamed output token in milliseconds
   usage?: OpenAIResponsesUsage;
   sources?: Source[];

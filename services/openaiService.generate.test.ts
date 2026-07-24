@@ -219,6 +219,171 @@ describe('generateResponse reasoning summaries', () => {
   });
 });
 
+describe('generateResponse terminal output', () => {
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it('streams and preserves refusal output', async () => {
+    const refusal = 'I cannot help with that request.';
+    const refusalOutput = {
+      id: 'msg-refusal',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{
+        type: 'refusal',
+        refusal
+      }]
+    } as OpenAIResponse['output'][number];
+    const completedResponse = createCompletedResponse([refusalOutput]);
+    createResponseMock.mockResolvedValue(createStream([
+      {
+        type: 'response.refusal.delta',
+        item_id: 'msg-refusal',
+        output_index: 0,
+        content_index: 0,
+        sequence_number: 1,
+        delta: 'I cannot help '
+      },
+      {
+        type: 'response.refusal.delta',
+        item_id: 'msg-refusal',
+        output_index: 0,
+        content_index: 0,
+        sequence_number: 2,
+        delta: 'with that request.'
+      },
+      {
+        type: 'response.completed',
+        sequence_number: 3,
+        response: completedResponse
+      }
+    ]));
+    const onTextDelta = vi.fn();
+
+    const result = await generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'refusal-key',
+      undefined,
+      { onTextDelta }
+    );
+
+    expect(onTextDelta.mock.calls).toEqual([
+      ['I cannot help '],
+      ['with that request.']
+    ]);
+    expect(result).toMatchObject({
+      content: refusal,
+      refusal,
+      status: 'complete'
+    });
+  });
+
+  it('preserves incomplete status, reason, partial output, citations, and usage', async () => {
+    const partialText = 'Partial answer.';
+    const sourceUrl = 'https://example.com/partial';
+    const usage = {
+      input_tokens: 10,
+      input_tokens_details: { cached_tokens: 2 },
+      output_tokens: 5,
+      output_tokens_details: { reasoning_tokens: 1 },
+      total_tokens: 15
+    };
+    const incompleteOutput = {
+      id: 'msg-incomplete',
+      type: 'message',
+      role: 'assistant',
+      status: 'incomplete',
+      content: [{
+        type: 'output_text',
+        text: partialText,
+        annotations: [{
+          type: 'url_citation',
+          start_index: 0,
+          end_index: 'Partial answer'.length,
+          title: 'Partial source',
+          url: sourceUrl
+        }],
+        logprobs: []
+      }]
+    } as OpenAIResponse['output'][number];
+    const incompleteResponse = {
+      ...createCompletedResponse([incompleteOutput]),
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      usage
+    } as OpenAIResponse;
+    createResponseMock.mockResolvedValue(createStream([
+      {
+        type: 'response.output_text.delta',
+        item_id: 'msg-incomplete',
+        output_index: 0,
+        content_index: 0,
+        sequence_number: 1,
+        delta: partialText
+      },
+      {
+        type: 'response.incomplete',
+        sequence_number: 2,
+        response: incompleteResponse
+      }
+    ]));
+
+    const result = await generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'incomplete-key'
+    );
+
+    expect(result).toMatchObject({
+      content: `Partial answer[[1]](<${sourceUrl}>).`,
+      status: 'incomplete',
+      incompleteReason: 'max_output_tokens',
+      sources: [{ title: 'Partial source', url: sourceUrl }],
+      usage,
+      responseId: 'resp-1'
+    });
+  });
+
+  it('retains streamed partial output when an incomplete response omits output items', async () => {
+    const incompleteResponse = {
+      ...createCompletedResponse([]),
+      status: 'incomplete',
+      incomplete_details: { reason: 'content_filter' },
+      output_text: ''
+    } as OpenAIResponse;
+    createResponseMock.mockResolvedValue(createStream([
+      {
+        type: 'response.output_text.delta',
+        item_id: 'msg-incomplete',
+        output_index: 0,
+        content_index: 0,
+        sequence_number: 1,
+        delta: 'Visible partial output.'
+      },
+      {
+        type: 'response.incomplete',
+        sequence_number: 2,
+        response: incompleteResponse
+      }
+    ]));
+
+    const result = await generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'partial-key'
+    );
+
+    expect(result).toMatchObject({
+      content: 'Visible partial output.',
+      status: 'incomplete',
+      incompleteReason: 'content_filter'
+    });
+  });
+});
+
 describe('generateResponse conversation history', () => {
   beforeEach(() => {
     createResponseMock.mockReset();

@@ -67,3 +67,47 @@ describe('ChatArea responsive message layout', () => {
     expect(html.match(/class="message-content min-w-0 max-w-full/g)).toHaveLength(2);
   });
 });
+
+describe('ChatArea incomplete-response status', () => {
+  it('shows output-limit and content-filter reasons without hiding partial output', () => {
+    const messages: Message[] = [
+      {
+        id: 'assistant-output-limit',
+        role: 'assistant',
+        content: 'Partial output before the limit.',
+        status: 'incomplete',
+        incompleteReason: 'max_output_tokens',
+        timestamp: 1
+      },
+      {
+        id: 'assistant-content-filter',
+        role: 'assistant',
+        content: 'Allowed partial output.',
+        status: 'incomplete',
+        incompleteReason: 'content_filter',
+        timestamp: 2
+      }
+    ];
+
+    const html = renderToStaticMarkup(
+      <>
+        {messages.map(message => (
+          <MessageRow
+            key={message.id}
+            message={message}
+            canRetry={false}
+            canRegenerate={false}
+            apiKey=""
+            onRetryFailedMessage={() => undefined}
+            onRegenerateResponse={() => undefined}
+          />
+        ))}
+      </>
+    );
+
+    expect(html).toContain('Partial output before the limit.');
+    expect(html).toContain('Response incomplete: the output token limit was reached.');
+    expect(html).toContain('Allowed partial output.');
+    expect(html).toContain('Response incomplete: some output was filtered.');
+  });
+});
