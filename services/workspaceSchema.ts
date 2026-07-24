@@ -198,13 +198,25 @@ const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
     usage.input_tokens_details,
     `${path}.input_tokens_details`
   );
-  assertOnlyKeys(inputDetails, ['cached_tokens'], `${path}.input_tokens_details`);
+  assertOnlyKeys(
+    inputDetails,
+    ['cached_tokens', 'cache_write_tokens'],
+    `${path}.input_tokens_details`
+  );
   assertSafeInteger(
     inputDetails.cached_tokens,
     `${path}.input_tokens_details.cached_tokens`,
     0,
     MAX_TOKEN_COUNT
   );
+  if (inputDetails.cache_write_tokens !== undefined) {
+    assertSafeInteger(
+      inputDetails.cache_write_tokens,
+      `${path}.input_tokens_details.cache_write_tokens`,
+      0,
+      MAX_TOKEN_COUNT
+    );
+  }
 
   const outputDetails = assertRecord(
     usage.output_tokens_details,

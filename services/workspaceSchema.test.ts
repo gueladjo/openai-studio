@@ -32,7 +32,10 @@ const createSession = (): Session => ({
       sources: [{ title: 'OpenAI', url: 'https://openai.com' }],
       usage: {
         input_tokens: 10,
-        input_tokens_details: { cached_tokens: 2 },
+        input_tokens_details: {
+          cached_tokens: 2,
+          cache_write_tokens: 1
+        } as any,
         output_tokens: 5,
         output_tokens_details: { reasoning_tokens: 1 },
         total_tokens: 15
