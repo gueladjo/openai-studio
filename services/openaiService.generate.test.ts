@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
-import { DEFAULT_CONFIG, type Message } from '../types';
+import { DEFAULT_CONFIG, ModelId, type Message } from '../types';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
 const { createResponseMock } = vi.hoisted(() => ({
@@ -217,6 +217,73 @@ describe('generateResponse reasoning summaries', () => {
       param: 'input'
     });
     consoleError.mockRestore();
+  });
+});
+
+describe('generateResponse context management', () => {
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it.each([
+    ModelId.GPT_5_6_SOL,
+    ModelId.GPT_5_6_TERRA,
+    ModelId.GPT_5_5
+  ])('enables server-side compaction without automatic truncation for %s', async (model) => {
+    const compactionOutput = {
+      id: 'cmp-1',
+      type: 'compaction',
+      encrypted_content: 'opaque-compaction-state'
+    } as OpenAIResponse['output'][number];
+    const completedResponse = createCompletedResponse([
+      compactionOutput,
+      messageOutput
+    ]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+
+    const result = await generateResponse(
+      [userMessage],
+      { ...DEFAULT_CONFIG, model },
+      'compaction-key'
+    );
+
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      store: true,
+      truncation: 'disabled',
+      context_management: [{
+        type: 'compaction',
+        compact_threshold: 200_000
+      }]
+    });
+    expect(result.content).toBe('The answer is 42.');
+  });
+
+  it.each([
+    ModelId.GPT_5_MINI,
+    ModelId.GPT_5_NANO,
+    ModelId.GPT_O3
+  ])('omits compaction for %s', async (model) => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+
+    await generateResponse(
+      [userMessage],
+      { ...DEFAULT_CONFIG, model },
+      'no-compaction-key'
+    );
+
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock.mock.calls[0][0].context_management).toBeUndefined();
+    expect(createResponseMock.mock.calls[0][0].truncation).toBe('disabled');
   });
 });
 
@@ -648,14 +715,26 @@ describe('generateResponse conversation history', () => {
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     expect(createResponseMock.mock.calls[0][0]).toMatchObject({
       previous_response_id: 'resp-expired',
-      input: [{ role: 'user', content: 'Build on that answer.' }]
+      input: [{ role: 'user', content: 'Build on that answer.' }],
+      truncation: 'disabled',
+      context_management: [{
+        type: 'compaction',
+        compact_threshold: 200_000
+      }]
+    });
+    expect(createResponseMock.mock.calls[1][0]).toMatchObject({
+      input: [
+        { role: 'user', content: 'Solve this problem.' },
+        { role: 'assistant', content: 'The earlier answer.' },
+        { role: 'user', content: 'Build on that answer.' }
+      ],
+      truncation: 'disabled',
+      context_management: [{
+        type: 'compaction',
+        compact_threshold: 200_000
+      }]
     });
     expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
-    expect(createResponseMock.mock.calls[1][0].input).toEqual([
-      { role: 'user', content: 'Solve this problem.' },
-      { role: 'assistant', content: 'The earlier answer.' },
-      { role: 'user', content: 'Build on that answer.' }
-    ]);
   });
 
   it('recognizes a foreign response from a definite HTTP error message', async () => {

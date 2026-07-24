@@ -1221,6 +1221,7 @@ export const generateResponse = async (
     tools: tools,
     store: true,
     stream: true,
+    truncation: 'disabled',
     include: [
       'code_interpreter_call.outputs',
       'web_search_call.action.sources'
@@ -1229,6 +1230,13 @@ export const generateResponse = async (
   };
 
   payload.instructions = getModelInstructions(normalizedConfig.model, systemInstruction);
+
+  if (modelConfig.compactionThreshold) {
+    payload.context_management = [{
+      type: 'compaction',
+      compact_threshold: modelConfig.compactionThreshold
+    }];
+  }
 
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;
