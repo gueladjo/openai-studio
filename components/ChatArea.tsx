@@ -157,17 +157,17 @@ const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number
   if (!text) return null;
 
   return (
-    <div className="mb-2">
+    <div className="mb-2 min-w-0 max-w-full">
         <button
             onClick={() => setIsOpen(!isOpen)}
             aria-expanded={isOpen}
-            className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+            className="flex min-w-0 max-w-full items-center gap-1 text-sm text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
         >
             <span>{formatThinkingLabel(durationMs)}</span>
             {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
         {isOpen && (
-            <div className="mt-2 pl-3 border-l-2 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 text-sm leading-relaxed markdown-content">
+            <div className="mt-2 min-w-0 max-w-full pl-3 border-l-2 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 text-sm leading-relaxed markdown-content">
                 <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={markdownComponents}
@@ -520,7 +520,7 @@ const GeneratedFilesBlock = ({
                             disabled={isDownloading}
                             aria-disabled={!canDownload || isDownloading}
                             title={title}
-                            className={`flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors ${
+                            className={`flex min-w-0 max-w-full sm:max-w-[260px] items-center gap-2 rounded-full border px-3 py-1.5 text-left transition-colors ${
                                 canDownload
                                     ? 'bg-gray-100 dark:bg-[#1f2937] border-gray-200 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-[#2d3748]'
                                     : 'bg-gray-50 dark:bg-[#161b22] border-gray-200 dark:border-gray-800 cursor-default'
@@ -606,7 +606,7 @@ export const markdownComponents = {
         const className = codeElement?.props.className;
 
         return (
-            <div className="my-2 bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
+            <div className="my-2 min-w-0 max-w-full bg-gray-50 dark:bg-black/30 rounded-md overflow-hidden border border-gray-200 dark:border-gray-700/50">
                 <div className="bg-gray-100 dark:bg-gray-800/50 px-3 py-1 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700/50 font-mono">{getCodeBlockLabel(className)}</div>
                 <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-800 dark:text-gray-300" {...props}>
                     <code className={className}>{codeElement?.props.children ?? children}</code>
@@ -654,7 +654,7 @@ interface MessageRowProps {
 
 // Memoized so a streaming delta only re-renders (and re-parses markdown for) the
 // message it touches; App's session updaters keep untouched message identities stable.
-const MessageRow = React.memo(({
+export const MessageRow = React.memo(({
   message,
   canRetry,
   canRegenerate,
@@ -666,7 +666,7 @@ const MessageRow = React.memo(({
 
   return (
     <div
-      className={`flex gap-4 max-w-4xl mx-auto ${
+      className={`flex w-full min-w-0 gap-4 max-w-4xl mx-auto ${
         message.role === 'user' ? 'justify-end' : 'justify-start'
       }`}
     >
@@ -676,36 +676,36 @@ const MessageRow = React.memo(({
         </div>
       )}
 
-      <div className={`flex flex-col max-w-[85%] ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
+      <div className={`flex min-w-0 max-w-[85%] flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
 
           {/* Attachments Section */}
           {message.attachments && message.attachments.length > 0 && (
-              <div className={`flex flex-col gap-2 mb-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div className={`flex min-w-0 max-w-full flex-col gap-2 mb-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
                   {/* Images Grid */}
-                  <div className={`flex flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`flex min-w-0 max-w-full flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                       {message.attachments.filter(a => a.type.startsWith('image/') && (a.previewUrl || a.content)).map((file, i) => (
                           <img
                             key={file.id || `img-${i}`}
                             src={file.previewUrl || file.content}
                             alt={file.name}
-                            className="max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
+                            className="max-w-full sm:max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
                           />
                       ))}
                   </div>
 
                   {/* File Chips */}
-                  <div className={`flex flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`flex min-w-0 max-w-full flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                       {message.attachments.filter(a => !a.type.startsWith('image/')).map((file, i) => (
-                          <div key={`file-${i}`} className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
-                              <FileText size={12} />
-                              <span>{file.name}</span>
+                          <div key={`file-${i}`} className="flex min-w-0 max-w-full items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                              <FileText size={12} className="flex-shrink-0" />
+                              <span className="min-w-0 truncate">{file.name}</span>
                           </div>
                       ))}
                   </div>
               </div>
           )}
 
-          <div className={`w-full ${message.role === 'user' ? '' : 'space-y-2'}`}>
+          <div className={`w-full min-w-0 ${message.role === 'user' ? '' : 'space-y-2'}`}>
 
             {/* Thinking/Reasoning Section */}
             {message.role === 'assistant' && message.thinking && (
@@ -714,14 +714,14 @@ const MessageRow = React.memo(({
 
             {/* Main Content */}
             <div
-                className={`rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm min-w-0 ${
+                className={`message-content min-w-0 max-w-full rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm ${
                 message.role === 'user'
                     ? 'bg-[#2d3748] text-white rounded-br-none whitespace-pre-wrap'
                     : 'bg-white dark:bg-transparent text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-800 rounded-bl-none shadow-sm dark:shadow-none'
                 }`}
             >
                 {message.role === 'assistant' ? (
-                <div className="markdown-content">
+                <div className="markdown-content w-full max-w-full">
                     {isAssistantStreaming && !message.content ? (
                         <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
                             <Loader2 size={14} className="animate-spin" />
@@ -968,7 +968,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   if (!session) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-white dark:bg-[#0d1117] text-gray-500 dark:text-gray-500 transition-colors duration-200">
+      <div className="flex-1 min-w-0 w-full flex flex-col items-center justify-center bg-white dark:bg-[#0d1117] text-gray-500 dark:text-gray-500 transition-colors duration-200">
         <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 mb-6 flex items-center justify-center transition-colors">
              <Bot size={32} className="text-blue-600 dark:text-blue-500" />
         </div>
@@ -981,7 +981,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const canShareConversation = session.messages.length > 0;
 
   return (
-    <div className="flex-1 flex flex-col bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
+    <div className="flex-1 min-w-0 w-full flex flex-col overflow-hidden bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
       <ConversationHeader
         title={session.title}
         isMobile={isMobile}
@@ -993,7 +993,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div
         ref={messagesContainerRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 overflow-y-auto px-4 py-6 space-y-8"
+        className="flex-1 min-w-0 w-full overflow-y-auto overflow-x-hidden px-4 py-6 space-y-8"
       >
         {session.messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-600 opacity-50">
@@ -1037,8 +1037,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       </div>
 
       {/* Input Area */}
-      <div className={`p-4 bg-white dark:bg-[#0d1117] transition-colors ${isMobile ? 'safe-area-bottom' : ''}`}>
-        <div className="max-w-4xl mx-auto">
+      <div className={`w-full min-w-0 p-4 bg-white dark:bg-[#0d1117] transition-colors ${isMobile ? 'safe-area-bottom' : ''}`}>
+        <div className="w-full min-w-0 max-w-4xl mx-auto">
           {attachments.length > 0 && (
               <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">
                   {attachments.map((file, index) => {

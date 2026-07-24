@@ -1458,7 +1458,7 @@ function App() {
         )}
 
         {/* Main App Content */}
-        <div className="flex flex-1 min-h-0">
+        <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
           {/* Sidebar - Desktop: always visible, Mobile: slide-out drawer */}
           {!isMobile ? (
             <Sidebar
@@ -1520,7 +1520,7 @@ function App() {
             </>
           )}
 
-          <main className="flex-1 flex min-w-0">
+          <main className="flex-1 flex min-w-0 w-full overflow-hidden">
             <ChatArea
               session={currentSession}
               onSendMessage={handleSendMessage}
