@@ -278,12 +278,20 @@ const parseAttachment = (
   backup: boolean
 ): FileAttachment => {
   const attachment = assertRecord(value, path);
-  assertOnlyKeys(attachment, ['id', 'name', 'type', 'content'], path);
+  assertOnlyKeys(attachment, ['id', 'name', 'type', 'size', 'content'], path);
   const id = attachment.id === undefined
     ? undefined
     : assertAttachmentId(attachment.id, `${path}.id`);
   assertString(attachment.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH);
   assertString(attachment.type, `${path}.type`, 512);
+  if (attachment.size !== undefined) {
+    assertSafeInteger(
+      attachment.size,
+      `${path}.size`,
+      0,
+      MAX_WORKSPACE_BACKUP_BYTES
+    );
+  }
   const content = assertOptionalString(
     attachment.content,
     `${path}.content`,

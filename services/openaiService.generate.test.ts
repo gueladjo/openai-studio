@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import { DEFAULT_CONFIG, type Message } from '../types';
+import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
 const { createResponseMock } = vi.hoisted(() => ({
   createResponseMock: vi.fn()
@@ -419,6 +420,120 @@ describe('generateResponse conversation history', () => {
       { role: 'user', content: 'Solve this problem.' },
       { role: 'user', content: 'Try a different approach.' }
     ]);
+  });
+
+  it('does not replay attachments from a failed user turn', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+    const resolveAttachmentContent = vi.fn();
+    const messages: Message[] = [
+      {
+        ...userMessage,
+        attachments: [{
+          id: 'failed-file',
+          name: 'failed.pdf',
+          type: 'application/pdf',
+          size: 1024
+        }]
+      },
+      {
+        id: 'assistant-error',
+        role: 'assistant',
+        content: 'Error: Invalid file.',
+        status: 'error',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue without that file.',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(
+      messages,
+      DEFAULT_CONFIG,
+      'history-key',
+      undefined,
+      { resolveAttachmentContent }
+    );
+
+    expect(resolveAttachmentContent).not.toHaveBeenCalled();
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'user', content: 'Continue without that file.' }
+    ]);
+  });
+
+  it('rejects invalid attachment metadata before content resolution or an API call', async () => {
+    const resolveAttachmentContent = vi.fn();
+    const oversizedMessage: Message = {
+      ...userMessage,
+      attachments: [{
+        id: 'oversized-file',
+        name: 'oversized.pdf',
+        type: 'application/pdf',
+        size: MAX_ATTACHMENT_BYTES
+      }]
+    };
+
+    await expect(generateResponse(
+      [oversizedMessage],
+      DEFAULT_CONFIG,
+      'history-key',
+      undefined,
+      { resolveAttachmentContent }
+    )).rejects.toThrow('must be smaller than 50 MB');
+
+    expect(resolveAttachmentContent).not.toHaveBeenCalled();
+    expect(createResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('enforces the combined attachment limit across full-history messages', async () => {
+    const messages: Message[] = [
+      {
+        ...userMessage,
+        attachments: [{
+          id: 'first-file',
+          name: 'first.pdf',
+          type: 'application/pdf',
+          size: 30 * 1024 * 1024
+        }]
+      },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'First answer.',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue.',
+        timestamp: 3,
+        attachments: [{
+          id: 'second-file',
+          name: 'second.pdf',
+          type: 'application/pdf',
+          size: 20 * 1024 * 1024
+        }]
+      }
+    ];
+
+    await expect(generateResponse(
+      messages,
+      DEFAULT_CONFIG,
+      'history-key',
+      undefined,
+      { resolveAttachmentContent: vi.fn() }
+    )).rejects.toThrow('smaller than 50 MB combined');
+
+    expect(createResponseMock).not.toHaveBeenCalled();
   });
 
   it('keeps stopped partial assistant output in local history', async () => {

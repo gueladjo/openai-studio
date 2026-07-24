@@ -5,7 +5,14 @@ import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
 import { TitleBar } from './components/TitleBar';
-import { Session, ChatConfig, Message, DEFAULT_CONFIG, SystemInstruction } from './types';
+import {
+  Session,
+  ChatConfig,
+  FileAttachment,
+  Message,
+  DEFAULT_CONFIG,
+  SystemInstruction
+} from './types';
 import { cancelResponse, generateResponse, generateChatTitle } from './services/openaiService';
 import {
   getStorageHandle,
@@ -43,6 +50,7 @@ import {
 import { confirmChatDeletion } from './utils/chatDeletion';
 import { normalizeChatConfig } from './constants';
 import { AlertTriangle, Loader2, Menu, RefreshCw, Settings, X } from 'lucide-react';
+import { validateAttachments } from './utils/attachmentValidation';
 
 // Hook for detecting mobile viewport
 const useIsMobile = (breakpoint = 768) => {
@@ -97,6 +105,27 @@ const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
       });
     });
   });
+};
+
+const storeMessageAttachments = async (
+  dirHandle: FileSystemDirectoryHandle,
+  files: File[]
+): Promise<FileAttachment[]> => {
+  const formats = validateAttachments(files);
+  const storedAttachments = await Promise.all(files.map(async file => ({
+    file,
+    id: await storeAttachment(dirHandle, file)
+  })));
+
+  return storedAttachments.map(({ file, id }, index) => ({
+    id,
+    name: file.name,
+    type: formats[index].mimeType,
+    size: file.size,
+    ...(formats[index].kind === 'image'
+      ? { previewUrl: URL.createObjectURL(file) }
+      : {})
+  }));
 };
 
 interface ActiveChatRequest {
@@ -1072,18 +1101,7 @@ function App() {
       const handle = dirHandleRef.current;
       if (!handle) throw new Error('Workspace storage is unavailable.');
 
-      const storedAttachments = await Promise.all(attachments.map(async file => ({
-        file,
-        id: await storeAttachment(handle, file)
-      })));
-      const processedAttachments = storedAttachments.map(({ file, id }) => {
-        return {
-          id,
-          name: file.name,
-          type: file.type,
-          ...(file.type.startsWith('image/') ? { previewUrl: URL.createObjectURL(file) } : {})
-        };
-      });
+      const processedAttachments = await storeMessageAttachments(handle, attachments);
 
       const requestId = uuidv4();
       const userMessageId = uuidv4();
@@ -1096,7 +1114,9 @@ function App() {
         role: 'user',
         content,
         timestamp: requestTimestamp,
-        attachments: processedAttachments
+        ...(processedAttachments.length > 0
+          ? { attachments: processedAttachments }
+          : {})
       };
       const assistantPlaceholder = createAssistantPlaceholder(
         assistantMessageId,
@@ -1250,6 +1270,119 @@ function App() {
 
     if (assistantMessageIndex === undefined) return;
     await restartAssistantResponse(assistantMessageIndex);
+  };
+
+  const handleRemoveFailedAttachment = (
+    userMessageId: string,
+    attachmentIndex: number
+  ) => {
+    if (!workspaceCanWriteRef.current || !currentSessionId) return;
+
+    const targetSessionId = currentSessionId;
+    const session = sessionsRef.current.find(item => item.id === targetSessionId);
+    const lastMessage = session?.messages[session.messages.length - 1];
+    const userMessage = session?.messages[session.messages.length - 2];
+    if (
+      lastMessage?.role !== 'assistant' ||
+      lastMessage.status !== 'error' ||
+      userMessage?.role !== 'user' ||
+      userMessage.id !== userMessageId
+    ) {
+      return;
+    }
+
+    const removedAttachment = userMessage.attachments?.[attachmentIndex];
+    forceImmediateSessionSaveRef.current = true;
+    setSessions(prev => prev.map(item => {
+      if (item.id !== targetSessionId) return item;
+
+      return {
+        ...item,
+        messages: item.messages.map(message => (
+          message.id === userMessageId
+            ? {
+                ...message,
+                attachments: message.attachments?.filter(
+                  (_, index) => index !== attachmentIndex
+                )
+              }
+            : message
+        )),
+        lastModified: Date.now()
+      };
+    }));
+
+    if (removedAttachment?.previewUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(removedAttachment.previewUrl);
+    }
+  };
+
+  const handleReplaceFailedAttachments = async (
+    userMessageId: string,
+    files: File[]
+  ): Promise<string | undefined> => {
+    if (!workspaceCanWriteRef.current || !currentSessionId) {
+      return 'This workspace is read-only.';
+    }
+
+    const targetSessionId = currentSessionId;
+    const session = sessionsRef.current.find(item => item.id === targetSessionId);
+    const lastMessage = session?.messages[session.messages.length - 1];
+    const userMessage = session?.messages[session.messages.length - 2];
+    if (
+      lastMessage?.role !== 'assistant' ||
+      lastMessage.status !== 'error' ||
+      userMessage?.role !== 'user' ||
+      userMessage.id !== userMessageId
+    ) {
+      return 'This failed turn is no longer available to edit.';
+    }
+
+    try {
+      const handle = dirHandleRef.current;
+      if (!handle) throw new Error('Workspace storage is unavailable.');
+
+      const replacementAttachments = await storeMessageAttachments(handle, files);
+      const currentTarget = sessionsRef.current.find(item => item.id === targetSessionId);
+      const currentLastMessage = currentTarget?.messages[currentTarget.messages.length - 1];
+      const currentUserMessage = currentTarget?.messages[currentTarget.messages.length - 2];
+      if (
+        currentLastMessage?.role !== 'assistant' ||
+        currentLastMessage.status !== 'error' ||
+        currentUserMessage?.role !== 'user' ||
+        currentUserMessage.id !== userMessageId
+      ) {
+        replacementAttachments.forEach(attachment => {
+          if (attachment.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(attachment.previewUrl);
+          }
+        });
+        return 'This failed turn is no longer available to edit.';
+      }
+
+      forceImmediateSessionSaveRef.current = true;
+      setSessions(prev => prev.map(item => {
+        if (item.id !== targetSessionId) return item;
+
+        return {
+          ...item,
+          messages: item.messages.map(message => (
+            message.id === userMessageId
+              ? { ...message, attachments: replacementAttachments }
+              : message
+          )),
+          lastModified: Date.now()
+        };
+      }));
+      userMessage.attachments?.forEach(attachment => {
+        if (attachment.previewUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
+      return undefined;
+    } catch (error) {
+      return getErrorMessage(error);
+    }
   };
 
   const handleRegenerateLatestResponse = async () => {
@@ -1645,6 +1778,8 @@ function App() {
               onSendMessage={handleSendMessage}
               onStopGenerating={handleStopGenerating}
               onRetryFailedMessage={handleRetryFailedMessage}
+              onRemoveFailedAttachment={handleRemoveFailedAttachment}
+              onReplaceFailedAttachments={handleReplaceFailedAttachments}
               onRegenerateResponse={handleRegenerateLatestResponse}
               onShareConversation={handleShareConversation}
               apiKey={apiKey}

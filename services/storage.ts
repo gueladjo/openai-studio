@@ -1,5 +1,10 @@
 import { FileAttachment, Session, SystemInstruction } from '../types';
 import {
+  getAttachmentMimeType,
+  getDataUrlByteLength,
+  validateAttachments
+} from '../utils/attachmentValidation';
+import {
   selectStorageBackend,
   StorageBackend,
   StorageBackendChoice,
@@ -1431,7 +1436,8 @@ const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(sessio
           attachments: message.attachments.map(attachment => {
             const storedAttachment: FileAttachment = {
               name: attachment.name,
-              type: attachment.type
+              type: attachment.type,
+              ...(attachment.size !== undefined ? { size: attachment.size } : {})
             };
 
             if (isValidAttachmentId(attachment.id)) {
@@ -1466,11 +1472,15 @@ const externalizeSessionAttachments = async (
     const existingId = isValidAttachmentId(attachment.id) ? attachment.id : undefined;
     const name = typeof attachment.name === 'string' ? attachment.name : 'Attachment';
     const type = typeof attachment.type === 'string' ? attachment.type : 'application/octet-stream';
+    const size = Number.isSafeInteger(attachment.size) && (attachment.size as number) >= 0
+      ? attachment.size
+      : undefined;
 
     if (!attachment.content) {
       const normalizedAttachment: FileAttachment = {
         name,
         type,
+        ...(size !== undefined ? { size } : {}),
         ...(!regenerateIds && existingId ? { id: existingId } : {})
       };
 
@@ -1487,6 +1497,15 @@ const externalizeSessionAttachments = async (
     try {
       const blob = await dataUrlToBlob(attachment.content);
       const id = regenerateIds || !existingId ? createAttachmentId() : existingId;
+      const mimeType = getAttachmentMimeType({
+        name,
+        type: type || blob.type
+      });
+      validateAttachments([{
+        name,
+        type: mimeType,
+        size: blob.size
+      }]);
       writtenAttachmentIds.push(id);
       onAttachmentStaged?.(id);
       await writeAttachmentBlob(dirHandle, id, blob);
@@ -1494,7 +1513,8 @@ const externalizeSessionAttachments = async (
       return {
         id,
         name,
-        type: type || blob.type
+        type: mimeType,
+        size: blob.size
       };
     } catch (error) {
       if (strict) {
@@ -1507,6 +1527,7 @@ const externalizeSessionAttachments = async (
       return {
         name,
         type,
+        ...(size !== undefined ? { size } : {}),
         ...(typeof attachment.content === 'string' && attachment.content.startsWith('data:')
           ? { content: attachment.content }
           : {})
@@ -1521,12 +1542,21 @@ const externalizeSessionAttachments = async (
   };
 };
 
-const addRuntimeAttachmentPreviews = async (
+const addRuntimeAttachmentMetadata = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[]
 ): Promise<Session[]> => mapSessionAttachments(sessions, async attachment => {
-  if (!attachment.type.startsWith('image/') || !isValidAttachmentId(attachment.id)) {
-    return attachment;
+  if (!isValidAttachmentId(attachment.id)) {
+    if (!attachment.content) return attachment;
+
+    try {
+      return {
+        ...attachment,
+        size: getDataUrlByteLength(attachment.content)
+      };
+    } catch {
+      return attachment;
+    }
   }
 
   try {
@@ -1538,7 +1568,10 @@ const addRuntimeAttachmentPreviews = async (
 
     return {
       ...attachment,
-      previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type))
+      size: blob.size,
+      ...(attachment.type.startsWith('image/')
+        ? { previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type)) }
+        : {})
     };
   } catch (error) {
     console.warn(`Failed to load attachment preview ${attachment.name}`, error);
@@ -1631,6 +1664,7 @@ export const storeAttachment = async (
   dirHandle: FileSystemDirectoryHandle,
   file: File
 ): Promise<string> => {
+  validateAttachments([file]);
   const id = createAttachmentId();
   await writeAttachmentBlob(dirHandle, id, file);
   return id;
@@ -1648,7 +1682,13 @@ export const getAttachmentDataUrl = async (
     throw new Error(`Attachment "${attachment.name}" is missing from local storage.`);
   }
 
-  return blobToDataUrl(applyAttachmentMimeType(blob, attachment.type));
+  validateAttachments([{
+    name: attachment.name,
+    type: attachment.type,
+    size: blob.size
+  }]);
+  const mimeType = getAttachmentMimeType(attachment);
+  return blobToDataUrl(applyAttachmentMimeType(blob, mimeType));
 };
 
 export const writeSessions = async (
@@ -1673,7 +1713,7 @@ export const readSessions = async (
 ): Promise<Session[]> => {
   const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
   if (options.readOnly) {
-    return addRuntimeAttachmentPreviews(dirHandle, storedSessions);
+    return addRuntimeAttachmentMetadata(dirHandle, storedSessions);
   }
 
   const externalized = await externalizeSessionAttachments(dirHandle, storedSessions);
@@ -1688,7 +1728,7 @@ export const readSessions = async (
     }
   }
 
-  return addRuntimeAttachmentPreviews(dirHandle, externalized.sessions);
+  return addRuntimeAttachmentMetadata(dirHandle, externalized.sessions);
 };
 
 const embedAttachmentDataForBackup = async (
@@ -1701,6 +1741,7 @@ const embedAttachmentDataForBackup = async (
     ...(isValidAttachmentId(attachment.id) ? { id: attachment.id } : {}),
     name: attachment.name,
     type: attachment.type,
+    ...(attachment.size !== undefined ? { size: attachment.size } : {}),
     ...(content ? { content } : {})
   };
 });

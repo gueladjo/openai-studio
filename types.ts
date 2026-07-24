@@ -110,6 +110,7 @@ export interface FileAttachment {
   id?: string;
   name: string;
   type: string;
+  size?: number;
   content?: string; // Legacy/backup data URL, or a transient Responses API input
   previewUrl?: string; // Runtime-only object URL for locally stored images
 }

@@ -111,3 +111,38 @@ describe('ChatArea incomplete-response status', () => {
     expect(html).toContain('Response incomplete: some output was filtered.');
   });
 });
+
+describe('ChatArea failed attachment controls', () => {
+  it('lets a failed user turn remove or replace its attachments', () => {
+    const message: Message = {
+      id: 'user-with-failed-file',
+      role: 'user',
+      content: 'Analyze this.',
+      timestamp: 1,
+      attachments: [{
+        id: 'attachment-1',
+        name: 'report.pdf',
+        type: 'application/pdf',
+        size: 1024
+      }]
+    };
+
+    const html = renderToStaticMarkup(
+      <MessageRow
+        message={message}
+        canRetry={false}
+        canRegenerate={false}
+        canEditAttachments={true}
+        apiKey=""
+        onRetryFailedMessage={() => undefined}
+        onRemoveFailedAttachment={() => undefined}
+        onReplaceFailedAttachments={async () => undefined}
+        onRegenerateResponse={() => undefined}
+      />
+    );
+
+    expect(html).toContain('aria-label="Remove report.pdf"');
+    expect(html).toContain('Replace attachments');
+    expect(html).toContain('accept="');
+  });
+});

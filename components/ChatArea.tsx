@@ -7,12 +7,22 @@ import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
 import { fetchGeneratedFileContent } from '../services/openaiService';
 import { getSourcePresentation } from '../utils/sourceUrls';
+import {
+  ATTACHMENT_INPUT_ACCEPT,
+  isSupportedImageAttachment,
+  validateAttachments
+} from '../utils/attachmentValidation';
 
 interface ChatAreaProps {
   session: Session | null;
   onSendMessage: (content: string, attachments: File[]) => Promise<boolean>;
   onStopGenerating: () => void;
   onRetryFailedMessage: (assistantMessageId: string) => void;
+  onRemoveFailedAttachment: (userMessageId: string, attachmentIndex: number) => void;
+  onReplaceFailedAttachments: (
+    userMessageId: string,
+    attachments: File[]
+  ) => Promise<string | undefined>;
   onRegenerateResponse: () => void;
   onShareConversation: () => void;
   apiKey: string;
@@ -660,8 +670,14 @@ interface MessageRowProps {
   message: Message;
   canRetry: boolean;
   canRegenerate: boolean;
+  canEditAttachments?: boolean;
   apiKey: string;
   onRetryFailedMessage: (assistantMessageId: string) => void;
+  onRemoveFailedAttachment?: (userMessageId: string, attachmentIndex: number) => void;
+  onReplaceFailedAttachments?: (
+    userMessageId: string,
+    attachments: File[]
+  ) => Promise<string | undefined>;
   onRegenerateResponse: () => void;
 }
 
@@ -671,11 +687,34 @@ export const MessageRow = React.memo(({
   message,
   canRetry,
   canRegenerate,
+  canEditAttachments = false,
   apiKey,
   onRetryFailedMessage,
+  onRemoveFailedAttachment,
+  onReplaceFailedAttachments,
   onRegenerateResponse
 }: MessageRowProps) => {
   const isAssistantStreaming = message.status === 'streaming';
+  const replacementInputRef = useRef<HTMLInputElement>(null);
+  const [attachmentEditError, setAttachmentEditError] = useState<string | null>(null);
+
+  const handleReplacementSelect = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!message.id || files.length === 0 || !onReplaceFailedAttachments) return;
+
+    try {
+      validateAttachments(files);
+      const error = await onReplaceFailedAttachments(message.id, files);
+      setAttachmentEditError(error || null);
+    } catch (error) {
+      setAttachmentEditError(
+        error instanceof Error ? error.message : 'Attachments could not be replaced.'
+      );
+    }
+  };
 
   return (
     <div
@@ -692,29 +731,93 @@ export const MessageRow = React.memo(({
       <div className={`flex min-w-0 max-w-[85%] flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
 
           {/* Attachments Section */}
-          {message.attachments && message.attachments.length > 0 && (
+          {((message.attachments && message.attachments.length > 0) || canEditAttachments) && (
               <div className={`flex min-w-0 max-w-full flex-col gap-2 mb-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
                   {/* Images Grid */}
                   <div className={`flex min-w-0 max-w-full flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      {message.attachments.filter(a => a.type.startsWith('image/') && (a.previewUrl || a.content)).map((file, i) => (
-                          <img
-                            key={file.id || `img-${i}`}
-                            src={file.previewUrl || file.content}
-                            alt={file.name}
-                            className="max-w-full sm:max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
-                          />
+                      {message.attachments?.map((file, index) => (
+                        isSupportedImageAttachment({
+                          name: file.name,
+                          type: file.type
+                        }) && (file.previewUrl || file.content) ? (
+                          <div
+                            key={file.id || `img-${index}`}
+                            className="group relative"
+                          >
+                            <img
+                              src={file.previewUrl || file.content}
+                              alt={file.name}
+                              className="max-w-full sm:max-w-[240px] max-h-[240px] rounded-xl border border-gray-200 dark:border-gray-700 object-cover shadow-sm bg-gray-100 dark:bg-gray-800"
+                            />
+                            {canEditAttachments && message.id && onRemoveFailedAttachment && (
+                              <button
+                                type="button"
+                                onClick={() => onRemoveFailedAttachment(message.id!, index)}
+                                aria-label={`Remove ${file.name}`}
+                                title={`Remove ${file.name}`}
+                                className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-800 p-1 text-white opacity-90 shadow transition-colors hover:bg-red-500"
+                              >
+                                <X size={12} />
+                              </button>
+                            )}
+                          </div>
+                        ) : null
                       ))}
                   </div>
 
                   {/* File Chips */}
                   <div className={`flex min-w-0 max-w-full flex-wrap gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      {message.attachments.filter(a => !a.type.startsWith('image/')).map((file, i) => (
-                          <div key={`file-${i}`} className="flex min-w-0 max-w-full items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                      {message.attachments?.map((file, index) => (
+                        !isSupportedImageAttachment({
+                          name: file.name,
+                          type: file.type
+                        }) ? (
+                          <div key={file.id || `file-${index}`} className="flex min-w-0 max-w-full items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
                               <FileText size={12} className="flex-shrink-0" />
                               <span className="min-w-0 truncate">{file.name}</span>
+                              {canEditAttachments && message.id && onRemoveFailedAttachment && (
+                                <button
+                                  type="button"
+                                  onClick={() => onRemoveFailedAttachment(message.id!, index)}
+                                  aria-label={`Remove ${file.name}`}
+                                  title={`Remove ${file.name}`}
+                                  className="rounded p-0.5 hover:text-red-500"
+                                >
+                                  <X size={12} />
+                                </button>
+                              )}
                           </div>
+                        ) : null
                       ))}
                   </div>
+                  {canEditAttachments && message.id && onReplaceFailedAttachments && (
+                    <div className="flex max-w-full flex-col items-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => replacementInputRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        <Upload size={13} />
+                        Replace attachments
+                      </button>
+                      <input
+                        ref={replacementInputRef}
+                        type="file"
+                        multiple
+                        accept={ATTACHMENT_INPUT_ACCEPT}
+                        className="hidden"
+                        onChange={handleReplacementSelect}
+                      />
+                      {attachmentEditError && (
+                        <span
+                          role="alert"
+                          className="max-w-sm text-right text-xs text-red-600 dark:text-red-400"
+                        >
+                          {attachmentEditError}
+                        </span>
+                      )}
+                    </div>
+                  )}
               </div>
           )}
 
@@ -823,6 +926,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onSendMessage,
   onStopGenerating,
   onRetryFailedMessage,
+  onRemoveFailedAttachment,
+  onReplaceFailedAttachments,
   onRegenerateResponse,
   onShareConversation,
   apiKey,
@@ -832,6 +937,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -929,11 +1035,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleSend = async () => {
     if (readOnly || (!inputValue.trim() && attachments.length === 0) || isLoading) return;
+    try {
+      validateAttachments(attachments);
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error ? error.message : 'Attachments could not be sent.'
+      );
+      return;
+    }
     isPinnedToBottomRef.current = true;
     const submittedContent = inputValue;
     const submittedAttachments = attachments;
     setInputValue('');
     setAttachments([]);
+    setAttachmentError(null);
 
     const accepted = await onSendMessage(submittedContent, submittedAttachments);
     if (!accepted) {
@@ -943,6 +1058,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       );
       setAttachments(current => [...submittedAttachments, ...current]);
     }
+  };
+
+  const addAttachments = (files: File[]) => {
+    const acceptedFiles: File[] = [];
+    const errors: string[] = [];
+
+    files.forEach(file => {
+      try {
+        validateAttachments([...attachments, ...acceptedFiles, file]);
+        acceptedFiles.push(file);
+      } catch (error) {
+        errors.push(
+          error instanceof Error ? error.message : `"${file.name}" could not be attached.`
+        );
+      }
+    });
+
+    if (acceptedFiles.length > 0) {
+      setAttachments([...attachments, ...acceptedFiles]);
+    }
+    setAttachmentError(errors.length > 0 ? errors.join(' ') : null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -955,7 +1091,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (readOnly) return;
     if (e.target.files && e.target.files.length > 0) {
-      setAttachments(prev => [...prev, ...Array.from(e.target.files!)]);
+      addAttachments(Array.from(e.target.files));
     }
     setFileInputKey(prev => prev + 1);
   };
@@ -984,13 +1120,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
 
     if (files.length > 0) {
-      setAttachments(prev => [...prev, ...files]);
+      addAttachments(files);
     }
   };
 
   const removeAttachment = (index: number) => {
     if (readOnly) return;
     setAttachments(prev => prev.filter((_, i) => i !== index));
+    setAttachmentError(null);
   };
 
   if (!session) {
@@ -1048,6 +1185,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 !readOnly &&
                 hasPrecedingUserMessage
             );
+            const canEditAttachments = (
+                msg.role === 'user' &&
+                msg.attachments !== undefined &&
+                idx === session.messages.length - 2 &&
+                session.messages[idx + 1]?.role === 'assistant' &&
+                session.messages[idx + 1]?.status === 'error' &&
+                !isLoading &&
+                !readOnly &&
+                Boolean(msg.id)
+            );
 
             return (
               <MessageRow
@@ -1055,8 +1202,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 message={msg}
                 canRetry={canRetry}
                 canRegenerate={canRegenerate}
+                canEditAttachments={canEditAttachments}
                 apiKey={apiKey}
                 onRetryFailedMessage={handleRetryFailedMessage}
+                onRemoveFailedAttachment={onRemoveFailedAttachment}
+                onReplaceFailedAttachments={onReplaceFailedAttachments}
                 onRegenerateResponse={handleRegenerateResponse}
               />
             );
@@ -1071,7 +1221,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           {attachments.length > 0 && (
               <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">
                   {attachments.map((file, index) => {
-                      const isImage = file.type.startsWith('image/');
+                      const isImage = isSupportedImageAttachment(file);
                       const imageUrl = isImage ? URL.createObjectURL(file) : null;
 
                       return isImage ? (
@@ -1110,6 +1260,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   })}
               </div>
           )}
+          {attachmentError && (
+            <div
+              role="alert"
+              className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+            >
+              {attachmentError}
+            </div>
+          )}
           <div className="relative bg-gray-50 dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg focus-within:ring-1 focus-within:ring-blue-500/50 focus-within:border-blue-500 transition-all">
             <textarea
               ref={textareaRef}
@@ -1139,6 +1297,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   className="hidden"
                   ref={fileInputRef}
                   onChange={handleFileSelect}
+                  accept={ATTACHMENT_INPUT_ACCEPT}
                   key={fileInputKey}
                   disabled={readOnly}
                />

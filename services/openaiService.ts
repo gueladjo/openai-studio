@@ -31,6 +31,11 @@ import {
   Source
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
+import {
+  getAttachmentFormat,
+  getDataUrlByteLength,
+  validateAttachments
+} from '../utils/attachmentValidation';
 
 const TITLE_GENERATION_INSTRUCTIONS = 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.';
 
@@ -746,8 +751,13 @@ const appendMarkdownSection = (content: string, section: string): string => {
 };
 
 const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
-  const images = message.attachments?.filter(a => a.type.startsWith('image/') && a.content) || [];
-  const otherAttachments = message.attachments?.filter(a => !a.type.startsWith('image/')) || [];
+  const images = message.attachments?.filter(attachment => (
+    getAttachmentFormat(attachment.name, attachment.type).kind === 'image' &&
+    attachment.content
+  )) || [];
+  const otherAttachments = message.attachments?.filter(attachment => (
+    getAttachmentFormat(attachment.name, attachment.type).kind === 'file'
+  )) || [];
   const fileAttachments = otherAttachments.filter(a => a.content);
   const filenameFallbackAttachments = otherAttachments.filter(a => !a.content);
 
@@ -806,6 +816,49 @@ const resolveMessageAttachmentContent = async (
       content: attachment.content || await resolver(attachment)
     })))
   };
+};
+
+const getReplayableMessages = (messages: Message[]): Message[] => (
+  messages.flatMap((message, index) => {
+    if (message.status === 'error') return [];
+
+    const nextMessage = messages[index + 1];
+    if (
+      message.role === 'user' &&
+      message.attachments?.length &&
+      nextMessage?.role === 'assistant' &&
+      nextMessage.status === 'error'
+    ) {
+      // Preserve the user's text, but do not let attachments from a failed turn
+      // poison later full-history requests. A direct retry still uses the
+      // original user message and its editable attachments.
+      return [{ ...message, attachments: undefined }];
+    }
+
+    return [message];
+  })
+);
+
+const validateMessageAttachments = (messages: Message[]): void => {
+  validateAttachments(messages.flatMap(message => (
+    message.attachments?.map(attachment => {
+      const size = attachment.content
+        ? getDataUrlByteLength(attachment.content)
+        : attachment.size;
+
+      if (size === undefined) {
+        throw new Error(
+          `Attachment "${attachment.name}" is missing size metadata. Remove or replace it before retrying.`
+        );
+      }
+
+      return {
+        name: attachment.name,
+        type: attachment.type,
+        size
+      };
+    }) || []
+  )));
 };
 
 const getPreviousResponseId = (messages: Message[]): string | undefined => {
@@ -1093,9 +1146,9 @@ export const generateResponse = async (
     throw new Error('A user message is required to generate a response.');
   }
 
-  // Error rows are local UI state, not assistant output. Replaying them when
-  // response threading is unavailable would present failures as conversation.
-  const replayableMessages = messages.filter(message => message.status !== 'error');
+  // Error rows are local UI state, not assistant output. Attachments on their
+  // failed user turns are also omitted from later full-history requests.
+  const replayableMessages = getReplayableMessages(messages);
 
   // Initialize OpenAI Client per request to support dynamic keys
   const openai = new OpenAI({
@@ -1119,10 +1172,13 @@ export const generateResponse = async (
     }
     return resolvedMessage;
   };
-  const buildApiInput = async (inputMessages: Message[]): Promise<OpenAIResponsesInput[]> => (
-    Promise.all(inputMessages.map(getResolvedMessage))
-      .then(resolvedMessages => resolvedMessages.map(mapMessageToResponseInput))
-  );
+  const buildApiInput = async (
+    inputMessages: Message[]
+  ): Promise<OpenAIResponsesInput[]> => {
+    validateMessageAttachments(inputMessages);
+    const resolvedMessages = await Promise.all(inputMessages.map(getResolvedMessage));
+    return resolvedMessages.map(mapMessageToResponseInput);
+  };
   const apiInput = await buildApiInput(
     previousResponseId ? [latestMessage] : replayableMessages
   );
