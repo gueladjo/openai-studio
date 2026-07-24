@@ -100,7 +100,7 @@ There is no lint or format command. Vitest covers pure logic, server-rendered co
 - Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
 - Persisted sessions reference separate attachment blobs. Legacy embedded data URLs migrate on load, while workspace exports re-embed attachment data and can therefore still be large and sensitive.
 - Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
-- Chat deletion is immediate with no confirmation or undo. Preserve that risk in user-facing documentation unless the workflow changes.
+- Chat deletion requires confirmation and has no undo. Preserve that risk in user-facing documentation unless the workflow changes.
 - Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
 
 ## Web, PWA, And Electron Constraints

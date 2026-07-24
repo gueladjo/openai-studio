@@ -26,6 +26,7 @@ import {
   downloadTextFile,
   formatConversationMarkdown
 } from './utils/conversationExport';
+import { confirmChatDeletion } from './utils/chatDeletion';
 import { normalizeChatConfig } from './constants';
 import { AlertTriangle, Loader2, Menu, Settings, X } from 'lucide-react';
 
@@ -641,10 +642,12 @@ function App() {
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const deletedSession = sessions.find(session => session.id === id);
+    if (!deletedSession || !confirmChatDeletion()) return;
+
     const newSessions = sessions.filter(s => s.id !== id);
     forceImmediateSessionSaveRef.current = true;
     setSessions(newSessions);
-    if (deletedSession) revokeAttachmentPreviewUrls([deletedSession]);
+    revokeAttachmentPreviewUrls([deletedSession]);
     if (currentSessionId === id) {
       setCurrentSessionId(newSessions.length > 0 ? newSessions[0].id : null);
     }

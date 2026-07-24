@@ -149,7 +149,7 @@ Older sessions with embedded data URLs are migrated to separate attachment recor
 
 Import asks for confirmation and replaces the supplied workspace sections. The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Generated container files can expire, so download files that need to be retained.
 
-Chat deletion is immediate and has no in-app undo. Export the workspace before destructive cleanup.
+Chat deletion asks for confirmation and has no in-app undo. Export the workspace before destructive cleanup.
 
 ## Architecture
 

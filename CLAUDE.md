@@ -102,7 +102,7 @@ Responses request/input/tool/usage/stream-event types in `types.ts` must stay al
 - Session writes have a 1s trailing delay, a 5s streaming checkpoint, and immediate request-boundary saves. Settings/instructions retain a 500ms trailing delay. Writes are serialized and flushed on page suspension and through an Electron close handshake.
 - Attachment bytes persist separately under `attachments/` (or separate IndexedDB records); `sessions.json` stores IDs and metadata. Legacy embedded data URLs migrate on load. Workspace exports deliberately re-embed attachment data so the JSON backup stays portable and sensitive.
 - Workspace export strips `settings.apiKey`; restore ignores any key inside the backup file and keeps the workspace's current key. Import validates core session/message/attachment, instruction, and settings shapes, then overwrites the supplied sections after confirmation.
-- Chat deletion is immediate with no confirmation or undo.
+- Chat deletion requires confirmation and has no undo.
 - Persistence is origin-scoped: a different scheme, host, or port is a different workspace.
 
 ## Build Modes, PWA, Electron

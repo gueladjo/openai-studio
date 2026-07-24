@@ -101,10 +101,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="truncate">{session.title || 'Untitled Chat'}</span>
               </div>
               <button
+                type="button"
                 onClick={(e) => onDeleteSession(e, session.id)}
-                className={`opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/50 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-all ${
-                  currentSessionId === session.id ? 'opacity-100' : ''
+                className={`p-1 hover:bg-red-100 dark:hover:bg-red-900/50 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-all ${
+                  isMobile || currentSessionId === session.id
+                    ? 'opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
                 }`}
+                aria-label={`Delete ${session.title || 'Untitled Chat'}`}
+                title="Delete chat"
               >
                 <Trash2 size={12} />
               </button>
