@@ -21,7 +21,6 @@ export const REASONING_EFFORT_FLAGSHIP: ReasoningEffortFlagship[] = ['none', 'lo
 export const REASONING_EFFORT_GPT_5_6: ReasoningEffortGPT56[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 export const REASONING_EFFORT_MINI_NANO: ReasoningEffortMiniNano[] = ['minimal', 'low', 'medium', 'high'];
 export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'];
-export const COMPACTION_THRESHOLD_TOKENS = 200_000;
 
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_6_SOL]: {
@@ -29,7 +28,6 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     name: 'GPT-5.6 Sol',
     knowledgeCutoff: 'February 16, 2026',
     supportsVerbosity: true,
-    compactionThreshold: COMPACTION_THRESHOLD_TOKENS,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
   },
@@ -38,7 +36,6 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     name: 'GPT-5.6 Terra',
     knowledgeCutoff: 'February 16, 2026',
     supportsVerbosity: true,
-    compactionThreshold: COMPACTION_THRESHOLD_TOKENS,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
   },
@@ -47,7 +44,6 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     name: 'GPT-5.5',
     knowledgeCutoff: 'December 1, 2025',
     supportsVerbosity: true,
-    compactionThreshold: COMPACTION_THRESHOLD_TOKENS,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
   },

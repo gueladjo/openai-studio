@@ -8,7 +8,6 @@ This project has no application server. The OpenAI SDK runs in the browser or El
 
 - Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
-- Automatic server-side context compaction for long-running GPT-5.5 and GPT-5.6 conversations without dropping the local transcript.
 - Configured model picker for GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.5, GPT-5 Mini, GPT-5 Nano, and o3. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
 - Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
@@ -26,7 +25,6 @@ OpenAI Studio is a direct client, not a local-only inference application:
 
 - Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
 - Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
-- Supported models compact server-side context at a 200,000-token threshold while API truncation remains disabled. Compaction consumes billable model tokens; the complete visible transcript remains in local workspace storage.
 - The API key entered in Settings is stored locally in `settings.json` and is not encrypted by this project.
 - A full workspace export includes conversations, system instructions, and attachment data, but never the API key saved in Settings. Importing a backup keeps your current key. Exports can still contain sensitive conversation content — treat them accordingly.
 - Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
@@ -174,7 +172,7 @@ public/                      static icons
 scripts/                     maintenance utilities
 ```
 
-`App.tsx` owns the application state and passes it to functional React components. `services/openaiService.ts` threads compatible turns with `previous_response_id`, enables native context compaction for supported models, streams text deltas into placeholders, and parses the completed response for citations, usage, Code Interpreter output, and generated files.
+`App.tsx` owns the application state and passes it to functional React components. `services/openaiService.ts` threads compatible turns with `previous_response_id`, streams text deltas into placeholders, and parses the completed response for citations, usage, Code Interpreter output, and generated files.
 
 ## Development Verification
 

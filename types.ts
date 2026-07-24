@@ -40,7 +40,6 @@ export interface ModelConfig {
   pickerName?: string;
   knowledgeCutoff: string;
   supportsVerbosity: boolean;
-  compactionThreshold?: number;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;
 }
