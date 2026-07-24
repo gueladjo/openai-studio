@@ -11,17 +11,12 @@ let mainWindow = null;
 let closeRequestPending = false;
 let closeConfirmed = false;
 let appQuitPending = false;
-let closeFallbackTimeout = null;
 
 const finishWindowClose = (win) => {
   if (!win || win.isDestroyed()) return;
 
   closeConfirmed = true;
   closeRequestPending = false;
-  if (closeFallbackTimeout) {
-    clearTimeout(closeFallbackTimeout);
-    closeFallbackTimeout = null;
-  }
 
   if (appQuitPending) {
     app.quit();
@@ -40,8 +35,6 @@ const requestWindowClose = (win) => {
   if (!closeRequestPending) {
     closeRequestPending = true;
     win.webContents.send('window-close-requested');
-    if (closeFallbackTimeout) clearTimeout(closeFallbackTimeout);
-    closeFallbackTimeout = setTimeout(() => finishWindowClose(win), 5000);
   }
 };
 
@@ -79,6 +72,14 @@ ipcMain.on('window-close-confirmed', (event) => {
   if (win && win === mainWindow) finishWindowClose(win);
 });
 
+ipcMain.on('window-close-cancelled', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== mainWindow || closeConfirmed) return;
+
+  closeRequestPending = false;
+  appQuitPending = false;
+});
+
 ipcMain.handle('window-is-maximized', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   return win ? win.isMaximized() : false;
@@ -112,10 +113,6 @@ function createWindow() {
   });
 
   win.on('closed', () => {
-    if (closeFallbackTimeout) {
-      clearTimeout(closeFallbackTimeout);
-      closeFallbackTimeout = null;
-    }
     closeRequestPending = false;
     closeConfirmed = false;
     appQuitPending = false;

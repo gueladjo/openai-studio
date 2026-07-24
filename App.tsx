@@ -30,13 +30,17 @@ import {
 } from './services/storage';
 import { WorkspaceCoordinator, WorkspaceRole } from './services/workspaceSync';
 import {
+  SaveQueueFailure,
+  VersionedSaveQueue
+} from './services/saveQueue';
+import {
   buildConversationFilename,
   downloadTextFile,
   formatConversationMarkdown
 } from './utils/conversationExport';
 import { confirmChatDeletion } from './utils/chatDeletion';
 import { normalizeChatConfig } from './constants';
-import { AlertTriangle, Loader2, Menu, Settings, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Menu, RefreshCw, Settings, X } from 'lucide-react';
 
 // Hook for detecting mobile viewport
 const useIsMobile = (breakpoint = 768) => {
@@ -65,6 +69,7 @@ declare global {
       writeClipboardText: (text: string) => Promise<void>;
       onCloseRequested: (callback: () => void) => () => void;
       confirmClose: () => void;
+      cancelClose: () => void;
     }
   }
 }
@@ -78,6 +83,7 @@ const SAVE_DELAYS: Record<SaveKey, number> = {
   settings: 500
 };
 const SESSION_SAVE_MAX_WAIT_MS = 5000;
+const SAVE_RETRY_DELAYS_MS = [500, 1500, 5000] as const;
 
 const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
   sessions.forEach(session => {
@@ -206,6 +212,9 @@ function App() {
   const [isWorkspaceLoaded, setIsWorkspaceLoaded] = useState(false);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [isWorkspaceReadOnly, setIsWorkspaceReadOnly] = useState(false);
+  const [saveFailure, setSaveFailure] = useState<SaveQueueFailure<SaveKey> | null>(null);
+  const [isRetryingSave, setIsRetryingSave] = useState(false);
+  const [closeSaveError, setCloseSaveError] = useState<string | null>(null);
   const sessionsRef = useRef<Session[]>([]);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const isWorkspaceLoadedRef = useRef(false);
@@ -213,6 +222,8 @@ function App() {
   const workspaceCoordinatorRef = useRef<WorkspaceCoordinator | null>(null);
   const workspaceReloadPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const unsubscribeBackendChangesRef = useRef<(() => void) | null>(null);
+  const saveQueueRef = useRef<VersionedSaveQueue<SaveKey> | null>(null);
+  const closeRequestPendingRef = useRef(false);
   const initializationStartedRef = useRef(false);
 
   // Replaced single boolean with a Set to track multiple active sessions
@@ -269,31 +280,17 @@ function App() {
     if (isMobile) setIsSidebarOpen(false);
   }, [isMobile]);
 
-  const saveTimeoutRef = useRef<Partial<Record<SaveKey, number>>>({});
-  const saveDirtySinceRef = useRef<Partial<Record<SaveKey, number>>>({});
-  const saveVersionRef = useRef<Record<SaveKey, number>>({
-    sessions: 0,
-    instructions: 0,
-    settings: 0
-  });
-  const savedVersionRef = useRef<Record<SaveKey, number>>({
-    sessions: 0,
-    instructions: 0,
-    settings: 0
-  });
-  const immediateSaveVersionRef = useRef<Record<SaveKey, number>>({
-    sessions: 0,
-    instructions: 0,
-    settings: 0
-  });
-  const queuedSaveKeysRef = useRef<Set<SaveKey>>(new Set());
-  const saveDrainPromiseRef = useRef<Promise<void> | null>(null);
   const forceImmediateSessionSaveRef = useRef(false);
   const skipNextSessionEffectSaveRef = useRef(false);
 
   const persistSaveKey = useCallback(async (key: SaveKey): Promise<void> => {
     const handle = dirHandleRef.current;
-    if (!handle || !isWorkspaceLoadedRef.current || !workspaceCanWriteRef.current) return;
+    if (!handle || !isWorkspaceLoadedRef.current) {
+      throw new Error('Workspace storage is unavailable.');
+    }
+    if (!workspaceCanWriteRef.current) {
+      throw new Error('This tab no longer has permission to save the workspace.');
+    }
 
     try {
       let revision: number;
@@ -319,71 +316,27 @@ function App() {
     }
   }, []);
 
-  const startSaveDrain = useCallback((): Promise<void> => {
-    if (saveDrainPromiseRef.current) return saveDrainPromiseRef.current;
-
-    const drain = (async () => {
-      while (queuedSaveKeysRef.current.size > 0) {
-        const keys = Array.from(queuedSaveKeysRef.current);
-        queuedSaveKeysRef.current.clear();
-        let firstError: unknown;
-
-        for (const key of keys) {
-          const version = saveVersionRef.current[key];
-
-          try {
-            await persistSaveKey(key);
-            savedVersionRef.current[key] = Math.max(savedVersionRef.current[key], version);
-
-            if (saveVersionRef.current[key] === version) {
-              queuedSaveKeysRef.current.delete(key);
-              delete saveDirtySinceRef.current[key];
-              if (immediateSaveVersionRef.current[key] <= version) {
-                immediateSaveVersionRef.current[key] = 0;
-              }
-
-              const timeout = saveTimeoutRef.current[key];
-              if (timeout !== undefined) {
-                window.clearTimeout(timeout);
-                delete saveTimeoutRef.current[key];
-              }
-            } else {
-              const timeout = saveTimeoutRef.current[key];
-              if (timeout !== undefined) window.clearTimeout(timeout);
-
-              if (immediateSaveVersionRef.current[key] > version) {
-                queuedSaveKeysRef.current.add(key);
-                delete saveTimeoutRef.current[key];
-              } else {
-                // A regular change landed while this snapshot was being written.
-                // Start a fresh window instead of writing continuously.
-                saveDirtySinceRef.current[key] = Date.now();
-                queuedSaveKeysRef.current.delete(key);
-                saveTimeoutRef.current[key] = window.setTimeout(() => {
-                  delete saveTimeoutRef.current[key];
-                  queuedSaveKeysRef.current.add(key);
-                  void startSaveDrain().catch(error => {
-                    console.error(`Failed to persist ${key}`, error);
-                  });
-                }, SAVE_DELAYS[key]);
-              }
-            }
-          } catch (error) {
-            if (!firstError) firstError = error;
-          }
-        }
-
-        if (firstError) throw firstError;
-      }
-    })();
-
-    const trackedDrain = drain.finally(() => {
-      if (saveDrainPromiseRef.current === trackedDrain) {
-        saveDrainPromiseRef.current = null;
-      }
-    });
-    saveDrainPromiseRef.current = trackedDrain;
-    return trackedDrain;
+  const getSaveQueue = useCallback((): VersionedSaveQueue<SaveKey> => {
+    if (!saveQueueRef.current || saveQueueRef.current.isDisposed) {
+      saveQueueRef.current = new VersionedSaveQueue<SaveKey>({
+        keys: SAVE_KEYS,
+        persist: async key => persistSaveKey(key),
+        getDelayMs: (key, dirtyForMs, immediate) => (
+          immediate
+            ? 0
+            : key === 'sessions'
+              ? Math.min(
+                  SAVE_DELAYS[key],
+                  Math.max(0, SESSION_SAVE_MAX_WAIT_MS - dirtyForMs)
+                )
+              : SAVE_DELAYS[key]
+        ),
+        retryDelaysMs: SAVE_RETRY_DELAYS_MS,
+        onFailure: setSaveFailure,
+        onRecovered: () => setSaveFailure(null)
+      });
+    }
+    return saveQueueRef.current;
   }, [persistSaveKey]);
 
   const scheduleSave = useCallback((key: SaveKey, immediate = false): void => {
@@ -395,36 +348,8 @@ function App() {
       return;
     }
 
-    saveVersionRef.current[key] += 1;
-    if (immediate) {
-      immediateSaveVersionRef.current[key] = saveVersionRef.current[key];
-    }
-
-    const now = Date.now();
-    if (saveDirtySinceRef.current[key] === undefined) {
-      saveDirtySinceRef.current[key] = now;
-    }
-
-    const existingTimeout = saveTimeoutRef.current[key];
-    if (existingTimeout !== undefined) window.clearTimeout(existingTimeout);
-
-    const delay = immediate
-      ? 0
-      : key === 'sessions'
-        ? Math.min(
-            SAVE_DELAYS[key],
-            Math.max(0, SESSION_SAVE_MAX_WAIT_MS - (now - (saveDirtySinceRef.current[key] || now)))
-          )
-        : SAVE_DELAYS[key];
-
-    saveTimeoutRef.current[key] = window.setTimeout(() => {
-      delete saveTimeoutRef.current[key];
-      queuedSaveKeysRef.current.add(key);
-      void startSaveDrain().catch(error => {
-        console.error(`Failed to persist ${key}`, error);
-      });
-    }, delay);
-  }, [startSaveDrain]);
+    getSaveQueue().markDirty(key, immediate);
+  }, [getSaveQueue]);
 
   const flushPendingSaves = useCallback(async (
     keys: readonly SaveKey[] = SAVE_KEYS
@@ -437,35 +362,23 @@ function App() {
       return;
     }
 
-    const targetVersions = new Map<SaveKey, number>();
+    await getSaveQueue().flush(keys);
+  }, [getSaveQueue]);
 
-    keys.forEach(key => {
-      targetVersions.set(key, saveVersionRef.current[key]);
+  const retryPendingSaves = useCallback(async (): Promise<boolean> => {
+    if (!workspaceCanWriteRef.current) return false;
 
-      const timeout = saveTimeoutRef.current[key];
-      if (timeout !== undefined) {
-        window.clearTimeout(timeout);
-        delete saveTimeoutRef.current[key];
-      }
-
-      if (savedVersionRef.current[key] < saveVersionRef.current[key]) {
-        queuedSaveKeysRef.current.add(key);
-      }
-    });
-
-    while (true) {
-      if (saveDrainPromiseRef.current || queuedSaveKeysRef.current.size > 0) {
-        await startSaveDrain();
-      }
-
-      const outstandingKeys = keys.filter(key => (
-        savedVersionRef.current[key] < (targetVersions.get(key) || 0)
-      ));
-      if (outstandingKeys.length === 0) return;
-
-      outstandingKeys.forEach(key => queuedSaveKeysRef.current.add(key));
+    setIsRetryingSave(true);
+    try {
+      await getSaveQueue().retryNow();
+      return true;
+    } catch (error) {
+      console.error('Failed to retry workspace saves.', error);
+      return false;
+    } finally {
+      setIsRetryingSave(false);
     }
-  }, [startSaveDrain]);
+  }, [getSaveQueue]);
 
   const addProcessingSession = (sessionId: string) => {
     processingSessionIdsRef.current.add(sessionId);
@@ -1399,10 +1312,10 @@ function App() {
     const electronApi = window.electronAPI;
     if (!electronApi?.onCloseRequested) return;
 
-    let isClosing = false;
     const unsubscribe = electronApi.onCloseRequested(() => {
-      if (isClosing) return;
-      isClosing = true;
+      if (closeRequestPendingRef.current) return;
+      closeRequestPendingRef.current = true;
+      setCloseSaveError(null);
 
       const activeRequests = new Map(activeRequestsRef.current);
       const now = Date.now();
@@ -1455,19 +1368,44 @@ function App() {
       }
 
       void flushPendingSaves()
+        .then(() => electronApi.confirmClose())
         .catch(error => {
           console.error('Failed to flush workspace data before closing.', error);
-        })
-        .finally(() => electronApi.confirmClose());
+          setCloseSaveError(getErrorMessage(error));
+        });
     });
 
     return unsubscribe;
   }, [flushPendingSaves, scheduleSave]);
 
+  const retryCloseAfterSaveFailure = async () => {
+    const electronApi = window.electronAPI;
+    if (!electronApi || !closeRequestPendingRef.current) return;
+
+    setIsRetryingSave(true);
+    try {
+      await getSaveQueue().retryNow();
+      electronApi.confirmClose();
+    } catch (error) {
+      console.error('Failed to retry workspace save before closing.', error);
+      setCloseSaveError(getErrorMessage(error));
+    } finally {
+      setIsRetryingSave(false);
+    }
+  };
+
+  const cancelCloseAfterSaveFailure = () => {
+    closeRequestPendingRef.current = false;
+    setCloseSaveError(null);
+    window.electronAPI?.cancelClose();
+  };
+
+  const quitWithoutSaving = () => {
+    window.electronAPI?.confirmClose();
+  };
+
   useEffect(() => () => {
-    Object.values(saveTimeoutRef.current).forEach(timeout => {
-      if (timeout !== undefined) window.clearTimeout(timeout);
-    });
+    saveQueueRef.current?.dispose();
     workspaceCoordinatorRef.current?.dispose();
     unsubscribeBackendChangesRef.current?.();
     revokeAttachmentPreviewUrls(sessionsRef.current);
@@ -1640,6 +1578,32 @@ function App() {
           </div>
         )}
 
+        {saveFailure && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-900 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200"
+          >
+            <span className="inline-flex items-center gap-2">
+              <AlertTriangle size={15} className="shrink-0" />
+              <span>
+                Workspace changes are not saved: {saveFailure.error.message}
+                {saveFailure.nextRetryDelayMs === null
+                  ? ' Automatic retries are paused.'
+                  : ` Retrying in ${Math.ceil(saveFailure.nextRetryDelayMs / 1000)}s.`}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void retryPendingSaves()}
+              disabled={isRetryingSave || isWorkspaceReadOnly}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-2.5 py-1.5 font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={isRetryingSave ? 'animate-spin' : ''} />
+              {isRetryingSave ? 'Retrying…' : 'Retry now'}
+            </button>
+          </div>
+        )}
+
         {/* Mobile Header */}
         {isMobile && (
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0d1117] safe-area-top">
@@ -1797,6 +1761,65 @@ function App() {
               </div>
             </div>
           </>
+        )}
+
+        {closeSaveError && window.electronAPI && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4">
+            <div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="close-save-error-title"
+              className="w-full max-w-md rounded-xl border border-red-200 bg-white p-6 shadow-2xl dark:border-red-900/60 dark:bg-[#161b22]"
+            >
+              <div className="flex items-start gap-3">
+                <AlertTriangle
+                  size={24}
+                  className="mt-0.5 shrink-0 text-red-600 dark:text-red-400"
+                />
+                <div className="min-w-0">
+                  <h2
+                    id="close-save-error-title"
+                    className="text-base font-semibold text-gray-900 dark:text-gray-100"
+                  >
+                    Couldn’t save before quitting
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
+                    Your latest workspace changes are still only in memory. Retry the save, keep the app open, or explicitly quit without saving them.
+                  </p>
+                  <pre className="mt-3 max-h-28 overflow-auto rounded-md bg-red-50 p-3 text-xs text-red-900 dark:bg-red-950/30 dark:text-red-100">
+                    {closeSaveError}
+                  </pre>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelCloseAfterSaveFailure}
+                  disabled={isRetryingSave}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                >
+                  Keep working
+                </button>
+                <button
+                  type="button"
+                  onClick={quitWithoutSaving}
+                  disabled={isRetryingSave}
+                  className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/30"
+                >
+                  Quit without saving
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void retryCloseAfterSaveFailure()}
+                  disabled={isRetryingSave}
+                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCw size={15} className={isRetryingSave ? 'animate-spin' : ''} />
+                  {isRetryingSave ? 'Retrying…' : 'Retry save'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

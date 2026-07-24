@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   confirmClose: () => ipcRenderer.send('window-close-confirmed'),
+  cancelClose: () => ipcRenderer.send('window-close-cancelled'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard-write-text', text),
   onMaximizedChange: (callback) => {
