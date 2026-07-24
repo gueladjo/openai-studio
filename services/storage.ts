@@ -733,6 +733,10 @@ const copyIndexedDbWorkspaceToOpfs = async (
 
   try {
     for (const record of indexeddb.records) {
+      // Track the attempted destination before creating it so rollback also
+      // removes a partial file when the write itself fails.
+      writtenRecords.push(record);
+
       if (record.filename.startsWith(ATTACHMENT_KEY_PREFIX)) {
         const attachmentName = record.filename.slice(ATTACHMENT_KEY_PREFIX.length);
         if (!isValidAttachmentId(attachmentName) || !(record.data instanceof Blob)) {
@@ -754,8 +758,6 @@ const copyIndexedDbWorkspaceToOpfs = async (
         }
         await writeOpfsTextFile(dataDir, record.filename, record.data);
       }
-
-      writtenRecords.push(record);
     }
 
     const verified = await inspectOpfsBackend(true);

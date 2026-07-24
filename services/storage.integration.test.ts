@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 import {
   DEFAULT_CONFIG,
   type FileAttachment,
@@ -196,6 +197,54 @@ class MemoryStorage {
     this.values.set(key, String(value));
   }
 }
+
+interface IndexedDbRecord {
+  filename: string;
+  data: string | Blob;
+  updatedAt: number;
+}
+
+const openIndexedDb = (
+  indexedDb: IDBFactory
+): Promise<IDBDatabase> => new Promise((resolve, reject) => {
+  const request = indexedDb.open('openai-studio-storage', 1);
+  request.onerror = () => reject(request.error);
+  request.onupgradeneeded = () => {
+    const database = request.result;
+    if (!database.objectStoreNames.contains('files')) {
+      database.createObjectStore('files', { keyPath: 'filename' });
+    }
+  };
+  request.onsuccess = () => resolve(request.result);
+});
+
+const seedIndexedDb = async (
+  indexedDb: IDBFactory,
+  records: IndexedDbRecord[]
+): Promise<IDBDatabase> => {
+  const database = await openIndexedDb(indexedDb);
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(['files'], 'readwrite');
+    const store = transaction.objectStore('files');
+    records.forEach(record => store.put(record));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+  return database;
+};
+
+const readIndexedDbRecord = (
+  database: IDBDatabase,
+  filename: string
+): Promise<IndexedDbRecord | undefined> => new Promise((resolve, reject) => {
+  const transaction = database.transaction(['files'], 'readonly');
+  const request = transaction.objectStore('files').get(filename);
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => resolve(
+    request.result as IndexedDbRecord | undefined
+  );
+});
 
 class MemoryFileReader {
   result: string | ArrayBuffer | null = null;
@@ -499,5 +548,153 @@ describe('storage public contracts', () => {
       'data/attachments'
     );
     expect(attachmentsDirectory.names()).toEqual([]);
+  });
+});
+
+describe('storage backend migration contracts', () => {
+  let database: IDBDatabase;
+  let fileSystem: MemoryFileSystem;
+  let indexedDb: IDBFactory;
+  let localStorage: MemoryStorage;
+  let storage: StorageModule;
+
+  const backendIdentityKey = 'openai-studio-storage-backend-v1';
+  const indexedDbRecords: IndexedDbRecord[] = [
+    {
+      filename: 'sessions.json',
+      data: '[]',
+      updatedAt: 1
+    },
+    {
+      filename: 'settings.json',
+      data: JSON.stringify({
+        theme: 'dark',
+        apiKey: 'local-key'
+      }),
+      updatedAt: 1
+    },
+    {
+      filename: 'system_instructions.json',
+      data: '[]',
+      updatedAt: 1
+    },
+    {
+      filename: 'workspace_revision.json',
+      data: JSON.stringify({ revision: 7 }),
+      updatedAt: 1
+    },
+    {
+      filename: 'attachments/attachment-1',
+      data: new Blob(['attachment bytes'], { type: 'text/plain' }),
+      updatedAt: 1
+    }
+  ];
+
+  beforeEach(async () => {
+    fileSystem = new MemoryFileSystem();
+    indexedDb = new IDBFactory();
+    localStorage = new MemoryStorage();
+    localStorage.setItem(
+      backendIdentityKey,
+      JSON.stringify({ version: 1, backend: 'indexeddb' })
+    );
+    database = await seedIndexedDb(indexedDb, indexedDbRecords);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('window', {
+      localStorage,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    });
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: vi.fn(async () => fileSystem.root)
+      }
+    });
+    vi.stubGlobal('indexedDB', indexedDb);
+    vi.stubGlobal('FileReader', MemoryFileReader);
+    vi.resetModules();
+    storage = await import('./storage');
+  });
+
+  afterEach(() => {
+    database.close();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('copies and byte-verifies an IndexedDB workspace before switching to OPFS', async () => {
+    const resolveBackendChoice = vi.fn().mockResolvedValue('migrate-to-opfs');
+
+    const handle = await storage.getStorageHandle({
+      resolveBackendChoice
+    });
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(7);
+
+    expect(resolveBackendChoice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'migration',
+        persistedBackend: 'indexeddb',
+        indexeddb: expect.objectContaining({
+          hasWorkspace: true,
+          revision: 7,
+          recordCount: indexedDbRecords.length
+        }),
+        opfs: expect.objectContaining({
+          available: true,
+          hasWorkspace: false
+        })
+      })
+    );
+    expect(storage.getActiveStorageBackend()).toBe('opfs');
+    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
+      version: 1,
+      backend: 'opfs'
+    });
+    expect(await fileSystem.readText('data/settings.json')).toBe(
+      indexedDbRecords[1].data
+    );
+    expect(await fileSystem.readText(
+      'data/attachments/attachment-1'
+    )).toBe('attachment bytes');
+    expect(await readIndexedDbRecord(database, 'settings.json')).toMatchObject({
+      data: indexedDbRecords[1].data
+    });
+  });
+
+  it('rolls back every attempted OPFS record when migration copying fails', async () => {
+    fileSystem.failNextWrite(/data\/settings\.json$/);
+
+    await expect(storage.getStorageHandle({
+      resolveBackendChoice: async () => 'migrate-to-opfs' as const
+    })).rejects.toThrow('Simulated disk full');
+
+    expect(storage.getActiveStorageBackend()).toBeNull();
+    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
+      version: 1,
+      backend: 'indexeddb'
+    });
+    const dataDirectory = await fileSystem.getDirectory('data');
+    expect(dataDirectory.names()).toEqual([]);
+    expect(await readIndexedDbRecord(database, 'settings.json')).toMatchObject({
+      data: indexedDbRecords[1].data
+    });
+  });
+
+  it('refuses an IndexedDB fallback when Electron cannot use OPFS', async () => {
+    (window as any).electronAPI = {};
+    vi.mocked(navigator.storage.getDirectory).mockRejectedValue(
+      new Error('OPFS unavailable')
+    );
+
+    await expect(storage.getStorageHandle()).rejects.toThrow(
+      /Electron.*OPFS/
+    );
+    expect(storage.getActiveStorageBackend()).toBeNull();
+    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
+      version: 1,
+      backend: 'indexeddb'
+    });
   });
 });
