@@ -12,6 +12,7 @@ interface ConfigPanelProps {
   onCreateSystemInstruction: () => void;
   onDeleteSystemInstruction: (id: string) => void;
   isMobile?: boolean;
+  readOnly?: boolean;
 }
 
 export const ConfigPanel: React.FC<ConfigPanelProps> = ({
@@ -21,7 +22,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onUpdateSystemInstruction,
   onCreateSystemInstruction,
   onDeleteSystemInstruction,
-  isMobile = false
+  isMobile = false,
+  readOnly = false
 }) => {
   const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(true);
 
@@ -51,7 +53,13 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
         </div>
       )}
 
-      <div className="p-6 space-y-8">
+      <fieldset
+        disabled={readOnly}
+        aria-label={readOnly ? 'Configuration is read-only while another tab is editing' : undefined}
+        className={`min-w-0 border-0 p-6 space-y-8 ${
+          readOnly ? 'pointer-events-none opacity-60' : ''
+        }`}
+      >
 
         {/* System Instructions */}
         <div className="space-y-3">
@@ -238,7 +246,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
 
         </div>
 
-      </div>
+      </fieldset>
     </div>
   );
 };

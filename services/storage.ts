@@ -9,13 +9,15 @@ export interface AppSettings {
 export const STORAGE_FILES = {
   SESSIONS: 'sessions.json',
   SETTINGS: 'settings.json',
-  INSTRUCTIONS: 'system_instructions.json'
+  INSTRUCTIONS: 'system_instructions.json',
+  REVISION: 'workspace_revision.json'
 };
 
 // Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
 type StorageBackend = 'opfs' | 'indexeddb';
 let storageBackend: StorageBackend | null = null;
 let idbDatabase: IDBDatabase | null = null;
+let workspaceRevision: number | null = null;
 
 const IDB_NAME = 'openai-studio-storage';
 const IDB_STORE = 'files';
@@ -31,6 +33,24 @@ interface StoredFileRecord {
   filename: string;
   data: string | Blob;
   updatedAt?: number;
+}
+
+interface WorkspaceRevisionRecord {
+  revision: number;
+}
+
+export class WorkspaceRevisionConflictError extends Error {
+  readonly expectedRevision: number;
+  readonly actualRevision: number;
+
+  constructor(expectedRevision: number, actualRevision: number) {
+    super(
+      `Workspace changed in another tab (expected revision ${expectedRevision}, found ${actualRevision}).`
+    );
+    this.name = 'WorkspaceRevisionConflictError';
+    this.expectedRevision = expectedRevision;
+    this.actualRevision = actualRevision;
+  }
 }
 
 const getBackupFilename = (filename: string): string => `${filename}${BACKUP_SUFFIX}`;
@@ -306,6 +326,54 @@ const writeOpfsTextFile = async (
   await writable.close();
 };
 
+const parseWorkspaceRevision = (text: string | null): number => {
+  if (text === null) return 0;
+
+  const value = parseStoredJson<WorkspaceRevisionRecord>(STORAGE_FILES.REVISION, text);
+  if (!Number.isSafeInteger(value.revision) || value.revision < 0) {
+    throw new Error(`Stored file ${STORAGE_FILES.REVISION} has an invalid revision.`);
+  }
+  return value.revision;
+};
+
+const readPersistedWorkspaceRevision = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<number> => {
+  const backend = await getStorageBackend();
+  const text = backend === 'indexeddb'
+    ? await idbReadRawFile(STORAGE_FILES.REVISION)
+    : await readOpfsTextFile(dirHandle, STORAGE_FILES.REVISION);
+  return parseWorkspaceRevision(text);
+};
+
+const writePersistedWorkspaceRevision = async (
+  dirHandle: FileSystemDirectoryHandle,
+  revision: number
+): Promise<void> => {
+  const text = JSON.stringify({ revision } satisfies WorkspaceRevisionRecord, null, 2);
+  const backend = await getStorageBackend();
+
+  if (backend === 'indexeddb') {
+    await idbWriteRawFile(STORAGE_FILES.REVISION, text);
+  } else {
+    await writeOpfsTextFile(dirHandle, STORAGE_FILES.REVISION, text);
+  }
+};
+
+export const synchronizeWorkspaceRevision = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<number> => {
+  workspaceRevision = await readPersistedWorkspaceRevision(dirHandle);
+  return workspaceRevision;
+};
+
+export const getWorkspaceRevision = (): number => {
+  if (workspaceRevision === null) {
+    throw new Error('Workspace revision has not been initialized.');
+  }
+  return workspaceRevision;
+};
+
 const getOpfsAttachmentsDirectory = async (
   dirHandle: FileSystemDirectoryHandle,
   create: boolean
@@ -403,8 +471,23 @@ const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
 );
 
 // File Operations - automatically uses correct backend
-export const writeJsonFile = async (dirHandle: FileSystemDirectoryHandle, filename: string, data: any) => {
+export const writeJsonFile = async (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string,
+  data: any
+): Promise<number> => {
+  if (filename === STORAGE_FILES.REVISION) {
+    throw new Error('Workspace revisions are managed internally.');
+  }
+  if (workspaceRevision === null) {
+    throw new Error('Workspace revision has not been initialized.');
+  }
+
   const backend = await getStorageBackend();
+  const persistedRevision = await readPersistedWorkspaceRevision(dirHandle);
+  if (persistedRevision !== workspaceRevision) {
+    throw new WorkspaceRevisionConflictError(workspaceRevision, persistedRevision);
+  }
 
   if (backend === 'indexeddb') {
     try {
@@ -413,23 +496,27 @@ export const writeJsonFile = async (dirHandle: FileSystemDirectoryHandle, filena
       console.error(`Failed to write ${filename} to IndexedDB`, e);
       throw e;
     }
-    return;
-  }
+  } else {
+    // OPFS path
+    try {
+      const nextText = JSON.stringify(data, null, 2);
+      const previousText = await readOpfsTextFile(dirHandle, filename);
 
-  // OPFS path
-  try {
-    const nextText = JSON.stringify(data, null, 2);
-    const previousText = await readOpfsTextFile(dirHandle, filename);
+      if (previousText && previousText !== nextText && isValidJsonText(previousText)) {
+        await writeOpfsTextFile(dirHandle, getBackupFilename(filename), previousText);
+      }
 
-    if (previousText && previousText !== nextText && isValidJsonText(previousText)) {
-      await writeOpfsTextFile(dirHandle, getBackupFilename(filename), previousText);
+      await writeOpfsTextFile(dirHandle, filename, nextText);
+    } catch (e) {
+      console.error(`Failed to write ${filename}`, e);
+      throw e;
     }
-
-    await writeOpfsTextFile(dirHandle, filename, nextText);
-  } catch (e) {
-    console.error(`Failed to write ${filename}`, e);
-    throw e;
   }
+
+  const nextRevision = persistedRevision + 1;
+  await writePersistedWorkspaceRevision(dirHandle, nextRevision);
+  workspaceRevision = nextRevision;
+  return nextRevision;
 };
 
 export const readJsonFile = async <T>(dirHandle: FileSystemDirectoryHandle, filename: string): Promise<T | null> => {
@@ -674,21 +761,28 @@ export const getAttachmentDataUrl = async (
 export const writeSessions = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[]
-): Promise<void> => {
+): Promise<number> => {
   const storedSessions = toStoredSessions(sessions);
-  await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
+  const revision = await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
 
   try {
     await pruneUnreferencedAttachments(dirHandle, storedSessions);
   } catch (error) {
     console.warn('Failed to clean up unreferenced attachments.', error);
   }
+
+  return revision;
 };
 
 export const readSessions = async (
-  dirHandle: FileSystemDirectoryHandle
+  dirHandle: FileSystemDirectoryHandle,
+  options: { readOnly?: boolean } = {}
 ): Promise<Session[]> => {
   const storedSessions = await readJsonFile<Session[]>(dirHandle, STORAGE_FILES.SESSIONS) || [];
+  if (options.readOnly) {
+    return addRuntimeAttachmentPreviews(dirHandle, storedSessions);
+  }
+
   const externalized = await externalizeSessionAttachments(dirHandle, storedSessions);
 
   if (externalized.changed) {
@@ -730,9 +824,14 @@ const embedAttachmentDataForBackup = async (
   };
 });
 
-export const getWorkspaceBackup = async (dirHandle: FileSystemDirectoryHandle): Promise<WorkspaceBackup> => {
+export const getWorkspaceBackup = async (
+  dirHandle: FileSystemDirectoryHandle,
+  options: { readOnly?: boolean } = {}
+): Promise<WorkspaceBackup> => {
   const storedSessions = await readJsonFile<Session[]>(dirHandle, STORAGE_FILES.SESSIONS) || [];
-  const externalized = await externalizeSessionAttachments(dirHandle, storedSessions);
+  const externalized = options.readOnly
+    ? { sessions: storedSessions, changed: false }
+    : await externalizeSessionAttachments(dirHandle, storedSessions);
   if (externalized.changed) await writeSessions(dirHandle, externalized.sessions);
 
   const sessions = await embedAttachmentDataForBackup(dirHandle, externalized.sessions);

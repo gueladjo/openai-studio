@@ -17,6 +17,7 @@ interface SidebarProps {
   onImportData: (file: File) => void;
   processingSessionIds?: Set<string>;
   isMobile?: boolean;
+  readOnly?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -32,7 +33,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onExportData,
   onImportData,
   processingSessionIds,
-  isMobile = false
+  isMobile = false,
+  readOnly = false
 }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,7 +57,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-4">
         <button
           onClick={onNewSession}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 px-4 flex items-center justify-center gap-2 transition-colors font-medium text-sm shadow-sm"
+          disabled={readOnly}
+          title={readOnly ? 'Another tab is editing this workspace' : undefined}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 px-4 flex items-center justify-center gap-2 transition-colors font-medium text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus size={16} />
           <span>New Chat</span>
@@ -103,8 +107,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 type="button"
                 onClick={(e) => onDeleteSession(e, session.id)}
+                disabled={readOnly}
                 className={`p-1 hover:bg-red-100 dark:hover:bg-red-900/50 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-all ${
-                  isMobile || currentSessionId === session.id
+                  readOnly
+                    ? 'hidden'
+                    : isMobile || currentSessionId === session.id
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
                 }`}
@@ -143,7 +150,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                     <button 
                         onClick={toggleTheme}
-                        className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-300 dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900"
+                        disabled={readOnly}
+                        className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-300 dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         <span 
                             className={`${isDarkMode ? 'translate-x-6' : 'translate-x-1'} inline-block h-4 w-4 transform rounded-full bg-white transition`}
@@ -161,8 +169,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         type="password" 
                         value={apiKey}
                         onChange={(e) => onApiKeyChange(e.target.value)}
+                        disabled={readOnly}
                         placeholder="sk-..."
-                        className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 focus:border-blue-500 focus:outline-none placeholder-gray-400"
+                        className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 focus:border-blue-500 focus:outline-none placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-60"
                     />
                     <div className="text-[10px] text-gray-500 leading-tight">
                         Overrides .env key. Saved locally.
@@ -187,7 +196,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </button>
                         <button 
                             onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
+                            disabled={readOnly}
+                            className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <Upload size={12} />
                             Import
@@ -197,6 +207,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             accept=".json" 
                             ref={fileInputRef} 
                             onChange={handleFileSelect} 
+                            disabled={readOnly}
                             className="hidden" 
                         />
                     </div>

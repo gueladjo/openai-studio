@@ -17,10 +17,14 @@ import {
   getAttachmentDataUrl,
   getWorkspaceBackup,
   restoreWorkspaceBackup,
+  synchronizeWorkspaceRevision,
+  getWorkspaceRevision,
+  WorkspaceRevisionConflictError,
   STORAGE_FILES,
   AppSettings,
   WorkspaceBackup
 } from './services/storage';
+import { WorkspaceCoordinator, WorkspaceRole } from './services/workspaceSync';
 import {
   buildConversationFilename,
   downloadTextFile,
@@ -157,9 +161,13 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [isWorkspaceLoaded, setIsWorkspaceLoaded] = useState(false);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
+  const [isWorkspaceReadOnly, setIsWorkspaceReadOnly] = useState(false);
   const sessionsRef = useRef<Session[]>([]);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const isWorkspaceLoadedRef = useRef(false);
+  const workspaceCanWriteRef = useRef(false);
+  const workspaceCoordinatorRef = useRef<WorkspaceCoordinator | null>(null);
+  const workspaceReloadPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const initializationStartedRef = useRef(false);
 
   // Replaced single boolean with a Set to track multiple active sessions
@@ -240,14 +248,29 @@ function App() {
 
   const persistSaveKey = useCallback(async (key: SaveKey): Promise<void> => {
     const handle = dirHandleRef.current;
-    if (!handle || !isWorkspaceLoadedRef.current) return;
+    if (!handle || !isWorkspaceLoadedRef.current || !workspaceCanWriteRef.current) return;
 
-    if (key === 'sessions') {
-      await writeSessions(handle, sessionsRef.current);
-    } else if (key === 'instructions') {
-      await writeJsonFile(handle, STORAGE_FILES.INSTRUCTIONS, systemInstructionsRef.current);
-    } else {
-      await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
+    try {
+      let revision: number;
+      if (key === 'sessions') {
+        revision = await writeSessions(handle, sessionsRef.current);
+      } else if (key === 'instructions') {
+        revision = await writeJsonFile(
+          handle,
+          STORAGE_FILES.INSTRUCTIONS,
+          systemInstructionsRef.current
+        );
+      } else {
+        revision = await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
+      }
+      workspaceCoordinatorRef.current?.publishUpdate(revision);
+    } catch (error) {
+      if (error instanceof WorkspaceRevisionConflictError) {
+        workspaceCanWriteRef.current = false;
+        setIsWorkspaceReadOnly(true);
+        workspaceCoordinatorRef.current?.relinquishWriter();
+      }
+      throw error;
     }
   }, []);
 
@@ -319,7 +342,13 @@ function App() {
   }, [persistSaveKey]);
 
   const scheduleSave = useCallback((key: SaveKey, immediate = false): void => {
-    if (!dirHandleRef.current || !isWorkspaceLoadedRef.current) return;
+    if (
+      !dirHandleRef.current ||
+      !isWorkspaceLoadedRef.current ||
+      !workspaceCanWriteRef.current
+    ) {
+      return;
+    }
 
     saveVersionRef.current[key] += 1;
     if (immediate) {
@@ -355,7 +384,13 @@ function App() {
   const flushPendingSaves = useCallback(async (
     keys: readonly SaveKey[] = SAVE_KEYS
   ): Promise<void> => {
-    if (!dirHandleRef.current || !isWorkspaceLoadedRef.current) return;
+    if (
+      !dirHandleRef.current ||
+      !isWorkspaceLoadedRef.current ||
+      !workspaceCanWriteRef.current
+    ) {
+      return;
+    }
 
     const targetVersions = new Map<SaveKey, number>();
 
@@ -463,16 +498,32 @@ function App() {
   };
 
   // Helper: Load all data from disk
-  const loadWorkspaceData = async (handle: FileSystemDirectoryHandle) => {
-    // Parallel load
-    const [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
-      readSessions(handle),
-      readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
-      readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
-    ]);
+  const loadWorkspaceData = async (
+    handle: FileSystemDirectoryHandle,
+    role: WorkspaceRole
+  ) => {
+    let loadedSessions: Session[] = [];
+    let loadedSettings: AppSettings | null = null;
+    let loadedInstructions: SystemInstruction[] | null = null;
+
+    // A reader retries if a broadcast lands while its snapshot is being read.
+    // The writer is already protected by the exclusive workspace lock.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revisionBeforeRead = await synchronizeWorkspaceRevision(handle);
+      [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
+        readSessions(handle, { readOnly: role === 'reader' }),
+        readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
+        readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
+      ]);
+      const revisionAfterRead = await synchronizeWorkspaceRevision(handle);
+
+      if (role === 'writer' || revisionBeforeRead === revisionAfterRead) break;
+    }
 
     const normalizedSessions = normalizeSessionConfigs(loadedSessions);
-    const cleanedSessions = markPendingRequestsFailed(normalizedSessions);
+    const cleanedSessions = role === 'writer'
+      ? markPendingRequestsFailed(normalizedSessions)
+      : normalizedSessions;
     const nextInstructions = loadedInstructions || [];
     const nextCurrentSessionId = (
       loadedSettings?.lastActiveSessionId &&
@@ -489,7 +540,9 @@ function App() {
       apiKey: loadedSettings?.apiKey || '',
       lastActiveSessionId: nextCurrentSessionId || undefined
     };
-    forceImmediateSessionSaveRef.current = cleanedSessions !== loadedSessions;
+    forceImmediateSessionSaveRef.current = (
+      role === 'writer' && cleanedSessions !== loadedSessions
+    );
 
     setSessions(cleanedSessions);
     setSystemInstructions(nextInstructions);
@@ -505,19 +558,73 @@ function App() {
 
     const init = async () => {
       try {
+        const coordinator = await WorkspaceCoordinator.create();
+        workspaceCoordinatorRef.current = coordinator;
         const handle = await getStorageHandle();
-        await loadWorkspaceData(handle);
         dirHandleRef.current = handle;
+        const initialRole = coordinator.currentRole;
+        workspaceCanWriteRef.current = initialRole === 'writer';
+        setIsWorkspaceReadOnly(initialRole === 'reader');
+
+        coordinator.subscribeToUpdates(() => {
+          if (workspaceCanWriteRef.current || !isWorkspaceLoadedRef.current) return;
+
+          workspaceReloadPromiseRef.current = workspaceReloadPromiseRef.current
+            .catch(() => undefined)
+            .then(() => loadWorkspaceData(handle, 'reader'))
+            .catch(error => {
+              console.error('Failed to synchronize workspace changes from another tab.', error);
+            });
+        });
+
+        coordinator.subscribeToRole(role => {
+          workspaceCanWriteRef.current = false;
+          setIsWorkspaceReadOnly(true);
+          if (role === 'reader') {
+            activeRequestsRef.current.forEach(request => request.controller.abort());
+            activeRequestsRef.current.clear();
+            processingSessionIdsRef.current.clear();
+            setProcessingSessionIds(new Set());
+          }
+          if (!isWorkspaceLoadedRef.current) return;
+
+          workspaceReloadPromiseRef.current = workspaceReloadPromiseRef.current
+            .catch(() => undefined)
+            .then(async () => {
+              await loadWorkspaceData(handle, role);
+              if (role === 'writer' && coordinator.canWrite) {
+                workspaceCanWriteRef.current = true;
+                setIsWorkspaceReadOnly(false);
+                coordinator.publishUpdate(getWorkspaceRevision());
+              }
+            })
+            .catch(error => {
+              console.error('Failed to change workspace tab role.', error);
+              setWorkspaceLoadError(getErrorMessage(error));
+            });
+        });
+
+        await loadWorkspaceData(handle, initialRole);
+        const roleAfterLoad = coordinator.currentRole;
+        if (roleAfterLoad !== initialRole) {
+          await loadWorkspaceData(handle, roleAfterLoad);
+        }
+        workspaceCanWriteRef.current = roleAfterLoad === 'writer';
+        setIsWorkspaceReadOnly(roleAfterLoad === 'reader');
         isWorkspaceLoadedRef.current = true;
         setDirHandle(handle);
         setWorkspaceLoadError(null);
         setIsWorkspaceLoaded(true);
+        if (roleAfterLoad === 'writer') {
+          coordinator.publishUpdate(getWorkspaceRevision());
+        }
       } catch (e) {
         console.error("Critical: Failed to initialize storage", e);
         dirHandleRef.current = null;
         isWorkspaceLoadedRef.current = false;
         setDirHandle(null);
         setIsWorkspaceLoaded(false);
+        workspaceCanWriteRef.current = false;
         setWorkspaceLoadError(getErrorMessage(e));
       } finally {
         // Add a small artificial delay to ensure smooth transition from the HTML loader
@@ -626,6 +733,8 @@ function App() {
   const currentSession = sessions.find(s => s.id === currentSessionId) || null;
 
   const createNewSession = () => {
+    if (!workspaceCanWriteRef.current) return;
+
     const configToUse = currentSession ? { ...currentSession.config } : { ...DEFAULT_CONFIG };
     
     const newSession: Session = {
@@ -641,6 +750,8 @@ function App() {
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    if (!workspaceCanWriteRef.current) return;
+
     const deletedSession = sessions.find(session => session.id === id);
     if (!deletedSession || !confirmChatDeletion()) return;
 
@@ -654,13 +765,15 @@ function App() {
   };
 
   const updateConfig = (newConfig: ChatConfig) => {
-    if (!currentSessionId) return;
+    if (!workspaceCanWriteRef.current || !currentSessionId) return;
     setSessions(prev => prev.map(s => 
       s.id === currentSessionId ? { ...s, config: newConfig } : s
     ));
   };
 
   const handleCreateSystemInstruction = () => {
+     if (!workspaceCanWriteRef.current) return;
+
      const newId = uuidv4();
      const newInstruction: SystemInstruction = {
          id: newId,
@@ -674,10 +787,12 @@ function App() {
   };
 
   const handleUpdateSystemInstruction = (updated: SystemInstruction) => {
+      if (!workspaceCanWriteRef.current) return;
       setSystemInstructions(prev => prev.map(si => si.id === updated.id ? updated : si));
   };
 
   const handleDeleteSystemInstruction = (id: string) => {
+      if (!workspaceCanWriteRef.current) return;
       setSystemInstructions(prev => prev.filter(si => si.id !== id));
       if (currentSession && currentSession.config.systemInstructionId === id) {
           updateConfig({ ...currentSession.config, systemInstructionId: undefined });
@@ -706,6 +821,8 @@ function App() {
     updateMessage: (message: Message) => Message,
     clearPendingRequest = false
   ) => {
+    if (!workspaceCanWriteRef.current) return;
+
     const now = Date.now();
 
     if (clearPendingRequest) {
@@ -986,7 +1103,7 @@ function App() {
   };
 
   const handleSendMessage = async (content: string, attachments: File[]) => {
-    if (!currentSessionId) return false;
+    if (!workspaceCanWriteRef.current || !currentSessionId) return false;
 
     // Capture the session ID to allow context switching while processing
     const targetSessionId = currentSessionId;
@@ -1038,6 +1155,7 @@ function App() {
         // Use the content or a placeholder if only attachments exist
         const titlePrompt = content || (attachments.length > 0 ? `File analysis of ${attachments[0].name}` : "New Chat");
         generateChatTitle(titlePrompt, apiKey).then(newTitle => {
+          if (!workspaceCanWriteRef.current) return;
           setSessions(prev => prev.map(s => 
             s.id === targetSessionId ? { ...s, title: newTitle } : s
           ));
@@ -1105,7 +1223,7 @@ function App() {
   };
 
   const restartAssistantResponse = async (assistantMessageIndex: number) => {
-    if (!currentSessionId) return;
+    if (!workspaceCanWriteRef.current || !currentSessionId) return;
 
     const targetSessionId = currentSessionId;
     if (processingSessionIdsRef.current.has(targetSessionId)) return;
@@ -1185,7 +1303,7 @@ function App() {
   };
 
   const handleStopGenerating = () => {
-    if (!currentSessionId) return;
+    if (!workspaceCanWriteRef.current || !currentSessionId) return;
 
     const targetSessionId = currentSessionId;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
@@ -1281,6 +1399,7 @@ function App() {
     Object.values(saveTimeoutRef.current).forEach(timeout => {
       if (timeout !== undefined) window.clearTimeout(timeout);
     });
+    workspaceCoordinatorRef.current?.dispose();
     revokeAttachmentPreviewUrls(sessionsRef.current);
   }, []);
 
@@ -1289,7 +1408,12 @@ function App() {
     if (!dirHandle) return;
     try {
       await flushPendingSaves();
-      const backup = await getWorkspaceBackup(dirHandle);
+      const backup = await getWorkspaceBackup(dirHandle, {
+        readOnly: !workspaceCanWriteRef.current
+      });
+      if (workspaceCanWriteRef.current) {
+        workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
+      }
       downloadTextFile(
         `openai-studio-backup-${new Date().toISOString().slice(0, 10)}.json`,
         JSON.stringify(backup, null, 2),
@@ -1315,7 +1439,7 @@ function App() {
   };
 
   const handleImportData = async (file: File) => {
-    if (!dirHandle) return;
+    if (!workspaceCanWriteRef.current || !dirHandle) return;
     try {
       const text = await file.text();
       const parsedBackup = JSON.parse(text) as unknown;
@@ -1375,7 +1499,8 @@ function App() {
 
       await flushPendingSaves();
       await restoreWorkspaceBackup(dirHandle, backup);
-      await loadWorkspaceData(dirHandle);
+      workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
+      await loadWorkspaceData(dirHandle, 'writer');
       alert("Workspace restored successfully.");
     } catch (e) {
       console.error("Import failed", e);
@@ -1436,6 +1561,15 @@ function App() {
         {/* Custom Title Bar - Electron desktop only */}
         {!isMobile && window.electronAPI && <TitleBar isDarkMode={isDarkMode} />}
 
+        {isWorkspaceReadOnly && (
+          <div
+            role="status"
+            className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+          >
+            This workspace is open for editing in another tab. This tab is read-only and follows saved changes automatically.
+          </div>
+        )}
+
         {/* Mobile Header */}
         {isMobile && (
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0d1117] safe-area-top">
@@ -1471,12 +1605,17 @@ function App() {
               onNewSession={createNewSession}
               onDeleteSession={deleteSession}
               isDarkMode={isDarkMode}
-              toggleTheme={() => setIsDarkMode(!isDarkMode)}
+              toggleTheme={() => {
+                if (workspaceCanWriteRef.current) setIsDarkMode(!isDarkMode);
+              }}
               apiKey={apiKey}
-              onApiKeyChange={setApiKey}
+              onApiKeyChange={key => {
+                if (workspaceCanWriteRef.current) setApiKey(key);
+              }}
               onExportData={handleExportData}
               onImportData={handleImportData}
               processingSessionIds={processingSessionIds}
+              readOnly={isWorkspaceReadOnly}
             />
           ) : (
             <>
@@ -1510,13 +1649,18 @@ function App() {
                     onNewSession={() => { createNewSession(); setIsSidebarOpen(false); }}
                     onDeleteSession={deleteSession}
                     isDarkMode={isDarkMode}
-                    toggleTheme={() => setIsDarkMode(!isDarkMode)}
+                    toggleTheme={() => {
+                      if (workspaceCanWriteRef.current) setIsDarkMode(!isDarkMode);
+                    }}
                     apiKey={apiKey}
-                    onApiKeyChange={setApiKey}
+                    onApiKeyChange={key => {
+                      if (workspaceCanWriteRef.current) setApiKey(key);
+                    }}
                     onExportData={handleExportData}
                     onImportData={handleImportData}
                     processingSessionIds={processingSessionIds}
                     isMobile={true}
+                    readOnly={isWorkspaceReadOnly}
                   />
                 </div>
               </div>
@@ -1534,6 +1678,7 @@ function App() {
               apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
+              readOnly={isWorkspaceReadOnly}
             />
 
             {/* ConfigPanel - Desktop: always visible when session selected, Mobile: modal */}
@@ -1545,6 +1690,7 @@ function App() {
                 onCreateSystemInstruction={handleCreateSystemInstruction}
                 onUpdateSystemInstruction={handleUpdateSystemInstruction}
                 onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                readOnly={isWorkspaceReadOnly}
               />
             )}
           </main>
@@ -1576,6 +1722,7 @@ function App() {
                   onUpdateSystemInstruction={handleUpdateSystemInstruction}
                   onDeleteSystemInstruction={handleDeleteSystemInstruction}
                   isMobile={true}
+                  readOnly={isWorkspaceReadOnly}
                 />
               </div>
             </div>

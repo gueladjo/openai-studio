@@ -18,6 +18,7 @@ interface ChatAreaProps {
   apiKey: string;
   isLoading: boolean;
   isMobile?: boolean;
+  readOnly?: boolean;
 }
 
 const AUTO_SCROLL_THRESHOLD_PX = 120;
@@ -804,7 +805,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onShareConversation,
   apiKey,
   isLoading,
-  isMobile = false
+  isMobile = false,
+  readOnly = false
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -904,7 +906,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, [inputValue]);
 
   const handleSend = async () => {
-    if ((!inputValue.trim() && attachments.length === 0) || isLoading) return;
+    if (readOnly || (!inputValue.trim() && attachments.length === 0) || isLoading) return;
     isPinnedToBottomRef.current = true;
     const submittedContent = inputValue;
     const submittedAttachments = attachments;
@@ -929,6 +931,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (readOnly) return;
     if (e.target.files && e.target.files.length > 0) {
       setAttachments(prev => [...prev, ...Array.from(e.target.files!)]);
     }
@@ -936,6 +939,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
+    if (readOnly) return;
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -963,6 +967,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const removeAttachment = (index: number) => {
+    if (readOnly) return;
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
@@ -1008,6 +1013,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 isFailedAssistantMessage(msg) &&
                 isLatestMessage &&
                 !isLoading &&
+                !readOnly &&
                 Boolean(msg.id) &&
                 hasPrecedingUserMessage
             );
@@ -1017,6 +1023,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 !isFailedAssistantMessage(msg) &&
                 msg.status !== 'streaming' &&
                 !isLoading &&
+                !readOnly &&
                 hasPrecedingUserMessage
             );
 
@@ -1055,6 +1062,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                               />
                               <button
                                   onClick={() => removeAttachment(index)}
+                                  disabled={readOnly}
                                   className="absolute -top-1.5 -right-1.5 bg-gray-800 dark:bg-gray-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
                               >
                                   <X size={12} />
@@ -1068,7 +1076,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           >
                               <FileText size={12} />
                               <span className="max-w-[100px] truncate">{file.name}</span>
-                              <button onClick={() => removeAttachment(index)} className="hover:text-red-500 dark:hover:text-white">
+                              <button
+                                onClick={() => removeAttachment(index)}
+                                disabled={readOnly}
+                                className="hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed"
+                              >
                                   <X size={12} />
                               </button>
                           </div>
@@ -1083,8 +1095,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder="Ask anything..."
-              className="w-full bg-transparent text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 text-sm px-4 py-3 pr-24 rounded-xl focus:outline-none resize-none max-h-48 min-h-[52px]"
+              disabled={readOnly}
+              placeholder={readOnly ? 'Read-only while another tab is editing' : 'Ask anything...'}
+              className="w-full bg-transparent text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 text-sm px-4 py-3 pr-24 rounded-xl focus:outline-none resize-none max-h-48 min-h-[52px] disabled:cursor-not-allowed disabled:opacity-60"
               rows={1}
               style={{ height: `${PROMPT_INPUT_MIN_HEIGHT_PX}px`, minHeight: `${PROMPT_INPUT_MIN_HEIGHT_PX}px` }}
             />
@@ -1092,7 +1105,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <div className="absolute right-2 bottom-1.5 flex items-center gap-1">
                <button 
                   onClick={() => fileInputRef.current?.click()}
-                  className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                  disabled={readOnly}
+                  className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   title="Attach file"
                >
                   <Paperclip size={18} />
@@ -1104,11 +1118,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   ref={fileInputRef}
                   onChange={handleFileSelect}
                   key={fileInputKey}
+                  disabled={readOnly}
                />
                {isLoading ? (
                   <button
                     type="button"
                     onClick={onStopGenerating}
+                    disabled={readOnly}
                     className="p-2 rounded-lg transition-all bg-gray-500 text-white hover:bg-gray-600 dark:bg-gray-600 dark:hover:bg-gray-500 shadow-md"
                     title="Stop generating"
                     aria-label="Stop generating"
@@ -1119,9 +1135,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <button
                     type="button"
                     onClick={handleSend}
-                    disabled={!inputValue.trim() && attachments.length === 0}
+                    disabled={readOnly || (!inputValue.trim() && attachments.length === 0)}
                     className={`p-2 rounded-lg transition-all ${
-                      !inputValue.trim() && attachments.length === 0
+                      readOnly || (!inputValue.trim() && attachments.length === 0)
                         ? 'text-gray-400 dark:text-gray-600 bg-gray-200 dark:bg-gray-800 cursor-not-allowed'
                         : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'
                     }`}
