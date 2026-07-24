@@ -6,25 +6,45 @@ import {
   StorageBackendChoiceRequest,
   StorageBackendSnapshot
 } from './storageBackend';
+import { commitAtomicWorkspaceSnapshot } from './atomicWorkspaceSnapshot';
+import {
+  AppSettings,
+  BackupSettings,
+  MAX_WORKSPACE_BACKUP_BYTES,
+  WORKSPACE_SCHEMA_VERSION,
+  WorkspaceBackup,
+  parseAppSettings,
+  parseJsonText,
+  parseJsonTextWithBackup,
+  parseStoredSessions,
+  parseSystemInstructions,
+  parseWorkspaceBackup,
+  validateWorkspaceReferences
+} from './workspaceSchema';
 
 export type {
   StorageBackend,
   StorageBackendChoice,
   StorageBackendChoiceRequest
 } from './storageBackend';
-
-export interface AppSettings {
-  theme: 'dark' | 'light';
-  apiKey: string;
-  lastActiveSessionId?: string;
-}
+export type {
+  AppSettings,
+  BackupSettings,
+  WorkspaceBackup
+} from './workspaceSchema';
+export {
+  MAX_WORKSPACE_BACKUP_BYTES,
+  parseWorkspaceBackup,
+  validateWorkspaceReferences
+} from './workspaceSchema';
 
 export const STORAGE_FILES = {
   SESSIONS: 'sessions.json',
   SETTINGS: 'settings.json',
   INSTRUCTIONS: 'system_instructions.json',
+  MANIFEST: 'workspace_manifest.json',
   REVISION: 'workspace_revision.json'
-};
+} as const;
 
 // Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
 let storageBackend: StorageBackend | null = null;
@@ -49,9 +69,43 @@ interface StoredFileRecord {
   updatedAt?: number;
 }
 
-interface WorkspaceRevisionRecord {
+interface LegacyWorkspaceRevisionRecord {
   revision: number;
 }
+
+type WorkspaceDataKey = 'sessions' | 'settings' | 'instructions';
+type WorkspaceDataFilename = (
+  typeof STORAGE_FILES.SESSIONS |
+  typeof STORAGE_FILES.SETTINGS |
+  typeof STORAGE_FILES.INSTRUCTIONS
+);
+
+// The manifest is the single active-snapshot pointer. Workspaces created before
+// schema version 1 continue through the canonical filenames and legacy revision.
+interface WorkspaceManifest {
+  schemaVersion: typeof WORKSPACE_SCHEMA_VERSION;
+  revision: number;
+  files: Record<WorkspaceDataKey, string>;
+}
+
+interface WorkspaceManifestState {
+  active: WorkspaceManifest;
+  backup: WorkspaceManifest | null;
+}
+
+const DEFAULT_WORKSPACE_FILES: Record<WorkspaceDataKey, WorkspaceDataFilename> = {
+  sessions: STORAGE_FILES.SESSIONS,
+  settings: STORAGE_FILES.SETTINGS,
+  instructions: STORAGE_FILES.INSTRUCTIONS
+};
+
+const WORKSPACE_DATA_KEY_BY_FILENAME: Record<WorkspaceDataFilename, WorkspaceDataKey> = {
+  [STORAGE_FILES.SESSIONS]: 'sessions',
+  [STORAGE_FILES.SETTINGS]: 'settings',
+  [STORAGE_FILES.INSTRUCTIONS]: 'instructions'
+};
+
+const SNAPSHOT_FILE_PREFIX = 'workspace_snapshot_';
 
 interface StorageBackendIdentity {
   version: number;
@@ -109,37 +163,21 @@ const parseStoredJson = <T>(filename: string, text: string): T => {
   }
 };
 
-const isValidJsonText = (text: string): boolean => {
-  try {
-    JSON.parse(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 const parseStoredJsonWithBackup = async <T>(
   filename: string,
   text: string,
-  readBackupText: () => Promise<string | null>
+  readBackupText: () => Promise<string | null>,
+  parseValue: (value: unknown) => T
 ): Promise<T> => {
-  try {
-    return parseStoredJson<T>(filename, text);
-  } catch (primaryError) {
-    const backupFilename = getBackupFilename(filename);
-
-    try {
-      const backupText = await readBackupText();
-      if (backupText !== null) {
-        console.warn(`Failed to parse ${filename}; loaded ${backupFilename} instead.`);
-        return parseStoredJson<T>(backupFilename, backupText);
-      }
-    } catch (backupError) {
-      console.warn(`Failed to load backup ${backupFilename}`, backupError);
+  return parseJsonTextWithBackup({
+    filename,
+    primaryText: text,
+    readBackupText,
+    parseValue,
+    onFallback: backupFilename => {
+      console.warn(`Failed to validate ${filename}; loaded ${backupFilename} instead.`);
     }
-
-    throw primaryError;
-  }
+  });
 };
 
 const createOpfsProbeName = (): string => {
@@ -300,28 +338,6 @@ const idbListRawFiles = async (
       filename: record.filename,
       updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
     }));
-};
-
-const idbWriteFile = async (filename: string, data: any): Promise<void> => {
-  const nextText = JSON.stringify(data, null, 2);
-  const previousText = await idbReadRawFile(filename);
-
-  if (previousText && previousText !== nextText && isValidJsonText(previousText)) {
-    await idbWriteRawFile(getBackupFilename(filename), previousText);
-  }
-
-  await idbWriteRawFile(filename, nextText);
-};
-
-const idbReadFile = async <T>(filename: string): Promise<T | null> => {
-  const text = await idbReadRawFile(filename);
-  if (text === null) return null;
-
-  return parseStoredJsonWithBackup<T>(
-    filename,
-    text,
-    () => idbReadRawFile(getBackupFilename(filename))
-  );
 };
 
 // OPFS directory handle cache
@@ -504,11 +520,36 @@ const backendRecordsMatch = async (
 };
 
 const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
+  const manifestRecord = records.find(record => record.filename === STORAGE_FILES.MANIFEST);
+  if (manifestRecord && typeof manifestRecord.data === 'string') {
+    try {
+      return parseWorkspaceManifestText(
+        STORAGE_FILES.MANIFEST,
+        manifestRecord.data
+      ).revision;
+    } catch {
+      const backupManifest = records.find(
+        record => record.filename === getBackupFilename(STORAGE_FILES.MANIFEST)
+      );
+      if (backupManifest && typeof backupManifest.data === 'string') {
+        try {
+          return parseWorkspaceManifestText(
+            getBackupFilename(STORAGE_FILES.MANIFEST),
+            backupManifest.data
+          ).revision;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+
   const revisionRecord = records.find(record => record.filename === STORAGE_FILES.REVISION);
   if (!revisionRecord || typeof revisionRecord.data !== 'string') return null;
 
   try {
-    return parseWorkspaceRevision(revisionRecord.data);
+    return parseLegacyWorkspaceRevision(revisionRecord.data);
   } catch {
     return null;
   }
@@ -840,39 +881,236 @@ async function initializeStorageBackend(
   return selectedBackend;
 }
 
-const parseWorkspaceRevision = (text: string | null): number => {
+const getWorkspaceDataPhysicalFilename = (
+  key: WorkspaceDataKey,
+  id: string
+): string => `${SNAPSHOT_FILE_PREFIX}${id}_${DEFAULT_WORKSPACE_FILES[key]}`;
+
+const isWorkspaceDataPhysicalFilename = (
+  key: WorkspaceDataKey,
+  filename: unknown
+): filename is string => {
+  if (filename === DEFAULT_WORKSPACE_FILES[key]) return true;
+  if (typeof filename !== 'string' || filename.length > 255) return false;
+  const expectedSuffix = `_${DEFAULT_WORKSPACE_FILES[key]}`;
+  const snapshotId = filename.startsWith(SNAPSHOT_FILE_PREFIX) &&
+    filename.endsWith(expectedSuffix)
+    ? filename.slice(SNAPSHOT_FILE_PREFIX.length, -expectedSuffix.length)
+    : '';
+  return /^[A-Za-z0-9_-]{1,128}$/.test(snapshotId);
+};
+
+function parseWorkspaceManifestText(
+  filename: string,
+  text: string
+): WorkspaceManifest {
+  return parseJsonText(filename, text, value => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('workspace manifest must be an object.');
+    }
+    const manifest = value as Record<string, unknown>;
+    const keys = Object.keys(manifest);
+    if (
+      keys.some(key => !['schemaVersion', 'revision', 'files'].includes(key))
+    ) {
+      throw new Error('workspace manifest contains unsupported fields.');
+    }
+    if (manifest.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
+      throw new Error(
+        `workspace manifest schemaVersion must be ${WORKSPACE_SCHEMA_VERSION}.`
+      );
+    }
+    if (
+      !Number.isSafeInteger(manifest.revision) ||
+      (manifest.revision as number) < 0
+    ) {
+      throw new Error('workspace manifest revision is invalid.');
+    }
+    if (
+      typeof manifest.files !== 'object' ||
+      manifest.files === null ||
+      Array.isArray(manifest.files)
+    ) {
+      throw new Error('workspace manifest files must be an object.');
+    }
+
+    const files = manifest.files as Record<string, unknown>;
+    if (
+      Object.keys(files).length !== 3 ||
+      !isWorkspaceDataPhysicalFilename('sessions', files.sessions) ||
+      !isWorkspaceDataPhysicalFilename('settings', files.settings) ||
+      !isWorkspaceDataPhysicalFilename('instructions', files.instructions)
+    ) {
+      throw new Error('workspace manifest file references are invalid.');
+    }
+
+    return {
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      revision: manifest.revision as number,
+      files: {
+        sessions: files.sessions,
+        settings: files.settings,
+        instructions: files.instructions
+      }
+    };
+  });
+}
+
+function parseLegacyWorkspaceRevision(text: string | null): number {
   if (text === null) return 0;
 
-  const value = parseStoredJson<WorkspaceRevisionRecord>(STORAGE_FILES.REVISION, text);
+  const value = parseStoredJson<LegacyWorkspaceRevisionRecord>(
+    STORAGE_FILES.REVISION,
+    text
+  );
   if (!Number.isSafeInteger(value.revision) || value.revision < 0) {
     throw new Error(`Stored file ${STORAGE_FILES.REVISION} has an invalid revision.`);
   }
   return value.revision;
+}
+
+const createLegacyWorkspaceManifest = (revision: number): WorkspaceManifest => ({
+  schemaVersion: WORKSPACE_SCHEMA_VERSION,
+  revision,
+  files: { ...DEFAULT_WORKSPACE_FILES }
+});
+
+const readBackendTextFile = async (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string
+): Promise<string | null> => {
+  const backend = await getStorageBackend();
+  return backend === 'indexeddb'
+    ? idbReadRawFile(filename)
+    : readOpfsTextFile(dirHandle, filename);
+};
+
+const writeBackendTextFile = async (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string,
+  text: string
+): Promise<void> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    await idbWriteRawFile(filename, text);
+  } else {
+    await writeOpfsTextFile(dirHandle, filename, text);
+  }
+};
+
+const deleteBackendFile = async (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string
+): Promise<void> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    await idbDeleteRawFile(filename);
+    return;
+  }
+
+  try {
+    await dirHandle.removeEntry(filename);
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+};
+
+const readOptionalWorkspaceManifest = async (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string
+): Promise<WorkspaceManifest | null> => {
+  const text = await readBackendTextFile(dirHandle, filename);
+  if (text === null) return null;
+  return parseWorkspaceManifestText(filename, text);
+};
+
+const readWorkspaceManifestState = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<WorkspaceManifestState> => {
+  const manifestText = await readBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST);
+  if (manifestText !== null) {
+    try {
+      const active = parseWorkspaceManifestText(STORAGE_FILES.MANIFEST, manifestText);
+      let backup: WorkspaceManifest | null = null;
+      try {
+        backup = await readOptionalWorkspaceManifest(
+          dirHandle,
+          getBackupFilename(STORAGE_FILES.MANIFEST)
+        );
+      } catch (error) {
+        console.warn('Ignored an invalid workspace manifest backup.', error);
+      }
+      return { active, backup };
+    } catch (primaryError) {
+      try {
+        const backup = await readOptionalWorkspaceManifest(
+          dirHandle,
+          getBackupFilename(STORAGE_FILES.MANIFEST)
+        );
+        if (backup) {
+          console.warn('Failed to validate the workspace manifest; loaded its backup.');
+          return { active: backup, backup: null };
+        }
+      } catch (backupError) {
+        console.warn('Failed to load the workspace manifest backup.', backupError);
+      }
+      throw primaryError;
+    }
+  }
+
+  const legacyRevisionText = await readBackendTextFile(
+    dirHandle,
+    STORAGE_FILES.REVISION
+  );
+  return {
+    active: createLegacyWorkspaceManifest(
+      parseLegacyWorkspaceRevision(legacyRevisionText)
+    ),
+    backup: null
+  };
+};
+
+const writePersistedWorkspaceManifest = async (
+  dirHandle: FileSystemDirectoryHandle,
+  manifest: WorkspaceManifest
+): Promise<void> => {
+  const nextText = JSON.stringify(manifest, null, 2);
+  const previousText = await readBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST);
+
+  if (previousText && previousText !== nextText) {
+    try {
+      parseWorkspaceManifestText(STORAGE_FILES.MANIFEST, previousText);
+      await writeBackendTextFile(
+        dirHandle,
+        getBackupFilename(STORAGE_FILES.MANIFEST),
+        previousText
+      );
+    } catch (error) {
+      console.warn('Did not preserve an invalid workspace manifest as backup.', error);
+    }
+  } else if (previousText === null) {
+    const legacyRevisionText = await readBackendTextFile(
+      dirHandle,
+      STORAGE_FILES.REVISION
+    );
+    const legacyManifest = createLegacyWorkspaceManifest(
+      parseLegacyWorkspaceRevision(legacyRevisionText)
+    );
+    await writeBackendTextFile(
+      dirHandle,
+      getBackupFilename(STORAGE_FILES.MANIFEST),
+      JSON.stringify(legacyManifest, null, 2)
+    );
+  }
+
+  await writeBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST, nextText);
 };
 
 const readPersistedWorkspaceRevision = async (
   dirHandle: FileSystemDirectoryHandle
-): Promise<number> => {
-  const backend = await getStorageBackend();
-  const text = backend === 'indexeddb'
-    ? await idbReadRawFile(STORAGE_FILES.REVISION)
-    : await readOpfsTextFile(dirHandle, STORAGE_FILES.REVISION);
-  return parseWorkspaceRevision(text);
-};
-
-const writePersistedWorkspaceRevision = async (
-  dirHandle: FileSystemDirectoryHandle,
-  revision: number
-): Promise<void> => {
-  const text = JSON.stringify({ revision } satisfies WorkspaceRevisionRecord, null, 2);
-  const backend = await getStorageBackend();
-
-  if (backend === 'indexeddb') {
-    await idbWriteRawFile(STORAGE_FILES.REVISION, text);
-  } else {
-    await writeOpfsTextFile(dirHandle, STORAGE_FILES.REVISION, text);
-  }
-};
+): Promise<number> => (
+  (await readWorkspaceManifestState(dirHandle)).active.revision
+);
 
 export const synchronizeWorkspaceRevision = async (
   dirHandle: FileSystemDirectoryHandle
@@ -960,6 +1198,27 @@ const readAttachmentBlob = async (
   }
 };
 
+const deleteAttachmentBlob = async (
+  dirHandle: FileSystemDirectoryHandle,
+  id: string
+): Promise<void> => {
+  if (!isValidAttachmentId(id)) return;
+
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    await idbDeleteRawFile(getAttachmentStorageKey(id));
+    return;
+  }
+
+  const attachmentsDir = await getOpfsAttachmentsDirectory(dirHandle, false);
+  if (!attachmentsDir) return;
+  try {
+    await attachmentsDir.removeEntry(id);
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+};
+
 const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
     throw new Error('Attachment content is not a data URL.');
@@ -985,86 +1244,183 @@ const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
 );
 
 // File Operations - automatically uses correct backend
+type WorkspaceDataValue = Session[] | AppSettings | SystemInstruction[];
+
+const getWorkspaceDataParser = (
+  filename: WorkspaceDataFilename
+): ((value: unknown) => WorkspaceDataValue) => {
+  if (filename === STORAGE_FILES.SESSIONS) return parseStoredSessions;
+  if (filename === STORAGE_FILES.SETTINGS) {
+    return value => parseAppSettings(value) as AppSettings;
+  }
+  return parseSystemInstructions;
+};
+
+const getWorkspaceDataKey = (filename: string): WorkspaceDataKey => {
+  if (filename in WORKSPACE_DATA_KEY_BY_FILENAME) {
+    return WORKSPACE_DATA_KEY_BY_FILENAME[filename as WorkspaceDataFilename];
+  }
+  throw new Error(`Unsupported workspace data file: ${filename}`);
+};
+
 export const writeJsonFile = async (
   dirHandle: FileSystemDirectoryHandle,
-  filename: string,
-  data: any
+  filename: WorkspaceDataFilename,
+  data: unknown
 ): Promise<number> => {
-  if (filename === STORAGE_FILES.REVISION) {
-    throw new Error('Workspace revisions are managed internally.');
-  }
   if (workspaceRevision === null) {
     throw new Error('Workspace revision has not been initialized.');
   }
 
-  const backend = await getStorageBackend();
-  const persistedRevision = await readPersistedWorkspaceRevision(dirHandle);
-  if (persistedRevision !== workspaceRevision) {
-    throw new WorkspaceRevisionConflictError(workspaceRevision, persistedRevision);
+  const key = getWorkspaceDataKey(filename);
+  const parseValue = getWorkspaceDataParser(filename);
+  parseValue(data);
+
+  const manifestState = await readWorkspaceManifestState(dirHandle);
+  if (manifestState.active.revision !== workspaceRevision) {
+    throw new WorkspaceRevisionConflictError(
+      workspaceRevision,
+      manifestState.active.revision
+    );
   }
 
-  if (backend === 'indexeddb') {
-    try {
-      await idbWriteFile(filename, data);
-    } catch (e) {
-      console.error(`Failed to write ${filename} to IndexedDB`, e);
-      throw e;
-    }
-  } else {
-    // OPFS path
-    try {
-      const nextText = JSON.stringify(data, null, 2);
-      const previousText = await readOpfsTextFile(dirHandle, filename);
+  const physicalFilename = manifestState.active.files[key];
+  const nextText = JSON.stringify(data, null, 2);
 
-      if (previousText && previousText !== nextText && isValidJsonText(previousText)) {
-        await writeOpfsTextFile(dirHandle, getBackupFilename(filename), previousText);
+  try {
+    const previousText = await readBackendTextFile(dirHandle, physicalFilename);
+    if (previousText && previousText !== nextText) {
+      try {
+        parseJsonText(physicalFilename, previousText, parseValue);
+        await writeBackendTextFile(
+          dirHandle,
+          getBackupFilename(physicalFilename),
+          previousText
+        );
+      } catch (error) {
+        console.warn(
+          `Did not preserve invalid ${physicalFilename} as a backup.`,
+          error
+        );
       }
-
-      await writeOpfsTextFile(dirHandle, filename, nextText);
-    } catch (e) {
-      console.error(`Failed to write ${filename}`, e);
-      throw e;
     }
+
+    await writeBackendTextFile(dirHandle, physicalFilename, nextText);
+  } catch (error) {
+    console.error(`Failed to write ${filename}`, error);
+    throw error;
   }
 
-  const nextRevision = persistedRevision + 1;
-  await writePersistedWorkspaceRevision(dirHandle, nextRevision);
+  const nextRevision = manifestState.active.revision + 1;
+  await writePersistedWorkspaceManifest(dirHandle, {
+    ...manifestState.active,
+    revision: nextRevision
+  });
   workspaceRevision = nextRevision;
   return nextRevision;
 };
 
-export const readJsonFile = async <T>(dirHandle: FileSystemDirectoryHandle, filename: string): Promise<T | null> => {
-  const backend = await getStorageBackend();
-
-  if (backend === 'indexeddb') {
-    return idbReadFile<T>(filename);
+const readWorkspaceDataFile = async <T>(
+  dirHandle: FileSystemDirectoryHandle,
+  logicalFilename: WorkspaceDataFilename,
+  physicalFilename: string,
+  parseValue: (value: unknown) => T
+): Promise<T | null> => {
+  const text = await readBackendTextFile(dirHandle, physicalFilename);
+  if (text === null) {
+    if (physicalFilename !== logicalFilename) {
+      throw new Error(`Workspace snapshot file ${physicalFilename} is missing.`);
+    }
+    return null;
   }
 
-  // OPFS path
-  const text = await readOpfsTextFile(dirHandle, filename);
-  if (text === null) return null;
-
   return parseStoredJsonWithBackup<T>(
-    filename,
+    physicalFilename,
     text,
-    () => readOpfsTextFile(dirHandle, getBackupFilename(filename))
+    () => readBackendTextFile(dirHandle, getBackupFilename(physicalFilename)),
+    parseValue
   );
+};
+
+export function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: typeof STORAGE_FILES.SESSIONS
+): Promise<Session[] | null>;
+export function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: typeof STORAGE_FILES.SETTINGS
+): Promise<AppSettings | null>;
+export function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: typeof STORAGE_FILES.INSTRUCTIONS
+): Promise<SystemInstruction[] | null>;
+export async function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: WorkspaceDataFilename
+): Promise<Session[] | AppSettings | SystemInstruction[] | null> {
+  const key = getWorkspaceDataKey(filename);
+  const parseValue = getWorkspaceDataParser(filename);
+  const manifestState = await readWorkspaceManifestState(dirHandle);
+
+  try {
+    return await readWorkspaceDataFile(
+      dirHandle,
+      filename,
+      manifestState.active.files[key],
+      parseValue
+    );
+  } catch (primaryError) {
+    const fallbackFilename = manifestState.backup?.files[key];
+    if (
+      fallbackFilename &&
+      fallbackFilename !== manifestState.active.files[key]
+    ) {
+      try {
+        const fallback = await readWorkspaceDataFile(
+          dirHandle,
+          filename,
+          fallbackFilename,
+          parseValue
+        );
+        console.warn(
+          `Failed to load ${manifestState.active.files[key]}; `
+          + `loaded snapshot backup ${fallbackFilename} instead.`
+        );
+        return fallback;
+      } catch (backupError) {
+        console.warn(`Failed to load snapshot backup ${fallbackFilename}.`, backupError);
+      }
+    }
+    throw primaryError;
+  }
+}
+
+const settledMap = async <T, R>(
+  values: T[],
+  mapValue: (value: T) => Promise<R>
+): Promise<R[]> => {
+  const results = await Promise.allSettled(values.map(mapValue));
+  const rejection = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected'
+  );
+  if (rejection) throw rejection.reason;
+  return results.map(result => (result as PromiseFulfilledResult<R>).value);
 };
 
 const mapSessionAttachments = async (
   sessions: Session[],
   mapAttachment: (attachment: FileAttachment) => Promise<FileAttachment>
-): Promise<Session[]> => Promise.all(sessions.map(async session => ({
+): Promise<Session[]> => settledMap(sessions, async session => ({
   ...session,
-  messages: await Promise.all(session.messages.map(async message => (
+  messages: await settledMap(session.messages, async message => (
     message.attachments
       ? {
           ...message,
-          attachments: await Promise.all(message.attachments.map(mapAttachment))
+          attachments: await settledMap(message.attachments, mapAttachment)
         }
       : message
-  )))
-})));
+  ))
+}));
 
 const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(session => ({
   ...session,
@@ -1095,9 +1451,16 @@ const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(sessio
 const externalizeSessionAttachments = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[],
-  regenerateIds = false
-): Promise<{ sessions: Session[]; changed: boolean }> => {
+  regenerateIds = false,
+  strict = false,
+  onAttachmentStaged?: (id: string) => void
+): Promise<{
+  sessions: Session[];
+  changed: boolean;
+  writtenAttachmentIds: string[];
+}> => {
   let changed = false;
+  const writtenAttachmentIds: string[] = [];
 
   const externalizedSessions = await mapSessionAttachments(sessions, async attachment => {
     const existingId = isValidAttachmentId(attachment.id) ? attachment.id : undefined;
@@ -1124,6 +1487,8 @@ const externalizeSessionAttachments = async (
     try {
       const blob = await dataUrlToBlob(attachment.content);
       const id = regenerateIds || !existingId ? createAttachmentId() : existingId;
+      writtenAttachmentIds.push(id);
+      onAttachmentStaged?.(id);
       await writeAttachmentBlob(dirHandle, id, blob);
       changed = true;
       return {
@@ -1132,6 +1497,11 @@ const externalizeSessionAttachments = async (
         type: type || blob.type
       };
     } catch (error) {
+      if (strict) {
+        throw new Error(
+          `Attachment "${name}" could not be staged: ${getErrorMessage(error)}`
+        );
+      }
       console.warn(`Failed to externalize attachment ${name}`, error);
       changed = true;
       return {
@@ -1144,7 +1514,11 @@ const externalizeSessionAttachments = async (
     }
   });
 
-  return { sessions: externalizedSessions, changed };
+  return {
+    sessions: externalizedSessions,
+    changed,
+    writtenAttachmentIds
+  };
 };
 
 const addRuntimeAttachmentPreviews = async (
@@ -1186,16 +1560,6 @@ const collectAttachmentIds = (sessions: Session[]): Set<string> => {
   return ids;
 };
 
-const readRawTextFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string
-): Promise<string | null> => {
-  const backend = await getStorageBackend();
-  return backend === 'indexeddb'
-    ? idbReadRawFile(filename)
-    : readOpfsTextFile(dirHandle, filename);
-};
-
 const pruneUnreferencedAttachments = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[],
@@ -1206,17 +1570,32 @@ const pruneUnreferencedAttachments = async (
   lastAttachmentGcAt = now;
 
   const referencedIds = collectAttachmentIds(sessions);
-  const backupText = await readRawTextFile(
-    dirHandle,
-    getBackupFilename(STORAGE_FILES.SESSIONS)
-  );
+  const manifestState = await readWorkspaceManifestState(dirHandle);
+  const recoverySessionFiles = new Set<string>([
+    getBackupFilename(manifestState.active.files.sessions)
+  ]);
+  if (manifestState.backup) {
+    recoverySessionFiles.add(manifestState.backup.files.sessions);
+    recoverySessionFiles.add(
+      getBackupFilename(manifestState.backup.files.sessions)
+    );
+  }
 
-  if (backupText) {
+  for (const filename of recoverySessionFiles) {
+    const recoveryText = await readBackendTextFile(dirHandle, filename);
+    if (!recoveryText) continue;
     try {
-      collectAttachmentIds(JSON.parse(backupText) as Session[]).forEach(id => referencedIds.add(id));
+      const recoverySessions = parseJsonText(
+        filename,
+        recoveryText,
+        parseStoredSessions
+      );
+      collectAttachmentIds(recoverySessions).forEach(id => referencedIds.add(id));
     } catch (error) {
-      // Avoid deleting files when the recovery metadata cannot be inspected.
-      console.warn('Skipped attachment cleanup because sessions.json.bak is invalid.', error);
+      console.warn(
+        `Skipped attachment cleanup because recovery file ${filename} is invalid.`,
+        error
+      );
       return;
     }
   }
@@ -1292,7 +1671,7 @@ export const readSessions = async (
   dirHandle: FileSystemDirectoryHandle,
   options: { readOnly?: boolean } = {}
 ): Promise<Session[]> => {
-  const storedSessions = await readJsonFile<Session[]>(dirHandle, STORAGE_FILES.SESSIONS) || [];
+  const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
   if (options.readOnly) {
     return addRuntimeAttachmentPreviews(dirHandle, storedSessions);
   }
@@ -1312,18 +1691,6 @@ export const readSessions = async (
   return addRuntimeAttachmentPreviews(dirHandle, externalized.sessions);
 };
 
-// Data Management
-// Exported backups never include the API key; apiKey stays optional so backups
-// created before this policy still parse, and restore discards it either way.
-export type BackupSettings = Omit<AppSettings, 'apiKey'> & { apiKey?: string };
-
-export interface WorkspaceBackup {
-  sessions: Session[];
-  settings: BackupSettings | null;
-  instructions: SystemInstruction[];
-  timestamp: number;
-}
-
 const embedAttachmentDataForBackup = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[]
@@ -1342,42 +1709,207 @@ export const getWorkspaceBackup = async (
   dirHandle: FileSystemDirectoryHandle,
   options: { readOnly?: boolean } = {}
 ): Promise<WorkspaceBackup> => {
-  const storedSessions = await readJsonFile<Session[]>(dirHandle, STORAGE_FILES.SESSIONS) || [];
+  const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
   const externalized = options.readOnly
     ? { sessions: storedSessions, changed: false }
     : await externalizeSessionAttachments(dirHandle, storedSessions);
   if (externalized.changed) await writeSessions(dirHandle, externalized.sessions);
 
-  const sessions = await embedAttachmentDataForBackup(dirHandle, externalized.sessions);
-  const settings = await readJsonFile<AppSettings>(dirHandle, STORAGE_FILES.SETTINGS);
-  const instructions = await readJsonFile<SystemInstruction[]>(dirHandle, STORAGE_FILES.INSTRUCTIONS) || [];
+  const embeddedSessions = await embedAttachmentDataForBackup(
+    dirHandle,
+    externalized.sessions
+  );
+  const settings = await readJsonFile(dirHandle, STORAGE_FILES.SETTINGS);
+  const instructions = await readJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS) || [];
+  const instructionIds = new Set(instructions.map(instruction => instruction.id));
+  const sessions = embeddedSessions.map(session => (
+    session.config.systemInstructionId &&
+    !instructionIds.has(session.config.systemInstructionId)
+      ? {
+          ...session,
+          config: {
+            ...session.config,
+            systemInstructionId: undefined
+          }
+        }
+      : session
+  ));
 
   let backupSettings: BackupSettings | null = null;
   if (settings) {
     backupSettings = { ...settings };
     delete backupSettings.apiKey;
+    if (
+      backupSettings.lastActiveSessionId &&
+      !sessions.some(session => session.id === backupSettings?.lastActiveSessionId)
+    ) {
+      backupSettings.lastActiveSessionId = sessions[0]?.id;
+    }
   }
 
-  return {
+  return parseWorkspaceBackup({
+    schemaVersion: WORKSPACE_SCHEMA_VERSION,
     sessions,
     settings: backupSettings,
     instructions,
     timestamp: Date.now()
-  };
+  });
 };
 
-export const restoreWorkspaceBackup = async (dirHandle: FileSystemDirectoryHandle, backup: WorkspaceBackup): Promise<void> => {
-  if (backup.sessions) {
-    const externalized = await externalizeSessionAttachments(dirHandle, backup.sessions, true);
-    await writeSessions(dirHandle, externalized.sessions);
+export const restoreWorkspaceBackup = async (
+  dirHandle: FileSystemDirectoryHandle,
+  backupValue: unknown
+): Promise<void> => {
+  if (workspaceRevision === null) {
+    throw new Error('Workspace revision has not been initialized.');
   }
-  if (backup.settings) {
-    const currentSettings = await readJsonFile<AppSettings>(dirHandle, STORAGE_FILES.SETTINGS);
-    const restoredSettings: AppSettings = {
-      ...backup.settings,
-      apiKey: currentSettings?.apiKey || ''
+
+  const backup = parseWorkspaceBackup(backupValue);
+  const manifestState = await readWorkspaceManifestState(dirHandle);
+  if (manifestState.active.revision !== workspaceRevision) {
+    throw new WorkspaceRevisionConflictError(
+      workspaceRevision,
+      manifestState.active.revision
+    );
+  }
+
+  const currentSettings = await readJsonFile(dirHandle, STORAGE_FILES.SETTINGS);
+  const currentInstructions = backup.instructions === undefined
+    ? await readJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS) || []
+    : backup.instructions;
+  const restoredSettings: AppSettings = backup.settings
+    ? {
+        theme: backup.settings.theme,
+        apiKey: currentSettings?.apiKey || '',
+        ...(backup.settings.lastActiveSessionId
+          ? { lastActiveSessionId: backup.settings.lastActiveSessionId }
+          : {})
+      }
+    : {
+        theme: currentSettings?.theme || 'dark',
+        apiKey: currentSettings?.apiKey || '',
+        ...(currentSettings?.lastActiveSessionId &&
+          backup.sessions.some(session => (
+            session.id === currentSettings.lastActiveSessionId
+          ))
+          ? { lastActiveSessionId: currentSettings.lastActiveSessionId }
+          : backup.sessions[0]
+            ? { lastActiveSessionId: backup.sessions[0].id }
+            : {})
+      };
+
+  validateWorkspaceReferences({
+    sessions: backup.sessions,
+    settings: restoredSettings,
+    instructions: currentInstructions
+  });
+
+  const snapshotId = createAttachmentId();
+  const stagedFiles: Record<WorkspaceDataKey, string> = {
+    sessions: getWorkspaceDataPhysicalFilename('sessions', snapshotId),
+    settings: getWorkspaceDataPhysicalFilename('settings', snapshotId),
+    instructions: getWorkspaceDataPhysicalFilename('instructions', snapshotId)
+  };
+  let writtenAttachmentIds: string[] = [];
+  let switched = false;
+  let manifestSwitchStarted = false;
+
+  try {
+    const externalized = await externalizeSessionAttachments(
+      dirHandle,
+      backup.sessions,
+      true,
+      true,
+      id => writtenAttachmentIds.push(id)
+    );
+    const storedSessions = toStoredSessions(externalized.sessions);
+
+    parseStoredSessions(storedSessions);
+    parseAppSettings(restoredSettings);
+    parseSystemInstructions(currentInstructions);
+    validateWorkspaceReferences({
+      sessions: storedSessions,
+      settings: restoredSettings,
+      instructions: currentInstructions
+    });
+
+    const stagedTexts: Record<WorkspaceDataKey, string> = {
+      sessions: JSON.stringify(storedSessions, null, 2),
+      settings: JSON.stringify(restoredSettings, null, 2),
+      instructions: JSON.stringify(currentInstructions, null, 2)
     };
-    await writeJsonFile(dirHandle, STORAGE_FILES.SETTINGS, restoredSettings);
+
+    const nextManifest: WorkspaceManifest = {
+      schemaVersion: WORKSPACE_SCHEMA_VERSION,
+      revision: manifestState.active.revision + 1,
+      files: stagedFiles
+    };
+    // The helper verifies every staged file before the manifest makes any of
+    // them visible as the active workspace.
+    await commitAtomicWorkspaceSnapshot({
+      files: [
+        {
+          filename: stagedFiles.sessions,
+          text: stagedTexts.sessions,
+          validate: text => {
+            parseJsonText(stagedFiles.sessions, text, parseStoredSessions);
+          }
+        },
+        {
+          filename: stagedFiles.settings,
+          text: stagedTexts.settings,
+          validate: text => {
+            parseJsonText(
+              stagedFiles.settings,
+              text,
+              value => parseAppSettings(value) as AppSettings
+            );
+          }
+        },
+        {
+          filename: stagedFiles.instructions,
+          text: stagedTexts.instructions,
+          validate: text => {
+            parseJsonText(
+              stagedFiles.instructions,
+              text,
+              parseSystemInstructions
+            );
+          }
+        }
+      ],
+      writeText: (filename, text) => (
+        writeBackendTextFile(dirHandle, filename, text)
+      ),
+      readText: filename => readBackendTextFile(dirHandle, filename),
+      deleteFile: filename => deleteBackendFile(dirHandle, filename),
+      beforeSwitch: async () => {
+        const currentManifest = (
+          await readWorkspaceManifestState(dirHandle)
+        ).active;
+        if (currentManifest.revision !== manifestState.active.revision) {
+          throw new WorkspaceRevisionConflictError(
+            manifestState.active.revision,
+            currentManifest.revision
+          );
+        }
+      },
+      switchManifest: async () => {
+        manifestSwitchStarted = true;
+        await writePersistedWorkspaceManifest(dirHandle, nextManifest);
+      }
+    });
+    switched = true;
+    workspaceRevision = nextManifest.revision;
+  } finally {
+    if (!switched && !manifestSwitchStarted) {
+      await Promise.all(writtenAttachmentIds.map(async id => {
+        try {
+          await deleteAttachmentBlob(dirHandle, id);
+        } catch (error) {
+          console.warn(`Failed to remove staged attachment ${id}.`, error);
+        }
+      }));
+    }
   }
-  if (backup.instructions) await writeJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS, backup.instructions);
 };

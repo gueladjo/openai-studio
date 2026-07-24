@@ -26,7 +26,9 @@ import {
   StorageBackendChoiceRequest,
   STORAGE_FILES,
   AppSettings,
-  WorkspaceBackup
+  MAX_WORKSPACE_BACKUP_BYTES,
+  parseWorkspaceBackup,
+  validateWorkspaceReferences
 } from './services/storage';
 import { WorkspaceCoordinator, WorkspaceRole } from './services/workspaceSync';
 import {
@@ -159,47 +161,6 @@ const resolveStorageBackendChoice = (
   );
   return useOpfs ? 'opfs' : 'indexeddb';
 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> => (
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-);
-
-const isValidBackupSessions = (value: unknown): value is Session[] => (
-  Array.isArray(value) && value.every(session => (
-    isRecord(session) &&
-    typeof session.id === 'string' &&
-    typeof session.title === 'string' &&
-    typeof session.lastModified === 'number' &&
-    isRecord(session.config) &&
-    Array.isArray(session.messages) &&
-    session.messages.every(message => (
-      isRecord(message) &&
-      (message.role === 'user' || message.role === 'assistant') &&
-      typeof message.content === 'string' &&
-      typeof message.timestamp === 'number' &&
-      (
-        message.attachments === undefined ||
-        (
-          Array.isArray(message.attachments) &&
-          message.attachments.every(attachment => (
-            isRecord(attachment) &&
-            typeof attachment.name === 'string' &&
-            typeof attachment.type === 'string' &&
-            (
-              attachment.id === undefined ||
-              (typeof attachment.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(attachment.id))
-            ) &&
-            (
-              attachment.content === undefined ||
-              (typeof attachment.content === 'string' && attachment.content.startsWith('data:'))
-            ) &&
-            (attachment.id === undefined || attachment.content !== undefined)
-          ))
-        )
-      )
-    ))
-  ))
-);
 
 function App() {
   // Storage State
@@ -470,9 +431,16 @@ function App() {
       const revisionBeforeRead = await synchronizeWorkspaceRevision(handle);
       [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
         readSessions(handle, { readOnly: role === 'reader' }),
-        readJsonFile<AppSettings>(handle, STORAGE_FILES.SETTINGS),
-        readJsonFile<SystemInstruction[]>(handle, STORAGE_FILES.INSTRUCTIONS)
+        readJsonFile(handle, STORAGE_FILES.SETTINGS),
+        readJsonFile(handle, STORAGE_FILES.INSTRUCTIONS)
       ]);
+      validateWorkspaceReferences({
+        sessions: loadedSessions,
+        settings: loadedSettings,
+        instructions: loadedInstructions || []
+      }, {
+        allowDanglingSelections: true
+      });
       const revisionAfterRead = await synchronizeWorkspaceRevision(handle);
 
       if (role === 'writer' || revisionBeforeRead === revisionAfterRead) break;
@@ -1449,46 +1417,11 @@ function App() {
   const handleImportData = async (file: File) => {
     if (!workspaceCanWriteRef.current || !dirHandle) return;
     try {
+      if (file.size > MAX_WORKSPACE_BACKUP_BYTES) {
+        throw new Error('Backup file exceeds the supported size limit.');
+      }
       const text = await file.text();
-      const parsedBackup = JSON.parse(text) as unknown;
-
-      if (!isRecord(parsedBackup) || !isValidBackupSessions(parsedBackup.sessions)) {
-        throw new Error("Invalid backup format");
-      }
-      if (
-        parsedBackup.instructions !== undefined &&
-        (
-          !Array.isArray(parsedBackup.instructions) ||
-          !parsedBackup.instructions.every(instruction => (
-            isRecord(instruction) &&
-            typeof instruction.id === 'string' &&
-            typeof instruction.title === 'string' &&
-            typeof instruction.content === 'string'
-          ))
-        )
-      ) {
-        throw new Error("Invalid backup instructions");
-      }
-      if (
-        parsedBackup.settings !== undefined &&
-        parsedBackup.settings !== null &&
-        (
-          !isRecord(parsedBackup.settings) ||
-          (parsedBackup.settings.theme !== 'dark' && parsedBackup.settings.theme !== 'light') ||
-          (
-            parsedBackup.settings.lastActiveSessionId !== undefined &&
-            typeof parsedBackup.settings.lastActiveSessionId !== 'string'
-          ) ||
-          (
-            parsedBackup.settings.apiKey !== undefined &&
-            typeof parsedBackup.settings.apiKey !== 'string'
-          )
-        )
-      ) {
-        throw new Error("Invalid backup settings");
-      }
-
-      const backup = parsedBackup as unknown as WorkspaceBackup;
+      const backup = parseWorkspaceBackup(JSON.parse(text) as unknown);
       
       // Confirm replacement
       if (!window.confirm("This will overwrite your current workspace with the backup data. Continue?")) return;
