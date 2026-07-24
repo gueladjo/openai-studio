@@ -18,6 +18,46 @@ const packageJson = JSON.parse(
 );
 const appVersion = packageJson.version;
 
+export const getAppBase = (mode: string): string => (
+  mode === 'electron' ? './' : '/openai-studio/'
+);
+
+export const getInjectedProcessEnvironment = (
+  mode: string,
+  env: Record<string, string>
+): Record<string, string | undefined> => (
+  mode === 'electron' || mode === 'development'
+    ? {
+        NODE_ENV: env.NODE_ENV || mode,
+        OPENAI_API_KEY: env.OPENAI_API_KEY
+      }
+    : { NODE_ENV: env.NODE_ENV || mode }
+);
+
+export const getPwaManifest = (base: string) => ({
+  name: 'OpenAI Studio',
+  short_name: 'AI Studio',
+  description: 'A professional chat interface for OpenAI GPT-5 models',
+  theme_color: '#0d1117',
+  background_color: '#0d1117',
+  display: 'standalone' as const,
+  scope: base,
+  start_url: base,
+  icons: [
+    {
+      src: `${base}icons/icon-192.png`,
+      sizes: '192x192',
+      type: 'image/png'
+    },
+    {
+      src: `${base}icons/icon-512.png`,
+      sizes: '512x512',
+      type: 'image/png',
+      purpose: 'any maskable'
+    }
+  ]
+});
+
 const electronDevHealthPlugin = (): Plugin => ({
   name: 'electron-dev-health',
   configureServer(server) {
@@ -44,7 +84,7 @@ export default defineConfig(({ mode }) => {
 
   // Use relative paths for Electron, absolute for web
   const isElectron = mode === 'electron';
-  const base = isElectron ? './' : '/openai-studio/';
+  const base = getAppBase(mode);
 
   return {
     base,
@@ -55,29 +95,7 @@ export default defineConfig(({ mode }) => {
       !isElectron && VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['icons/*.png', 'icons/*.svg'],
-        manifest: {
-          name: 'OpenAI Studio',
-          short_name: 'AI Studio',
-          description: 'A professional chat interface for OpenAI GPT-5 models',
-          theme_color: '#0d1117',
-          background_color: '#0d1117',
-          display: 'standalone',
-          scope: base,
-          start_url: base,
-          icons: [
-            {
-              src: `${base}icons/icon-192.png`,
-              sizes: '192x192',
-              type: 'image/png'
-            },
-            {
-              src: `${base}icons/icon-512.png`,
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any maskable'
-            }
-          ]
-        },
+        manifest: getPwaManifest(base),
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
           runtimeCaching: [
@@ -118,9 +136,7 @@ export default defineConfig(({ mode }) => {
       // For local/Electron builds: include API key from .env for convenience
       // For web builds (GitHub Pages): exclude secrets - users enter via settings UI
       'process.env': JSON.stringify(
-        isElectron || mode === 'development'
-          ? { NODE_ENV: env.NODE_ENV || mode, OPENAI_API_KEY: env.OPENAI_API_KEY }
-          : { NODE_ENV: env.NODE_ENV || mode }
+        getInjectedProcessEnvironment(mode, env)
       )
     },
     server: {
