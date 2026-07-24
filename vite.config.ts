@@ -1,13 +1,41 @@
 
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { readFileSync } from 'fs';
+import {
+  DEV_SERVER_HEALTH_BODY,
+  DEV_SERVER_HEALTH_HEADER,
+  DEV_SERVER_HEALTH_HEADER_VALUE,
+  DEV_SERVER_HEALTH_PATH,
+  DEV_SERVER_HOST,
+  DEV_SERVER_ORIGIN,
+  DEV_SERVER_PORT
+} from './electron/devServer.js';
 
 const packageJson = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf-8')
 );
 const appVersion = packageJson.version;
+
+const electronDevHealthPlugin = (): Plugin => ({
+  name: 'electron-dev-health',
+  configureServer(server) {
+    server.middlewares.use((request, response, next) => {
+      const requestUrl = new URL(request.url ?? '/', DEV_SERVER_ORIGIN);
+      if (request.method !== 'GET' || requestUrl.pathname !== DEV_SERVER_HEALTH_PATH) {
+        next();
+        return;
+      }
+
+      response.statusCode = 200;
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.setHeader(DEV_SERVER_HEALTH_HEADER, DEV_SERVER_HEALTH_HEADER_VALUE);
+      response.end(DEV_SERVER_HEALTH_BODY);
+    });
+  }
+});
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
@@ -22,6 +50,7 @@ export default defineConfig(({ mode }) => {
     base,
     plugins: [
       react(),
+      isElectron && electronDevHealthPlugin(),
       // Only enable PWA for web builds
       !isElectron && VitePWA({
         registerType: 'autoUpdate',
@@ -93,6 +122,11 @@ export default defineConfig(({ mode }) => {
           ? { NODE_ENV: env.NODE_ENV || mode, OPENAI_API_KEY: env.OPENAI_API_KEY }
           : { NODE_ENV: env.NODE_ENV || mode }
       )
+    },
+    server: {
+      host: DEV_SERVER_HOST,
+      port: DEV_SERVER_PORT,
+      strictPort: true
     }
   };
 });

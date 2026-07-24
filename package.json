@@ -16,7 +16,7 @@
     "build:web": "tsc && vite build --mode web",
     "build:electron": "tsc && vite build --mode electron",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite --mode electron\" \"wait-on tcp:5173 && electron .\"",
+    "electron:dev": "concurrently --kill-others --success first --names vite,electron \"vite --mode electron\" \"electron .\"",
     "dist": "npm run build:electron && electron-builder",
     "deploy": "npm run build:web && gh-pages -d dist"
   },
@@ -44,8 +44,7 @@
     "typescript": "^5.2.2",
     "vite": "^7.3.6",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^3.2.7",
-    "wait-on": "^7.2.0"
+    "vitest": "^3.2.7"
   },
   "build": {
     "appId": "com.openaistudio.app",

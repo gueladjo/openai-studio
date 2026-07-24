@@ -1,6 +1,10 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, clipboard } from 'electron';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import {
+  DEV_SERVER_ORIGIN,
+  waitForVerifiedDevServer
+} from './devServer.js';
 import { isSafeExternalUrl, isSameAppDocument } from './urlPolicy.js';
 
 // Define __dirname for ESM
@@ -135,7 +139,7 @@ function createWindow() {
   // Check if we're in development mode
   const isDev = !app.isPackaged;
   const appUrl = isDev
-    ? 'http://localhost:5173/'
+    ? DEV_SERVER_ORIGIN
     : pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
 
   // Open external links in default browser instead of in the app
@@ -222,7 +226,6 @@ function createWindow() {
   // In development, we load from the Vite dev server
   // In production, we load the index.html file
   if (isDev) {
-    // You might need to adjust the port if Vite uses something other than 5173
     win.loadURL(appUrl);
     // Open DevTools in dev mode
     // win.webContents.openDevTools();
@@ -250,7 +253,17 @@ if (!gotSingleInstanceLock) {
     focusMainWindow();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    if (!app.isPackaged) {
+      try {
+        await waitForVerifiedDevServer();
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        app.exit(1);
+        return;
+      }
+    }
+
     createWindow();
 
     app.on('activate', () => {
