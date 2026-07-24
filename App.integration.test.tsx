@@ -33,6 +33,7 @@ interface CapturedSidebarProps {
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (event: React.MouseEvent, sessionId: string) => void;
+  onImportData: (file: File) => Promise<void>;
 }
 
 interface GenerateOptions {
@@ -272,6 +273,8 @@ describe('App workspace and request lifecycle', () => {
     ));
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   afterEach(async () => {
@@ -456,6 +459,9 @@ describe('App workspace and request lifecycle', () => {
       );
     });
     await act(async () => {
+      getGenerateOptions().onTextDelta?.('Non-authoritative streamed text.');
+    });
+    await act(async () => {
       getSidebarProps().onSelectSession('session-b');
     });
     await act(async () => {
@@ -482,7 +488,42 @@ describe('App workspace and request lifecycle', () => {
         openaiResponseId: 'resp-complete'
       })
     ]);
+    expect(sessionA?.messages.at(-1)?.content).not.toContain(
+      'Non-authoritative streamed text.'
+    );
     expect(sessionB?.messages).toEqual([]);
+  });
+
+  it('retains partial output and clears the pending marker after a stream failure', async () => {
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage(
+        'session-a',
+        'Fail after a partial response.',
+        []
+      );
+    });
+    await act(async () => {
+      getGenerateOptions().onTextDelta?.('Useful partial output.');
+      response.reject(new Error('Connection lost.'));
+      await response.promise.catch(() => undefined);
+    });
+    await flushMicrotasks();
+
+    const failedSession = getSidebarProps().sessions.find(
+      session => session.id === 'session-a'
+    );
+    expect(failedSession?.pendingRequest).toBeUndefined();
+    expect(failedSession?.messages.at(-1)).toMatchObject({
+      content: 'Useful partial output.\n\nError: Connection lost.',
+      status: 'error'
+    });
   });
 
   it('stops a response with its unflushed partial output and ignores late completion', async () => {
@@ -570,6 +611,54 @@ describe('App workspace and request lifecycle', () => {
     expect(
       getSidebarProps().sessions.some(session => session.id === 'session-a')
     ).toBe(false);
+  });
+
+  it('invalidates an in-flight response before replacing the workspace', async () => {
+    const response = createDeferred<GenerateResult>();
+    const replacement = createSession(
+      'session-restored',
+      'Restored workspace'
+    );
+    mocks.generateResponse.mockReturnValue(response.promise);
+    mocks.restoreWorkspaceBackup.mockImplementationOnce(async () => {
+      mocks.loadedSessions = [replacement];
+    });
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage(
+        'session-a',
+        'Do not leak into the restored workspace.',
+        []
+      );
+    });
+    const options = getGenerateOptions();
+    await act(async () => {
+      options.onResponseCreated?.('resp-before-import');
+      await getSidebarProps().onImportData(new File(
+        [JSON.stringify({ sessions: [] })],
+        'backup.json',
+        { type: 'application/json' }
+      ));
+    });
+    await flushMicrotasks();
+
+    expect(options.signal?.aborted).toBe(true);
+    expect(mocks.cancelResponse).toHaveBeenCalledWith(
+      'resp-before-import',
+      'workspace-key'
+    );
+    expect(getSidebarProps().sessions).toEqual([replacement]);
+
+    await act(async () => {
+      response.resolve(completedResult('Late completion.'));
+      await response.promise;
+    });
+    await flushMicrotasks();
+    expect(getSidebarProps().sessions).toEqual([replacement]);
   });
 
   it('checkpoints partial output and saves it before confirming Electron close', async () => {
