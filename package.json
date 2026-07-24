@@ -10,6 +10,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "clean": "node scripts/clean.js",
     "dev": "vite",
     "test": "vitest run",
     "build": "tsc && vite build --mode electron",

@@ -70,6 +70,7 @@ Development and Electron modes compile this value into renderer JavaScript. Do n
 | Command | Purpose |
 | --- | --- |
 | `npm ci` | Install the exact dependency versions from `package-lock.json`. |
+| `npm run clean` | Remove generated dependencies, build/package output, and log files. Add `-- --dry-run` to preview the targets. |
 | `npm run dev` | Start the web dev server at `/openai-studio/`. |
 | `npm test` | Run the Vitest unit suite once. |
 | `npm run electron:dev` | Start Vite in Electron mode and launch Electron against it on port 5173. |
