@@ -15,7 +15,7 @@ vi.mock('openai', () => ({
   }
 }));
 
-import { generateResponse } from './openaiService';
+import { generateChatTitle, generateResponse } from './openaiService';
 
 const userMessage: Message = {
   id: 'user-1',
@@ -217,6 +217,43 @@ describe('generateResponse reasoning summaries', () => {
       param: 'input'
     });
     consoleError.mockRestore();
+  });
+});
+
+describe('generateChatTitle cancellation', () => {
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it('passes the operation abort signal to the title request', async () => {
+    createResponseMock.mockResolvedValue({
+      output_text: 'Concise title'
+    });
+    const controller = new AbortController();
+
+    await expect(generateChatTitle(
+      'A long first message',
+      'title-key',
+      { signal: controller.signal }
+    )).resolves.toBe('Concise title');
+
+    expect(createResponseMock.mock.calls[0][1]).toEqual({
+      signal: controller.signal
+    });
+  });
+
+  it('propagates cancellation instead of returning a stale fallback title', async () => {
+    const abortError = new Error('Request aborted.');
+    abortError.name = 'AbortError';
+    createResponseMock.mockRejectedValue(abortError);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(generateChatTitle(
+      'A long first message',
+      'title-key',
+      { signal: controller.signal }
+    )).rejects.toBe(abortError);
   });
 });
 

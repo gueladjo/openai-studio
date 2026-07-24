@@ -43,6 +43,11 @@ import {
   VersionedSaveQueue
 } from './services/saveQueue';
 import {
+  OperationRecord,
+  OperationRegistry
+} from './services/operationRegistry';
+import { SerializedOperationQueue } from './services/serializedOperationQueue';
+import {
   buildConversationFilename,
   downloadTextFile,
   formatConversationMarkdown
@@ -130,6 +135,7 @@ const storeMessageAttachments = async (
 
 interface ActiveChatRequest {
   controller: AbortController;
+  operationId: string;
   assistantMessageId: string;
   apiKey: string;
   responseId?: string;
@@ -150,6 +156,12 @@ const isAbortError = (error: unknown): boolean => {
 const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Unknown error'
 );
+
+const createOperationAbortError = (): Error => {
+  const error = new Error('Operation is no longer current.');
+  error.name = 'AbortError';
+  return error;
+};
 
 const resolveStorageBackendChoice = (
   request: StorageBackendChoiceRequest
@@ -206,6 +218,7 @@ function App() {
   const [isRetryingSave, setIsRetryingSave] = useState(false);
   const [closeSaveError, setCloseSaveError] = useState<string | null>(null);
   const sessionsRef = useRef<Session[]>([]);
+  const currentSessionIdRef = useRef<string | null>(null);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const isWorkspaceLoadedRef = useRef(false);
   const workspaceCanWriteRef = useRef(false);
@@ -215,6 +228,16 @@ function App() {
   const saveQueueRef = useRef<VersionedSaveQueue<SaveKey> | null>(null);
   const closeRequestPendingRef = useRef(false);
   const initializationStartedRef = useRef(false);
+  const operationRegistryRef = useRef(new OperationRegistry());
+  const workspaceMutationBlockedRef = useRef(false);
+  const [isWorkspaceMutating, setIsWorkspaceMutating] = useState(false);
+  const destructiveOperationQueueRef = useRef<SerializedOperationQueue | null>(null);
+  if (!destructiveOperationQueueRef.current) {
+    destructiveOperationQueueRef.current = new SerializedOperationQueue(isPending => {
+      workspaceMutationBlockedRef.current = isPending;
+      setIsWorkspaceMutating(isPending);
+    });
+  }
 
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
@@ -248,6 +271,26 @@ function App() {
   }, [sessions]);
 
   useLayoutEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  const updateSessionsState = useCallback((
+    update: React.SetStateAction<Session[]>
+  ): Session[] => {
+    const nextSessions = typeof update === 'function'
+      ? update(sessionsRef.current)
+      : update;
+    sessionsRef.current = nextSessions;
+    setSessions(nextSessions);
+    return nextSessions;
+  }, []);
+
+  const updateCurrentSessionId = useCallback((sessionId: string | null): void => {
+    currentSessionIdRef.current = sessionId;
+    setCurrentSessionId(sessionId);
+  }, []);
+
+  useLayoutEffect(() => {
     systemInstructionsRef.current = systemInstructions;
   }, [systemInstructions]);
 
@@ -266,9 +309,9 @@ function App() {
 
   // Close sidebar when selecting a session on mobile
   const handleSelectSession = useCallback((id: string) => {
-    setCurrentSessionId(id);
+    updateCurrentSessionId(id);
     if (isMobile) setIsSidebarOpen(false);
-  }, [isMobile]);
+  }, [isMobile, updateCurrentSessionId]);
 
   const forceImmediateSessionSaveRef = useRef(false);
   const skipNextSessionEffectSaveRef = useRef(false);
@@ -370,6 +413,10 @@ function App() {
     }
   }, [getSaveQueue]);
 
+  const enqueueDestructiveOperation = useCallback(<T,>(
+    operation: () => Promise<T>
+  ): Promise<T> => destructiveOperationQueueRef.current!.enqueue(operation), []);
+
   const addProcessingSession = (sessionId: string) => {
     processingSessionIdsRef.current.add(sessionId);
     setProcessingSessionIds(new Set(processingSessionIdsRef.current));
@@ -378,6 +425,56 @@ function App() {
   const removeProcessingSession = (sessionId: string) => {
     processingSessionIdsRef.current.delete(sessionId);
     setProcessingSessionIds(new Set(processingSessionIdsRef.current));
+  };
+
+  const isOperationCurrent = (
+    operation: OperationRecord,
+    requireSession = Boolean(operation.sessionId)
+  ): boolean => (
+    operationRegistryRef.current.isCurrent(operation) &&
+    workspaceCanWriteRef.current &&
+    (
+      !requireSession ||
+      !operation.sessionId ||
+      sessionsRef.current.some(session => session.id === operation.sessionId)
+    )
+  );
+
+  const cancelActiveRequest = (
+    sessionId: string,
+    warningContext: string
+  ): ActiveChatRequest | undefined => {
+    const activeRequest = activeRequestsRef.current.get(sessionId);
+    if (!activeRequest) return undefined;
+
+    if (activeRequest.responseId) {
+      cancelResponse(activeRequest.responseId, activeRequest.apiKey).catch(error => {
+        console.warn(`Failed to cancel OpenAI response ${warningContext}:`, error);
+      });
+    }
+    activeRequest.controller.abort();
+    activeRequestsRef.current.delete(sessionId);
+    return activeRequest;
+  };
+
+  const invalidateSessionOperations = (
+    sessionId: string,
+    warningContext: string
+  ): ActiveChatRequest | undefined => {
+    operationRegistryRef.current.invalidateSession(sessionId);
+    const activeRequest = cancelActiveRequest(sessionId, warningContext);
+    removeProcessingSession(sessionId);
+    return activeRequest;
+  };
+
+  const invalidateWorkspaceOperations = (warningContext: string): void => {
+    operationRegistryRef.current.invalidateWorkspace();
+    activeRequestsRef.current.forEach((_, sessionId) => {
+      cancelActiveRequest(sessionId, warningContext);
+    });
+    activeRequestsRef.current.clear();
+    processingSessionIdsRef.current.clear();
+    setProcessingSessionIds(new Set());
   };
 
   const markPendingRequestsFailed = (loadedSessions: Session[]): Session[] => {
@@ -448,7 +545,8 @@ function App() {
   // Helper: Load all data from disk
   const loadWorkspaceData = async (
     handle: FileSystemDirectoryHandle,
-    role: WorkspaceRole
+    role: WorkspaceRole,
+    isStillCurrent: () => boolean = () => true
   ) => {
     let loadedSessions: Session[] = [];
     let loadedSettings: AppSettings | null = null;
@@ -458,11 +556,13 @@ function App() {
     // The writer is already protected by the exclusive workspace lock.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revisionBeforeRead = await synchronizeWorkspaceRevision(handle);
+      if (!isStillCurrent()) throw createOperationAbortError();
       [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
         readSessions(handle, { readOnly: role === 'reader' }),
         readJsonFile(handle, STORAGE_FILES.SETTINGS),
         readJsonFile(handle, STORAGE_FILES.INSTRUCTIONS)
       ]);
+      if (!isStillCurrent()) throw createOperationAbortError();
       validateWorkspaceReferences({
         sessions: loadedSessions,
         settings: loadedSettings,
@@ -471,6 +571,7 @@ function App() {
         allowDanglingSelections: true
       });
       const revisionAfterRead = await synchronizeWorkspaceRevision(handle);
+      if (!isStillCurrent()) throw createOperationAbortError();
 
       if (role === 'writer' || revisionBeforeRead === revisionAfterRead) break;
     }
@@ -487,6 +588,7 @@ function App() {
       ? loadedSettings.lastActiveSessionId
       : cleanedSessions[0]?.id || null;
 
+    if (!isStillCurrent()) throw createOperationAbortError();
     revokeAttachmentPreviewUrls(sessionsRef.current);
     sessionsRef.current = cleanedSessions;
     systemInstructionsRef.current = nextInstructions;
@@ -499,11 +601,11 @@ function App() {
       role === 'writer' && cleanedSessions !== loadedSessions
     );
 
-    setSessions(cleanedSessions);
+    updateSessionsState(cleanedSessions);
     setSystemInstructions(nextInstructions);
     setIsDarkMode(loadedSettings ? loadedSettings.theme === 'dark' : true);
     setApiKey(loadedSettings?.apiKey || '');
-    setCurrentSessionId(nextCurrentSessionId);
+    updateCurrentSessionId(nextCurrentSessionId);
   };
 
   // 1. Initial Mount: Automatically access storage
@@ -560,10 +662,7 @@ function App() {
           workspaceCanWriteRef.current = false;
           setIsWorkspaceReadOnly(true);
           if (role === 'reader') {
-            activeRequestsRef.current.forEach(request => request.controller.abort());
-            activeRequestsRef.current.clear();
-            processingSessionIdsRef.current.clear();
-            setProcessingSessionIds(new Set());
+            invalidateWorkspaceOperations('after workspace role change');
           }
           if (!isWorkspaceLoadedRef.current) return;
 
@@ -683,7 +782,7 @@ function App() {
         sessionsRef.current = checkpointedSessions;
         forceImmediateSessionSaveRef.current = false;
         skipNextSessionEffectSaveRef.current = true;
-        setSessions(checkpointedSessions);
+        updateSessionsState(checkpointedSessions);
         scheduleSave('sessions', true);
       }
 
@@ -712,7 +811,12 @@ function App() {
   const currentSession = sessions.find(s => s.id === currentSessionId) || null;
 
   const createNewSession = () => {
-    if (!workspaceCanWriteRef.current) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current
+    ) {
+      return;
+    }
 
     const configToUse = currentSession ? { ...currentSession.config } : { ...DEFAULT_CONFIG };
     
@@ -723,55 +827,111 @@ function App() {
       config: configToUse,
       lastModified: Date.now(),
     };
-    setSessions(prev => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
+    updateSessionsState(prev => [newSession, ...prev]);
+    updateCurrentSessionId(newSession.id);
   };
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (!workspaceCanWriteRef.current) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current
+    ) {
+      return;
+    }
 
-    const deletedSession = sessions.find(session => session.id === id);
+    const deletedSession = sessionsRef.current.find(session => session.id === id);
     if (!deletedSession || !confirmChatDeletion()) return;
 
-    const newSessions = sessions.filter(s => s.id !== id);
-    forceImmediateSessionSaveRef.current = true;
-    setSessions(newSessions);
-    revokeAttachmentPreviewUrls([deletedSession]);
-    if (currentSessionId === id) {
-      setCurrentSessionId(newSessions.length > 0 ? newSessions[0].id : null);
-    }
+    invalidateSessionOperations(id, 'before chat deletion');
+
+    void enqueueDestructiveOperation(async () => {
+      const operation = operationRegistryRef.current.begin({
+        id: uuidv4(),
+        kind: 'delete-session',
+        sessionId: id
+      });
+
+      try {
+        if (!workspaceCanWriteRef.current) return;
+        const currentDeletedSession = sessionsRef.current.find(session => session.id === id);
+        if (!currentDeletedSession) return;
+
+        const newSessions = sessionsRef.current.filter(session => session.id !== id);
+        forceImmediateSessionSaveRef.current = true;
+        updateSessionsState(newSessions);
+        revokeAttachmentPreviewUrls([currentDeletedSession]);
+        if (currentSessionIdRef.current === id) {
+          updateCurrentSessionId(newSessions[0]?.id || null);
+        }
+
+        scheduleSave('sessions', true);
+        await flushPendingSaves(['sessions']);
+        if (
+          !operationRegistryRef.current.isCurrent(operation) ||
+          !workspaceCanWriteRef.current
+        ) {
+          return;
+        }
+      } finally {
+        operationRegistryRef.current.complete(operation);
+      }
+    }).catch(error => {
+      console.error('Failed to persist chat deletion.', error);
+    });
   };
 
   const updateConfig = (newConfig: ChatConfig) => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) return;
-    setSessions(prev => prev.map(s => 
-      s.id === currentSessionId ? { ...s, config: newConfig } : s
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !currentSessionIdRef.current
+    ) {
+      return;
+    }
+    const targetSessionId = currentSessionIdRef.current;
+    updateSessionsState(prev => prev.map(s =>
+      s.id === targetSessionId ? { ...s, config: newConfig } : s
     ));
   };
 
   const handleCreateSystemInstruction = () => {
-     if (!workspaceCanWriteRef.current) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current
+    ) {
+      return;
+    }
 
-     const newId = uuidv4();
-     const newInstruction: SystemInstruction = {
-         id: newId,
-         title: 'Untitled instruction',
-         content: ''
-     };
-     setSystemInstructions(prev => [...prev, newInstruction]);
-     if (currentSessionId) {
-         updateConfig({ ...currentSession!.config, systemInstructionId: newId });
-     }
+    const newId = uuidv4();
+    const newInstruction: SystemInstruction = {
+      id: newId,
+      title: 'Untitled instruction',
+      content: ''
+    };
+    setSystemInstructions(prev => [...prev, newInstruction]);
+    if (currentSessionId) {
+      updateConfig({ ...currentSession!.config, systemInstructionId: newId });
+    }
   };
 
   const handleUpdateSystemInstruction = (updated: SystemInstruction) => {
-      if (!workspaceCanWriteRef.current) return;
+      if (
+        !workspaceCanWriteRef.current ||
+        workspaceMutationBlockedRef.current
+      ) {
+        return;
+      }
       setSystemInstructions(prev => prev.map(si => si.id === updated.id ? updated : si));
   };
 
   const handleDeleteSystemInstruction = (id: string) => {
-      if (!workspaceCanWriteRef.current) return;
+      if (
+        !workspaceCanWriteRef.current ||
+        workspaceMutationBlockedRef.current
+      ) {
+        return;
+      }
       setSystemInstructions(prev => prev.filter(si => si.id !== id));
       if (currentSession && currentSession.config.systemInstructionId === id) {
           updateConfig({ ...currentSession.config, systemInstructionId: undefined });
@@ -808,7 +968,7 @@ function App() {
       forceImmediateSessionSaveRef.current = true;
     }
 
-    setSessions(prev => prev.map(s => {
+    updateSessionsState(prev => prev.map(s => {
       if (s.id !== sessionId) return s;
 
       return {
@@ -843,24 +1003,43 @@ function App() {
   };
 
   const startAssistantResponse = async ({
+    operation,
     targetSessionId,
     session,
     messagesForApi,
     requestId,
     assistantMessageId
   }: {
+    operation: OperationRecord;
     targetSessionId: string;
     session: Session;
     messagesForApi: Message[];
     requestId: string;
     assistantMessageId: string;
   }) => {
-    const controller = new AbortController();
+    const controller = operation.controller;
+    const currentSession = sessionsRef.current.find(item => item.id === targetSessionId);
+    if (
+      !isOperationCurrent(operation) ||
+      !currentSession?.messages.some(message => message.id === assistantMessageId)
+    ) {
+      operationRegistryRef.current.complete(operation);
+      removeProcessingSession(targetSessionId);
+      return;
+    }
+
     activeRequestsRef.current.set(targetSessionId, {
       controller,
+      operationId: operation.id,
       assistantMessageId,
       apiKey
     });
+    const matchesActiveRequest = (
+      request: ActiveChatRequest | undefined
+    ): request is ActiveChatRequest => (
+      request?.operationId === operation.id &&
+      request.assistantMessageId === assistantMessageId
+    );
 
     // Streamed deltas flush once per animation frame while visible and on a
     // short timer while hidden, where animation frames may be suspended.
@@ -871,7 +1050,7 @@ function App() {
     let deltaFlushHandle: number | null = null;
     let deltaFlushUsesTimeout = false;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
-    if (activeRequest?.assistantMessageId === assistantMessageId) {
+    if (matchesActiveRequest(activeRequest)) {
       activeRequest.getPartialContent = () => streamedContent + pendingDelta;
       activeRequest.getPartialThinking = () => streamedThinking + pendingThinkingDelta;
     }
@@ -914,7 +1093,7 @@ function App() {
       );
     };
 
-    if (activeRequest?.assistantMessageId === assistantMessageId) {
+    if (matchesActiveRequest(activeRequest)) {
       activeRequest.checkpointPartialContent = () => {
         checkpointPendingDeltas();
         return streamedContent;
@@ -935,7 +1114,12 @@ function App() {
         // Skip when the request was stopped meanwhile; the catch path
         // flushes the remainder before marking the message stopped.
         const flushRequest = activeRequestsRef.current.get(targetSessionId);
-        if (flushRequest?.assistantMessageId !== assistantMessageId) return;
+        if (
+          !matchesActiveRequest(flushRequest) ||
+          !isOperationCurrent(operation)
+        ) {
+          return;
+        }
 
         flushPendingDeltas();
       };
@@ -975,14 +1159,26 @@ function App() {
           onResponseCreated: (createdResponseId) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
-            if (activeRequest?.assistantMessageId === assistantMessageId) {
+            if (
+              matchesActiveRequest(activeRequest) &&
+              isOperationCurrent(operation)
+            ) {
               activeRequest.responseId = createdResponseId;
+            } else {
+              cancelResponse(createdResponseId, apiKey).catch(error => {
+                console.warn('Failed to cancel a stale OpenAI response:', error);
+              });
             }
           },
           onReasoningSummaryDelta: (delta) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
-            if (activeRequest?.assistantMessageId !== assistantMessageId) return;
+            if (
+              !matchesActiveRequest(activeRequest) ||
+              !isOperationCurrent(operation)
+            ) {
+              return;
+            }
 
             pendingThinkingDelta += delta;
             scheduleDeltaFlush();
@@ -990,7 +1186,12 @@ function App() {
           onTextDelta: (delta) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
-            if (activeRequest?.assistantMessageId !== assistantMessageId) return;
+            if (
+              !matchesActiveRequest(activeRequest) ||
+              !isOperationCurrent(operation)
+            ) {
+              return;
+            }
 
             pendingDelta += delta;
             scheduleDeltaFlush();
@@ -998,13 +1199,19 @@ function App() {
           resolveAttachmentContent: async attachment => {
             const handle = dirHandleRef.current;
             if (!handle) throw new Error('Workspace storage is unavailable.');
-            return getAttachmentDataUrl(handle, attachment);
+            const content = await getAttachmentDataUrl(handle, attachment);
+            if (!isOperationCurrent(operation)) throw createOperationAbortError();
+            return content;
           }
         }
       );
 
       const completedRequest = activeRequestsRef.current.get(targetSessionId);
-      if (completedRequest?.assistantMessageId !== assistantMessageId) {
+      if (
+        !matchesActiveRequest(completedRequest) ||
+        !isOperationCurrent(operation) ||
+        !sessionsRef.current.some(item => item.id === targetSessionId)
+      ) {
         cancelScheduledDeltaFlush();
         pendingDelta = '';
         pendingThinkingDelta = '';
@@ -1043,7 +1250,11 @@ function App() {
       );
     } catch (error) {
       const failedRequest = activeRequestsRef.current.get(targetSessionId);
-      if (failedRequest?.assistantMessageId !== assistantMessageId) {
+      if (
+        !matchesActiveRequest(failedRequest) ||
+        !isOperationCurrent(operation) ||
+        !sessionsRef.current.some(item => item.id === targetSessionId)
+      ) {
         cancelScheduledDeltaFlush();
         pendingDelta = '';
         pendingThinkingDelta = '';
@@ -1077,36 +1288,84 @@ function App() {
     } finally {
       const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
-      if (activeRequest?.assistantMessageId === assistantMessageId) {
+      if (matchesActiveRequest(activeRequest)) {
         activeRequestsRef.current.delete(targetSessionId);
         removeProcessingSession(targetSessionId);
       } else if (!activeRequest) {
         removeProcessingSession(targetSessionId);
       }
+      operationRegistryRef.current.complete(operation);
+    }
+  };
+
+  const runChatTitleGeneration = async (
+    operation: OperationRecord,
+    targetSessionId: string,
+    titlePrompt: string
+  ): Promise<void> => {
+    try {
+      const newTitle = await generateChatTitle(
+        titlePrompt,
+        apiKey,
+        { signal: operation.controller.signal }
+      );
+      if (!isOperationCurrent(operation)) return;
+
+      updateSessionsState(prev => prev.map(session => (
+        session.id === targetSessionId
+          ? { ...session, title: newTitle }
+          : session
+      )));
+    } catch (error) {
+      if (!isAbortError(error)) {
+        console.warn('Failed to apply generated chat title:', error);
+      }
+    } finally {
+      operationRegistryRef.current.complete(operation);
     }
   };
 
   const handleSendMessage = async (content: string, attachments: File[]) => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) return false;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !currentSessionIdRef.current
+    ) {
+      return false;
+    }
 
     // Capture the session ID to allow context switching while processing
-    const targetSessionId = currentSessionId;
+    const targetSessionId = currentSessionIdRef.current;
     if (processingSessionIdsRef.current.has(targetSessionId)) return false;
+    const initialSession = sessionsRef.current.find(s => s.id === targetSessionId);
+    if (!initialSession) return false;
+    const handle = dirHandleRef.current;
+    if (!handle) return false;
+
+    const requestId = uuidv4();
+    const userMessageId = uuidv4();
+    const assistantMessageId = uuidv4();
+    const requestTimestamp = Date.now();
+    const operation = operationRegistryRef.current.begin({
+      id: requestId,
+      kind: 'response',
+      sessionId: targetSessionId
+    });
     addProcessingSession(targetSessionId);
     let didStartResponse = false;
 
     try {
-      const session = sessionsRef.current.find(s => s.id === targetSessionId);
-      if (!session) throw new Error("Session lost");
-      const handle = dirHandleRef.current;
-      if (!handle) throw new Error('Workspace storage is unavailable.');
-
       const processedAttachments = await storeMessageAttachments(handle, attachments);
-
-      const requestId = uuidv4();
-      const userMessageId = uuidv4();
-      const assistantMessageId = uuidv4();
-      const requestTimestamp = Date.now();
+      if (!isOperationCurrent(operation)) {
+        processedAttachments.forEach(attachment => {
+          if (attachment.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(attachment.previewUrl);
+          }
+        });
+        throw createOperationAbortError();
+      }
+      const session = sessionsRef.current.find(s => s.id === targetSessionId);
+      if (!session) throw createOperationAbortError();
 
       const newUserMessage: Message = {
         id: userMessageId,
@@ -1125,21 +1384,9 @@ function App() {
         requestTimestamp
       );
 
-      // Trigger background title generation for new sessions
-      if (session.messages.length === 0) {
-        // Use the content or a placeholder if only attachments exist
-        const titlePrompt = content || (attachments.length > 0 ? `File analysis of ${attachments[0].name}` : "New Chat");
-        generateChatTitle(titlePrompt, apiKey).then(newTitle => {
-          if (!workspaceCanWriteRef.current) return;
-          setSessions(prev => prev.map(s => 
-            s.id === targetSessionId ? { ...s, title: newTitle } : s
-          ));
-        });
-      }
-
       // 1. Optimistically update UI with user message + pending request marker
       forceImmediateSessionSaveRef.current = true;
-      setSessions(prev => prev.map(s => {
+      updateSessionsState(prev => prev.map(s => {
         if (s.id === targetSessionId) {
           return {
             ...s,
@@ -1157,10 +1404,25 @@ function App() {
         return s;
       }));
 
+      if (session.messages.length === 0) {
+        const titlePrompt = content || (
+          attachments.length > 0
+            ? `File analysis of ${attachments[0].name}`
+            : 'New Chat'
+        );
+        const titleOperation = operationRegistryRef.current.begin({
+          id: uuidv4(),
+          kind: 'title',
+          sessionId: targetSessionId
+        });
+        void runChatTitleGeneration(titleOperation, targetSessionId, titlePrompt);
+      }
+
       // 2. Perform API Call Detached from current UI State
       const messagesForApi = [...session.messages, newUserMessage];
       didStartResponse = true;
       void startAssistantResponse({
+        operation,
         targetSessionId,
         session,
         messagesForApi,
@@ -1170,6 +1432,10 @@ function App() {
       return true;
 
     } catch (error) {
+      if (!isOperationCurrent(operation) || isAbortError(error)) {
+        return false;
+      }
+
       forceImmediateSessionSaveRef.current = true;
       const errorMessage: Message = {
         id: uuidv4(),
@@ -1178,7 +1444,7 @@ function App() {
         status: 'error',
         timestamp: Date.now()
       };
-       setSessions(prev => prev.map(s => {
+      updateSessionsState(prev => prev.map(s => {
         if (s.id === targetSessionId) {
           return {
             ...s,
@@ -1192,15 +1458,22 @@ function App() {
       return false;
     } finally {
       if (!didStartResponse) {
+        operationRegistryRef.current.complete(operation);
         removeProcessingSession(targetSessionId);
       }
     }
   };
 
   const restartAssistantResponse = async (assistantMessageIndex: number) => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !currentSessionIdRef.current
+    ) {
+      return;
+    }
 
-    const targetSessionId = currentSessionId;
+    const targetSessionId = currentSessionIdRef.current;
     if (processingSessionIdsRef.current.has(targetSessionId)) return;
 
     const session = sessionsRef.current.find(s => s.id === targetSessionId);
@@ -1233,11 +1506,16 @@ function App() {
       session,
       requestTimestamp
     );
+    const operation = operationRegistryRef.current.begin({
+      id: uuidv4(),
+      kind: 'response',
+      sessionId: targetSessionId
+    });
 
     addProcessingSession(targetSessionId);
     forceImmediateSessionSaveRef.current = true;
 
-    setSessions(prev => prev.map(s => {
+    updateSessionsState(prev => prev.map(s => {
       if (s.id !== targetSessionId) return s;
 
       return {
@@ -1254,6 +1532,7 @@ function App() {
     }));
 
     await startAssistantResponse({
+      operation,
       targetSessionId,
       session,
       messagesForApi,
@@ -1263,7 +1542,9 @@ function App() {
   };
 
   const handleRetryFailedMessage = async (assistantMessageId: string) => {
-    const session = sessionsRef.current.find(s => s.id === currentSessionId);
+    const session = sessionsRef.current.find(
+      s => s.id === currentSessionIdRef.current
+    );
     const assistantMessageIndex = session?.messages.findIndex(message => (
       message.id === assistantMessageId
     ));
@@ -1276,9 +1557,15 @@ function App() {
     userMessageId: string,
     attachmentIndex: number
   ) => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !currentSessionIdRef.current
+    ) {
+      return;
+    }
 
-    const targetSessionId = currentSessionId;
+    const targetSessionId = currentSessionIdRef.current;
     const session = sessionsRef.current.find(item => item.id === targetSessionId);
     const lastMessage = session?.messages[session.messages.length - 1];
     const userMessage = session?.messages[session.messages.length - 2];
@@ -1293,7 +1580,7 @@ function App() {
 
     const removedAttachment = userMessage.attachments?.[attachmentIndex];
     forceImmediateSessionSaveRef.current = true;
-    setSessions(prev => prev.map(item => {
+    updateSessionsState(prev => prev.map(item => {
       if (item.id !== targetSessionId) return item;
 
       return {
@@ -1321,11 +1608,15 @@ function App() {
     userMessageId: string,
     files: File[]
   ): Promise<string | undefined> => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) {
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !currentSessionIdRef.current
+    ) {
       return 'This workspace is read-only.';
     }
 
-    const targetSessionId = currentSessionId;
+    const targetSessionId = currentSessionIdRef.current;
     const session = sessionsRef.current.find(item => item.id === targetSessionId);
     const lastMessage = session?.messages[session.messages.length - 1];
     const userMessage = session?.messages[session.messages.length - 2];
@@ -1341,77 +1632,95 @@ function App() {
     try {
       const handle = dirHandleRef.current;
       if (!handle) throw new Error('Workspace storage is unavailable.');
+      const operation = operationRegistryRef.current.begin({
+        id: uuidv4(),
+        kind: 'attachment-replacement',
+        sessionId: targetSessionId
+      });
 
-      const replacementAttachments = await storeMessageAttachments(handle, files);
-      const currentTarget = sessionsRef.current.find(item => item.id === targetSessionId);
-      const currentLastMessage = currentTarget?.messages[currentTarget.messages.length - 1];
-      const currentUserMessage = currentTarget?.messages[currentTarget.messages.length - 2];
-      if (
-        currentLastMessage?.role !== 'assistant' ||
-        currentLastMessage.status !== 'error' ||
-        currentUserMessage?.role !== 'user' ||
-        currentUserMessage.id !== userMessageId
-      ) {
-        replacementAttachments.forEach(attachment => {
+      try {
+        const replacementAttachments = await storeMessageAttachments(handle, files);
+        const currentTarget = sessionsRef.current.find(item => item.id === targetSessionId);
+        const currentLastMessage = currentTarget?.messages[currentTarget.messages.length - 1];
+        const currentUserMessage = currentTarget?.messages[currentTarget.messages.length - 2];
+        if (
+          !isOperationCurrent(operation) ||
+          currentLastMessage?.role !== 'assistant' ||
+          currentLastMessage.status !== 'error' ||
+          currentUserMessage?.role !== 'user' ||
+          currentUserMessage.id !== userMessageId
+        ) {
+          replacementAttachments.forEach(attachment => {
+            if (attachment.previewUrl?.startsWith('blob:')) {
+              URL.revokeObjectURL(attachment.previewUrl);
+            }
+          });
+          return 'This failed turn is no longer available to edit.';
+        }
+
+        forceImmediateSessionSaveRef.current = true;
+        updateSessionsState(prev => prev.map(item => {
+          if (item.id !== targetSessionId) return item;
+
+          return {
+            ...item,
+            messages: item.messages.map(message => (
+              message.id === userMessageId
+                ? { ...message, attachments: replacementAttachments }
+                : message
+            )),
+            lastModified: Date.now()
+          };
+        }));
+        userMessage.attachments?.forEach(attachment => {
           if (attachment.previewUrl?.startsWith('blob:')) {
             URL.revokeObjectURL(attachment.previewUrl);
           }
         });
-        return 'This failed turn is no longer available to edit.';
+        return undefined;
+      } finally {
+        operationRegistryRef.current.complete(operation);
       }
-
-      forceImmediateSessionSaveRef.current = true;
-      setSessions(prev => prev.map(item => {
-        if (item.id !== targetSessionId) return item;
-
-        return {
-          ...item,
-          messages: item.messages.map(message => (
-            message.id === userMessageId
-              ? { ...message, attachments: replacementAttachments }
-              : message
-          )),
-          lastModified: Date.now()
-        };
-      }));
-      userMessage.attachments?.forEach(attachment => {
-        if (attachment.previewUrl?.startsWith('blob:')) {
-          URL.revokeObjectURL(attachment.previewUrl);
-        }
-      });
-      return undefined;
     } catch (error) {
       return getErrorMessage(error);
     }
   };
 
   const handleRegenerateLatestResponse = async () => {
-    const session = sessionsRef.current.find(s => s.id === currentSessionId);
+    const session = sessionsRef.current.find(
+      s => s.id === currentSessionIdRef.current
+    );
     await restartAssistantResponse((session?.messages.length ?? 0) - 1);
   };
 
   const handleStopGenerating = () => {
-    if (!workspaceCanWriteRef.current || !currentSessionId) return;
+    if (!workspaceCanWriteRef.current || !currentSessionIdRef.current) return;
 
-    const targetSessionId = currentSessionId;
+    const targetSessionId = currentSessionIdRef.current;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
-    if (!activeRequest) return;
+    const partialContent = activeRequest?.checkpointPartialContent?.() ||
+      activeRequest?.getPartialContent?.();
+    const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
+      activeRequest?.getPartialThinking?.();
+    const responseOperations = operationRegistryRef.current.getSessionOperations(
+      targetSessionId
+    ).filter(operation => operation.kind === 'response');
+    if (!activeRequest && responseOperations.length === 0) return;
 
-    if (activeRequest.responseId) {
-      cancelResponse(activeRequest.responseId, activeRequest.apiKey).catch(error => {
-        console.warn('Failed to cancel OpenAI response:', error);
-      });
-    }
-
-    activeRequest.controller.abort();
-    activeRequestsRef.current.delete(targetSessionId);
+    operationRegistryRef.current.abortWhere(operation => (
+      operation.sessionId === targetSessionId &&
+      operation.kind === 'response'
+    ));
+    cancelActiveRequest(targetSessionId, 'after the user stopped generation');
     removeProcessingSession(targetSessionId);
-    markAssistantStopped(
-      targetSessionId,
-      activeRequest.assistantMessageId,
-      activeRequest.checkpointPartialContent?.() || activeRequest.getPartialContent?.(),
-      activeRequest.checkpointPartialThinking?.() || activeRequest.getPartialThinking?.()
-    );
+    if (activeRequest) {
+      markAssistantStopped(
+        targetSessionId,
+        activeRequest.assistantMessageId,
+        partialContent,
+        partialThinking
+      );
+    }
   };
 
   useEffect(() => {
@@ -1425,6 +1734,7 @@ function App() {
 
       const activeRequests = new Map(activeRequestsRef.current);
       const now = Date.now();
+      operationRegistryRef.current.invalidateWorkspace();
 
       activeRequests.forEach(request => {
         if (request.responseId) {
@@ -1469,7 +1779,7 @@ function App() {
         sessionsRef.current = stoppedSessions;
         forceImmediateSessionSaveRef.current = false;
         skipNextSessionEffectSaveRef.current = true;
-        setSessions(stoppedSessions);
+        updateSessionsState(stoppedSessions);
         scheduleSave('sessions', true);
       }
 
@@ -1511,6 +1821,7 @@ function App() {
   };
 
   useEffect(() => () => {
+    operationRegistryRef.current.invalidateWorkspace();
     saveQueueRef.current?.dispose();
     workspaceCoordinatorRef.current?.dispose();
     unsubscribeBackendChangesRef.current?.();
@@ -1553,42 +1864,83 @@ function App() {
   };
 
   const handleImportData = async (file: File) => {
-    if (!workspaceCanWriteRef.current || !dirHandle) return;
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      !dirHandleRef.current
+    ) {
+      return;
+    }
+
+    const readOperation = operationRegistryRef.current.begin({
+      id: uuidv4(),
+      kind: 'import-read'
+    });
+
     try {
       if (file.size > MAX_WORKSPACE_BACKUP_BYTES) {
         throw new Error('Backup file exceeds the supported size limit.');
       }
       const text = await file.text();
+      if (!isOperationCurrent(readOperation, false)) {
+        throw createOperationAbortError();
+      }
       const backup = parseWorkspaceBackup(JSON.parse(text) as unknown);
-      
+
       // Confirm replacement
       if (!window.confirm("This will overwrite your current workspace with the backup data. Continue?")) return;
 
-      activeRequestsRef.current.forEach(request => {
-        if (request.responseId) {
-          cancelResponse(request.responseId, request.apiKey).catch(error => {
-            console.warn('Failed to cancel OpenAI response before import:', error);
-          });
-        }
-        request.controller.abort();
-      });
-      activeRequestsRef.current.clear();
-      processingSessionIdsRef.current.clear();
-      setProcessingSessionIds(new Set());
+      operationRegistryRef.current.complete(readOperation);
+      const importPromise = enqueueDestructiveOperation(async () => {
+        const operation = operationRegistryRef.current.begin({
+          id: uuidv4(),
+          kind: 'workspace-import'
+        });
+        const handle = dirHandleRef.current;
 
-      await flushPendingSaves();
-      await restoreWorkspaceBackup(dirHandle, backup);
-      workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
-      await loadWorkspaceData(dirHandle, 'writer');
+        try {
+          if (!handle || !workspaceCanWriteRef.current) {
+            throw createOperationAbortError();
+          }
+
+          await flushPendingSaves();
+          if (!isOperationCurrent(operation, false)) {
+            throw createOperationAbortError();
+          }
+
+          await restoreWorkspaceBackup(handle, backup);
+          if (!isOperationCurrent(operation, false)) {
+            throw createOperationAbortError();
+          }
+
+          workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
+          await loadWorkspaceData(
+            handle,
+            'writer',
+            () => isOperationCurrent(operation, false)
+          );
+          if (!isOperationCurrent(operation, false)) {
+            throw createOperationAbortError();
+          }
+        } finally {
+          operationRegistryRef.current.complete(operation);
+        }
+      });
+      invalidateWorkspaceOperations('before workspace import');
+      await importPromise;
       alert("Workspace restored successfully.");
     } catch (e) {
+      if (isAbortError(e)) return;
       console.error("Import failed", e);
       alert("Failed to import data. The file might be corrupted or invalid.");
+    } finally {
+      operationRegistryRef.current.complete(readOperation);
     }
   };
 
   // Determine if the CURRENT session is loading
   const isCurrentSessionProcessing = currentSessionId ? processingSessionIds.has(currentSessionId) : false;
+  const isWorkspaceInteractionReadOnly = isWorkspaceReadOnly || isWorkspaceMutating;
 
   if (isInitializing) {
     return (
@@ -1649,6 +2001,15 @@ function App() {
           </div>
         )}
 
+        {isWorkspaceMutating && (
+          <div
+            role="status"
+            className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-center text-xs font-medium text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
+          >
+            Updating workspace… editing and new requests are temporarily paused.
+          </div>
+        )}
+
         {saveFailure && (
           <div
             role="alert"
@@ -1666,7 +2027,7 @@ function App() {
             <button
               type="button"
               onClick={() => void retryPendingSaves()}
-              disabled={isRetryingSave || isWorkspaceReadOnly}
+              disabled={isRetryingSave || isWorkspaceInteractionReadOnly}
               className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-2.5 py-1.5 font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw size={13} className={isRetryingSave ? 'animate-spin' : ''} />
@@ -1706,21 +2067,31 @@ function App() {
             <Sidebar
               sessions={sessions}
               currentSessionId={currentSessionId}
-              onSelectSession={setCurrentSessionId}
+              onSelectSession={updateCurrentSessionId}
               onNewSession={createNewSession}
               onDeleteSession={deleteSession}
               isDarkMode={isDarkMode}
               toggleTheme={() => {
-                if (workspaceCanWriteRef.current) setIsDarkMode(!isDarkMode);
+                if (
+                  workspaceCanWriteRef.current &&
+                  !workspaceMutationBlockedRef.current
+                ) {
+                  setIsDarkMode(!isDarkMode);
+                }
               }}
               apiKey={apiKey}
               onApiKeyChange={key => {
-                if (workspaceCanWriteRef.current) setApiKey(key);
+                if (
+                  workspaceCanWriteRef.current &&
+                  !workspaceMutationBlockedRef.current
+                ) {
+                  setApiKey(key);
+                }
               }}
               onExportData={handleExportData}
               onImportData={handleImportData}
               processingSessionIds={processingSessionIds}
-              readOnly={isWorkspaceReadOnly}
+              readOnly={isWorkspaceInteractionReadOnly}
             />
           ) : (
             <>
@@ -1755,17 +2126,27 @@ function App() {
                     onDeleteSession={deleteSession}
                     isDarkMode={isDarkMode}
                     toggleTheme={() => {
-                      if (workspaceCanWriteRef.current) setIsDarkMode(!isDarkMode);
+                      if (
+                        workspaceCanWriteRef.current &&
+                        !workspaceMutationBlockedRef.current
+                      ) {
+                        setIsDarkMode(!isDarkMode);
+                      }
                     }}
                     apiKey={apiKey}
                     onApiKeyChange={key => {
-                      if (workspaceCanWriteRef.current) setApiKey(key);
+                      if (
+                        workspaceCanWriteRef.current &&
+                        !workspaceMutationBlockedRef.current
+                      ) {
+                        setApiKey(key);
+                      }
                     }}
                     onExportData={handleExportData}
                     onImportData={handleImportData}
                     processingSessionIds={processingSessionIds}
                     isMobile={true}
-                    readOnly={isWorkspaceReadOnly}
+                    readOnly={isWorkspaceInteractionReadOnly}
                   />
                 </div>
               </div>
@@ -1785,7 +2166,7 @@ function App() {
               apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
-              readOnly={isWorkspaceReadOnly}
+              readOnly={isWorkspaceInteractionReadOnly}
             />
 
             {/* ConfigPanel - Desktop: always visible when session selected, Mobile: modal */}
@@ -1797,7 +2178,7 @@ function App() {
                 onCreateSystemInstruction={handleCreateSystemInstruction}
                 onUpdateSystemInstruction={handleUpdateSystemInstruction}
                 onDeleteSystemInstruction={handleDeleteSystemInstruction}
-                readOnly={isWorkspaceReadOnly}
+                readOnly={isWorkspaceInteractionReadOnly}
               />
             )}
           </main>
@@ -1829,7 +2210,7 @@ function App() {
                   onUpdateSystemInstruction={handleUpdateSystemInstruction}
                   onDeleteSystemInstruction={handleDeleteSystemInstruction}
                   isMobile={true}
-                  readOnly={isWorkspaceReadOnly}
+                  readOnly={isWorkspaceInteractionReadOnly}
                 />
               </div>
             </div>

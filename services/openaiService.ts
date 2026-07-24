@@ -1429,7 +1429,8 @@ export const fetchGeneratedFileContent = async (
 
 export const generateChatTitle = async (
   content: string,
-  providedApiKey?: string
+  providedApiKey?: string,
+  options: { signal?: AbortSignal } = {}
 ): Promise<string> => {
   const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
   if (!apiKey) return 'New Chat';
@@ -1456,7 +1457,10 @@ export const generateChatTitle = async (
       store: true
     };
 
-    const response = await openai.responses.create(payload);
+    const response = await openai.responses.create(
+      payload,
+      options.signal ? { signal: options.signal } : undefined
+    );
 
     let title = '';
     const responseOutput = Array.isArray(response.output) ? response.output : undefined;
@@ -1474,6 +1478,9 @@ export const generateChatTitle = async (
 
     return title?.replace(/^"|"$/g, '').trim() || 'New Chat';
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
     console.warn('Failed to generate title:', error);
     return content.slice(0, 30) + (content.length > 30 ? '...' : '');
   }
