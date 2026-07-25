@@ -9,7 +9,11 @@ const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
   <ReactMarkdown components={markdownComponents}>{markdown}</ReactMarkdown>
 );
 
-const createSessionWithUsage = (model: ModelId, inputTokens?: number): Session => ({
+const createSessionWithUsage = (
+  model: ModelId,
+  inputTokens?: number,
+  outputTokens = 0
+): Session => ({
   id: `session-${model}`,
   title: 'Context window test',
   messages: inputTokens === undefined ? [] : [{
@@ -23,11 +27,11 @@ const createSessionWithUsage = (model: ModelId, inputTokens?: number): Session =
       input_tokens_details: {
         cached_tokens: 0
       },
-      output_tokens: 0,
+      output_tokens: outputTokens,
       output_tokens_details: {
         reasoning_tokens: 0
       },
-      total_tokens: inputTokens
+      total_tokens: inputTokens + outputTokens
     }
   }],
   config: {
@@ -38,20 +42,23 @@ const createSessionWithUsage = (model: ModelId, inputTokens?: number): Session =
 });
 
 describe('ChatArea context window usage', () => {
-  it('uses the selected model context window as the percentage denominator', () => {
+  it('uses total response tokens and the selected model context window', () => {
     const solHtml = renderToStaticMarkup(
-      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_6_SOL, 210_000)} />
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_6_SOL, 200_000, 10_000)} />
     );
     const miniHtml = renderToStaticMarkup(
-      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_MINI, 200_000)} />
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_MINI, 150_000, 50_000)} />
     );
     const o3Html = renderToStaticMarkup(
-      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_O3, 200_000)} />
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_O3, 150_000, 50_000)} />
     );
 
     expect(solHtml).toContain('20% used');
+    expect(solHtml).toContain('· 210K / 1.05M');
     expect(miniHtml).toContain('50% used');
+    expect(miniHtml).toContain('· 200K / 400K');
     expect(o3Html).toContain('100% used');
+    expect(o3Html).toContain('· 200K / 200K');
   });
 
   it('shows an empty context window before the first completed request', () => {
@@ -60,6 +67,8 @@ describe('ChatArea context window usage', () => {
     );
 
     expect(html).toContain('0% used');
+    expect(html).toContain('>Context</span>');
+    expect(html).toContain('· 0 / 400K');
     expect(html).toContain('GPT-5 Nano has a 400,000 token context window.');
   });
 });

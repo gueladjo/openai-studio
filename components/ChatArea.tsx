@@ -88,11 +88,21 @@ const formatDuration = (ms: number): string => {
 
 const formatTokenCount = (tokens: number): string => tokens.toLocaleString();
 
-const getLatestInputTokenUsage = (messages: Message[]): number => {
+const formatCompactTokenCount = (tokens: number): string => {
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(2))}M`;
+  }
+  if (tokens >= 1_000) {
+    return `${Number((tokens / 1_000).toFixed(1))}K`;
+  }
+  return formatTokenCount(tokens);
+};
+
+const getLatestContextTokenUsage = (messages: Message[]): number => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const inputTokens = messages[index].usage?.input_tokens;
-    if (typeof inputTokens === 'number' && Number.isFinite(inputTokens)) {
-      return Math.max(0, inputTokens);
+    const totalTokens = messages[index].usage?.total_tokens;
+    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+      return Math.max(0, totalTokens);
     }
   }
 
@@ -101,17 +111,18 @@ const getLatestInputTokenUsage = (messages: Message[]): number => {
 
 export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) => {
   const modelConfig = getModelConfig(session.config.model);
-  const inputTokens = getLatestInputTokenUsage(session.messages);
+  const contextTokens = getLatestContextTokenUsage(session.messages);
   const usedPercentage = Math.min(
     100,
-    (inputTokens / modelConfig.contextWindowTokens) * 100
+    (contextTokens / modelConfig.contextWindowTokens) * 100
   );
   const roundedPercentage = Math.round(usedPercentage);
-  const percentageLabel = inputTokens > 0 && usedPercentage < 1
+  const percentageLabel = contextTokens > 0 && usedPercentage < 1
     ? '<1%'
     : `${roundedPercentage}%`;
-  const description = inputTokens > 0
-    ? `${formatTokenCount(inputTokens)} of ${formatTokenCount(modelConfig.contextWindowTokens)} tokens used by the latest completed request with ${modelConfig.name}.`
+  const compactTokenUsage = `${formatCompactTokenCount(contextTokens)} / ${formatCompactTokenCount(modelConfig.contextWindowTokens)}`;
+  const description = contextTokens > 0
+    ? `${formatTokenCount(contextTokens)} of ${formatTokenCount(modelConfig.contextWindowTokens)} tokens used through the latest completed response with ${modelConfig.name}.`
     : `No completed request yet. ${modelConfig.name} has a ${formatTokenCount(modelConfig.contextWindowTokens)} token context window.`;
 
   return (
@@ -119,11 +130,11 @@ export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) 
       className="mt-2 flex items-center justify-end gap-2 px-1 text-[10px] text-gray-400 dark:text-gray-500"
       title={description}
     >
-      <span>Context window</span>
+      <span>Context</span>
       <div
         className="h-1 w-20 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
         role="progressbar"
-        aria-label="Context window usage"
+        aria-label="Context usage"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={roundedPercentage}
@@ -135,6 +146,7 @@ export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) 
         />
       </div>
       <span className="min-w-[44px] text-right tabular-nums">{percentageLabel} used</span>
+      <span className="tabular-nums">· {compactTokenUsage}</span>
     </div>
   );
 };
