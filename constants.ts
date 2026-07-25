@@ -27,6 +27,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_5_6_SOL,
     name: 'GPT-5.6 Sol',
     knowledgeCutoff: 'February 16, 2026',
+    contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
@@ -35,6 +36,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_5_6_TERRA,
     name: 'GPT-5.6 Terra',
     knowledgeCutoff: 'February 16, 2026',
+    contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
@@ -43,6 +45,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_5_5,
     name: 'GPT-5.5',
     knowledgeCutoff: 'December 1, 2025',
+    contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
@@ -51,6 +54,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_5_MINI,
     name: 'GPT-5 Mini',
     knowledgeCutoff: 'May 31, 2024',
+    contextWindowTokens: 400_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_MINI_NANO,
     defaultReasoningEffort: 'medium'
@@ -59,6 +63,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_5_NANO,
     name: 'GPT-5 Nano',
     knowledgeCutoff: 'May 31, 2024',
+    contextWindowTokens: 400_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_MINI_NANO,
     defaultReasoningEffort: 'medium'
@@ -67,6 +72,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     id: ModelId.GPT_O3,
     name: 'o3',
     knowledgeCutoff: 'June 1, 2024',
+    contextWindowTokens: 200_000,
     supportsVerbosity: false,
     reasoningOptions: REASONING_EFFORT_O3,
     defaultReasoningEffort: 'medium'

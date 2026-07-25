@@ -49,7 +49,17 @@ describe('model catalog', () => {
     expect(MODELS.map(model => model.id).sort()).toEqual([...modelIds].sort());
     MODELS.forEach(model => {
       expect(model.reasoningOptions).toContain(model.defaultReasoningEffort);
+      expect(model.contextWindowTokens).toBeGreaterThan(0);
     });
+  });
+
+  it('tracks the context window for each model', () => {
+    expect(MODEL_CONFIGS[ModelId.GPT_5_6_SOL].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_5_6_TERRA].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_5_5].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_5_MINI].contextWindowTokens).toBe(400_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_5_NANO].contextWindowTokens).toBe(400_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_O3].contextWindowTokens).toBe(200_000);
   });
 
   it('places automatic identity metadata before custom instructions', () => {

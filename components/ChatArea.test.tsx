@@ -2,12 +2,67 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, MessageRow } from './ChatArea';
-import { Message } from '../types';
+import { ContextWindowUsage, markdownComponents, MessageRow } from './ChatArea';
+import { DEFAULT_CONFIG, Message, ModelId, Session } from '../types';
 
 const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
   <ReactMarkdown components={markdownComponents}>{markdown}</ReactMarkdown>
 );
+
+const createSessionWithUsage = (model: ModelId, inputTokens?: number): Session => ({
+  id: `session-${model}`,
+  title: 'Context window test',
+  messages: inputTokens === undefined ? [] : [{
+    id: 'assistant-usage',
+    role: 'assistant',
+    content: 'Response',
+    status: 'complete',
+    timestamp: 1,
+    usage: {
+      input_tokens: inputTokens,
+      input_tokens_details: {
+        cached_tokens: 0
+      },
+      output_tokens: 0,
+      output_tokens_details: {
+        reasoning_tokens: 0
+      },
+      total_tokens: inputTokens
+    }
+  }],
+  config: {
+    ...DEFAULT_CONFIG,
+    model
+  },
+  lastModified: 1
+});
+
+describe('ChatArea context window usage', () => {
+  it('uses the selected model context window as the percentage denominator', () => {
+    const solHtml = renderToStaticMarkup(
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_6_SOL, 210_000)} />
+    );
+    const miniHtml = renderToStaticMarkup(
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_MINI, 200_000)} />
+    );
+    const o3Html = renderToStaticMarkup(
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_O3, 200_000)} />
+    );
+
+    expect(solHtml).toContain('20% used');
+    expect(miniHtml).toContain('50% used');
+    expect(o3Html).toContain('100% used');
+  });
+
+  it('shows an empty context window before the first completed request', () => {
+    const html = renderToStaticMarkup(
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_NANO)} />
+    );
+
+    expect(html).toContain('0% used');
+    expect(html).toContain('GPT-5 Nano has a 400,000 token context window.');
+  });
+});
 
 describe('ChatArea markdown code rendering', () => {
   it('renders inline code inside its paragraph without a block card', () => {

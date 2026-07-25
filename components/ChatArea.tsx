@@ -88,6 +88,57 @@ const formatDuration = (ms: number): string => {
 
 const formatTokenCount = (tokens: number): string => tokens.toLocaleString();
 
+const getLatestInputTokenUsage = (messages: Message[]): number => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const inputTokens = messages[index].usage?.input_tokens;
+    if (typeof inputTokens === 'number' && Number.isFinite(inputTokens)) {
+      return Math.max(0, inputTokens);
+    }
+  }
+
+  return 0;
+};
+
+export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) => {
+  const modelConfig = getModelConfig(session.config.model);
+  const inputTokens = getLatestInputTokenUsage(session.messages);
+  const usedPercentage = Math.min(
+    100,
+    (inputTokens / modelConfig.contextWindowTokens) * 100
+  );
+  const roundedPercentage = Math.round(usedPercentage);
+  const percentageLabel = inputTokens > 0 && usedPercentage < 1
+    ? '<1%'
+    : `${roundedPercentage}%`;
+  const description = inputTokens > 0
+    ? `${formatTokenCount(inputTokens)} of ${formatTokenCount(modelConfig.contextWindowTokens)} tokens used by the latest completed request with ${modelConfig.name}.`
+    : `No completed request yet. ${modelConfig.name} has a ${formatTokenCount(modelConfig.contextWindowTokens)} token context window.`;
+
+  return (
+    <div
+      className="mt-2 flex items-center justify-end gap-2 px-1 text-[10px] text-gray-400 dark:text-gray-500"
+      title={description}
+    >
+      <span>Context window</span>
+      <div
+        className="h-1 w-20 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
+        role="progressbar"
+        aria-label="Context window usage"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={roundedPercentage}
+        aria-valuetext={`${percentageLabel} used`}
+      >
+        <div
+          className="h-full rounded-full bg-blue-500 transition-[width] duration-300"
+          style={{ width: `${usedPercentage}%` }}
+        />
+      </div>
+      <span className="min-w-[44px] text-right tabular-nums">{percentageLabel} used</span>
+    </div>
+  );
+};
+
 const formatMessageTimestamp = (timestamp: number): string => {
   const date = new Date(timestamp);
   const now = new Date();
@@ -1414,9 +1465,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                )}
             </div>
           </div>
-          <div className="text-center mt-2 text-[10px] text-gray-400 dark:text-gray-600">
-              GPT-5 can make mistakes. Consider checking important information.
-          </div>
+          <ContextWindowUsage session={session} />
         </div>
       </div>
     </div>
