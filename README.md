@@ -181,7 +181,7 @@ Compatible Chromium browsers and Electron can opt into automatic backups by choo
 - verify a newly written archive before rotation and retain the three newest valid managed archives;
 - never delete unrelated files in the selected folder.
 
-Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Portable copy** (Share when available, download otherwise) and **Restore file**. Browser folder handles and scheduler history are device-local and excluded from archives.
+Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise) and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.
 
 The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 

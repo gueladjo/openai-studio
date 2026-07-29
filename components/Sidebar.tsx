@@ -226,16 +226,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <Database size={12} />
                         <span>Data Management</span>
                     </label>
-                    <p className="text-[10px] leading-4 text-amber-700 dark:text-amber-300">
-                      Backups are unencrypted and can contain sensitive prompts, responses, attachments, and cached generated files.
-                    </p>
                     <div className="grid grid-cols-2 gap-2">
                         <button 
                             onClick={onExportData}
                             className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
                         >
                             <Download size={12} />
-                            Portable copy
+                            Backup
                         </button>
                         <button 
                             onClick={() => fileInputRef.current?.click()}
@@ -243,7 +240,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <Upload size={12} />
-                            Restore file
+                            Restore
                         </button>
                         <input 
                             type="file" 
@@ -365,7 +362,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </div>
                     ) : (
                       <p className="text-[10px] leading-4 text-gray-500">
-                        Automatic folders are unavailable in this browser. Use Portable copy and Restore file.
+                        Automatic folders are unavailable in this browser. Use Backup and Restore.
                       </p>
                     )}
                 </div>
