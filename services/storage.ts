@@ -1,4 +1,9 @@
-import { FileAttachment, Session, SystemInstruction } from '../types';
+import {
+  FileAttachment,
+  LocalBlobReference,
+  Session,
+  SystemInstruction
+} from '../types';
 import {
   getAttachmentMimeType,
   getDataUrlByteLength,
@@ -11,7 +16,6 @@ import {
   StorageBackendChoiceRequest,
   StorageBackendSnapshot
 } from './storageBackend';
-import { commitAtomicWorkspaceSnapshot } from './atomicWorkspaceSnapshot';
 import {
   AppSettings,
   BackupSettings,
@@ -20,12 +24,19 @@ import {
   WorkspaceBackup,
   parseAppSettings,
   parseJsonText,
-  parseJsonTextWithBackup,
   parseStoredSessions,
   parseSystemInstructions,
   parseWorkspaceBackup,
   validateWorkspaceReferences
 } from './workspaceSchema';
+import {
+  ValidWorkspaceGeneration,
+  WorkspaceGenerationData,
+  WorkspaceGenerationStore
+} from './workspaceGenerationStore';
+import {
+  WORKSPACE_MANIFEST_SLOTS
+} from './workspaceGeneration';
 
 export type {
   StorageBackend,
@@ -55,6 +66,7 @@ export const STORAGE_FILES = {
 let storageBackend: StorageBackend | null = null;
 let idbDatabase: IDBDatabase | null = null;
 let workspaceRevision: number | null = null;
+let workspaceGenerationCache: ValidWorkspaceGeneration | null = null;
 
 const IDB_NAME = 'openai-studio-storage';
 const IDB_STORE = 'files';
@@ -64,9 +76,6 @@ const BACKEND_IDENTITY_VERSION = 1;
 const BACKUP_SUFFIX = '.bak';
 const ATTACHMENTS_DIRECTORY = 'attachments';
 const ATTACHMENT_KEY_PREFIX = `${ATTACHMENTS_DIRECTORY}/`;
-const ATTACHMENT_GC_GRACE_MS = 5 * 60 * 1000;
-const ATTACHMENT_GC_INTERVAL_MS = 60 * 1000;
-let lastAttachmentGcAt = 0;
 
 interface StoredFileRecord {
   filename: string;
@@ -166,23 +175,6 @@ const parseStoredJson = <T>(filename: string, text: string): T => {
   } catch {
     throw new Error(`Stored file ${filename} is not valid JSON.`);
   }
-};
-
-const parseStoredJsonWithBackup = async <T>(
-  filename: string,
-  text: string,
-  readBackupText: () => Promise<string | null>,
-  parseValue: (value: unknown) => T
-): Promise<T> => {
-  return parseJsonTextWithBackup({
-    filename,
-    primaryText: text,
-    readBackupText,
-    parseValue,
-    onFallback: backupFilename => {
-      console.warn(`Failed to validate ${filename}; loaded ${backupFilename} instead.`);
-    }
-  });
 };
 
 const createOpfsProbeName = (): string => {
@@ -392,9 +384,181 @@ const writeOpfsTextFile = async (
 ): Promise<void> => {
   const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
   const writable = await (fileHandle as any).createWritable();
-  await writable.write(text);
-  await writable.close();
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (error) {
+    if (typeof writable.abort === 'function') {
+      try {
+        await writable.abort();
+      } catch {
+        // Preserve the write failure.
+      }
+    }
+    throw error;
+  }
 };
+
+const splitStoragePath = (path: string): string[] => {
+  const segments = path.split('/');
+  if (
+    segments.length === 0 ||
+    segments.some(segment => (
+      !segment ||
+      segment === '.' ||
+      segment === '..' ||
+      segment.includes('\\')
+    ))
+  ) {
+    throw new Error(`Storage path ${path} is invalid.`);
+  }
+  return segments;
+};
+
+const resolveOpfsParent = async (
+  root: FileSystemDirectoryHandle,
+  path: string,
+  create: boolean
+): Promise<{ directory: FileSystemDirectoryHandle; filename: string } | null> => {
+  const segments = splitStoragePath(path);
+  const filename = segments.pop()!;
+  let directory = root;
+
+  try {
+    for (const segment of segments) {
+      directory = await directory.getDirectoryHandle(segment, { create });
+    }
+  } catch (error) {
+    if (!create && isNotFoundError(error)) return null;
+    throw error;
+  }
+  return { directory, filename };
+};
+
+const readOpfsBlobPath = async (
+  root: FileSystemDirectoryHandle,
+  path: string
+): Promise<Blob | null> => {
+  const parent = await resolveOpfsParent(root, path, false);
+  if (!parent) return null;
+  try {
+    const handle = await parent.directory.getFileHandle(parent.filename);
+    return await handle.getFile();
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+};
+
+const writeOpfsBlobPath = async (
+  root: FileSystemDirectoryHandle,
+  path: string,
+  data: Blob | string
+): Promise<void> => {
+  const parent = await resolveOpfsParent(root, path, true);
+  if (!parent) throw new Error(`Storage path ${path} could not be created.`);
+  const handle = await parent.directory.getFileHandle(parent.filename, { create: true });
+  const writable = await (handle as any).createWritable();
+  try {
+    await writable.write(data);
+    await writable.close();
+  } catch (error) {
+    if (typeof writable.abort === 'function') {
+      try {
+        await writable.abort();
+      } catch {
+        // Preserve the write failure.
+      }
+    }
+    throw error;
+  }
+};
+
+const deleteOpfsPath = async (
+  root: FileSystemDirectoryHandle,
+  path: string
+): Promise<void> => {
+  const parent = await resolveOpfsParent(root, path, false);
+  if (!parent) return;
+  try {
+    await parent.directory.removeEntry(parent.filename);
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+  }
+};
+
+const listOpfsPaths = async (
+  root: FileSystemDirectoryHandle,
+  prefix: string
+): Promise<string[]> => {
+  const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  const segments = splitStoragePath(normalizedPrefix.slice(0, -1));
+  let directory = root;
+  try {
+    for (const segment of segments) {
+      directory = await directory.getDirectoryHandle(segment);
+    }
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+
+  const paths: string[] = [];
+  for await (const [name, entry] of (directory as any).entries()) {
+    if (entry.kind === 'file') paths.push(`${normalizedPrefix}${name}`);
+  }
+  return paths.sort();
+};
+
+const createWorkspaceGenerationStore = (
+  dirHandle: FileSystemDirectoryHandle
+): WorkspaceGenerationStore => new WorkspaceGenerationStore({
+  readText: async path => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') return idbReadRawFile(path);
+    const blob = await readOpfsBlobPath(dirHandle, path);
+    return blob ? blob.text() : null;
+  },
+  writeText: async (path, text) => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') {
+      await idbWriteRawFile(path, text);
+    } else {
+      await writeOpfsBlobPath(dirHandle, path, text);
+    }
+  },
+  readBlob: async path => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') {
+      const record = await idbReadRawData(path);
+      return record?.data instanceof Blob ? record.data : null;
+    }
+    return readOpfsBlobPath(dirHandle, path);
+  },
+  writeBlob: async (path, blob) => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') {
+      await idbWriteRawData(path, blob);
+    } else {
+      await writeOpfsBlobPath(dirHandle, path, blob);
+    }
+  },
+  delete: async path => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') {
+      await idbDeleteRawFile(path);
+    } else {
+      await deleteOpfsPath(dirHandle, path);
+    }
+  },
+  list: async prefix => {
+    const backend = await getStorageBackend();
+    if (backend === 'indexeddb') {
+      return (await idbListRawFiles(prefix)).map(record => record.filename);
+    }
+    return listOpfsPaths(dirHandle, prefix);
+  }
+});
 
 const readBackendIdentity = (value: string | null): StorageBackendIdentity | null => {
   if (!value) return null;
@@ -525,6 +689,27 @@ const backendRecordsMatch = async (
 };
 
 const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
+  const generationRevisions = WORKSPACE_MANIFEST_SLOTS.flatMap(slot => {
+    const record = records.find(candidate => candidate.filename === slot);
+    if (!record || typeof record.data !== 'string') return [];
+    try {
+      const value = JSON.parse(record.data) as {
+        schemaVersion?: unknown;
+        revision?: unknown;
+      };
+      return value.schemaVersion === 2 &&
+        Number.isSafeInteger(value.revision) &&
+        (value.revision as number) >= 0
+        ? [value.revision as number]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  if (generationRevisions.length > 0) {
+    return Math.max(...generationRevisions);
+  }
+
   const manifestRecord = records.find(record => record.filename === STORAGE_FILES.MANIFEST);
   if (manifestRecord && typeof manifestRecord.data === 'string') {
     try {
@@ -651,22 +836,27 @@ const inspectOpfsBackend = async (supported: boolean): Promise<BackendInspection
       continue;
     }
 
-    if (entry.kind !== 'directory' || name !== ATTACHMENTS_DIRECTORY) {
+    if (
+      entry.kind !== 'directory' ||
+      ![ATTACHMENTS_DIRECTORY, 'objects', 'blobs', 'recovery'].includes(name)
+    ) {
       extraDescriptors.push(`${entry.kind}:${name}`);
       continue;
     }
 
-    for await (const [attachmentName, attachmentEntry] of entry.entries()) {
-      if (attachmentEntry.kind !== 'file') {
+    for await (const [childName, childEntry] of entry.entries()) {
+      if (childEntry.kind !== 'file') {
         extraDescriptors.push(
-          `attachments/${attachmentEntry.kind}:${attachmentName}`
+          `${name}/${childEntry.kind}:${childName}`
         );
         continue;
       }
 
       records.push({
-        filename: `${ATTACHMENT_KEY_PREFIX}${attachmentName}`,
-        data: await attachmentEntry.getFile()
+        filename: `${name}/${childName}`,
+        data: name === 'objects'
+          ? await (await childEntry.getFile()).text()
+          : await childEntry.getFile()
       });
     }
   }
@@ -683,38 +873,16 @@ const rollbackOpfsMigration = async (
   dataDir: FileSystemDirectoryHandle,
   writtenRecords: BackendRecord[]
 ): Promise<void> => {
-  const attachmentNames = writtenRecords
-    .filter(record => record.filename.startsWith(ATTACHMENT_KEY_PREFIX))
-    .map(record => record.filename.slice(ATTACHMENT_KEY_PREFIX.length));
-  const topLevelNames = writtenRecords
-    .filter(record => !record.filename.startsWith(ATTACHMENT_KEY_PREFIX))
-    .map(record => record.filename);
-
-  for (const filename of topLevelNames) {
-    try {
-      await dataDir.removeEntry(filename);
-    } catch (error) {
-      if (!isNotFoundError(error)) throw error;
-    }
+  for (const record of [...writtenRecords].reverse()) {
+    await deleteOpfsPath(dataDir, record.filename);
   }
-
-  if (attachmentNames.length === 0) return;
-  const attachmentsDir = await getOpfsAttachmentsDirectory(dataDir, false);
-  if (!attachmentsDir) return;
-
-  for (const filename of attachmentNames) {
+  for (const directory of [ATTACHMENTS_DIRECTORY, 'objects', 'blobs', 'recovery']) {
     try {
-      await attachmentsDir.removeEntry(filename);
+      await dataDir.removeEntry(directory);
     } catch (error) {
-      if (!isNotFoundError(error)) throw error;
-    }
-  }
-
-  try {
-    await dataDir.removeEntry(ATTACHMENTS_DIRECTORY);
-  } catch (error) {
-    if (!isNotFoundError(error)) {
-      console.warn('Failed to remove the empty migration attachment directory.', error);
+      if (!isNotFoundError(error)) {
+        console.warn(`Failed to remove empty migration directory ${directory}.`, error);
+      }
     }
   }
 };
@@ -737,21 +905,28 @@ const copyIndexedDbWorkspaceToOpfs = async (
       // removes a partial file when the write itself fails.
       writtenRecords.push(record);
 
-      if (record.filename.startsWith(ATTACHMENT_KEY_PREFIX)) {
-        const attachmentName = record.filename.slice(ATTACHMENT_KEY_PREFIX.length);
-        if (!isValidAttachmentId(attachmentName) || !(record.data instanceof Blob)) {
-          throw new Error(`IndexedDB attachment record ${record.filename} is invalid.`);
+      if (record.filename.includes('/')) {
+        const [directory, child, ...extra] = record.filename.split('/');
+        const isAllowedDirectory = [
+          ATTACHMENTS_DIRECTORY,
+          'objects',
+          'blobs',
+          'recovery'
+        ].includes(directory);
+        const expectsText = directory === 'objects';
+        if (
+          !isAllowedDirectory ||
+          !child ||
+          extra.length > 0 ||
+          (expectsText
+            ? typeof record.data !== 'string'
+            : !(record.data instanceof Blob))
+        ) {
+          throw new Error(`IndexedDB nested record ${record.filename} is invalid.`);
         }
-
-        const attachmentsDir = await getOpfsAttachmentsDirectory(dataDir, true);
-        if (!attachmentsDir) throw new Error('OPFS attachment directory is unavailable.');
-        const fileHandle = await attachmentsDir.getFileHandle(attachmentName, { create: true });
-        const writable = await (fileHandle as any).createWritable();
-        await writable.write(record.data);
-        await writable.close();
+        await writeOpfsBlobPath(dataDir, record.filename, record.data);
       } else {
         if (
-          record.filename.includes('/') ||
           typeof record.data !== 'string'
         ) {
           throw new Error(`IndexedDB file record ${record.filename} is invalid.`);
@@ -877,6 +1052,7 @@ async function initializeStorageBackend(
 
   storageBackend = selectedBackend;
   workspaceRevision = null;
+  workspaceGenerationCache = null;
 
   if (selectedBackend === 'opfs') {
     const root = opfs.opfsRoot || await navigator.storage.getDirectory();
@@ -887,11 +1063,6 @@ async function initializeStorageBackend(
   console.log(`Using ${selectedBackend === 'opfs' ? 'OPFS' : 'IndexedDB'} storage backend`);
   return selectedBackend;
 }
-
-const getWorkspaceDataPhysicalFilename = (
-  key: WorkspaceDataKey,
-  id: string
-): string => `${SNAPSHOT_FILE_PREFIX}${id}_${DEFAULT_WORKSPACE_FILES[key]}`;
 
 const isWorkspaceDataPhysicalFilename = (
   key: WorkspaceDataKey,
@@ -1005,23 +1176,6 @@ const writeBackendTextFile = async (
   }
 };
 
-const deleteBackendFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string
-): Promise<void> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbDeleteRawFile(filename);
-    return;
-  }
-
-  try {
-    await dirHandle.removeEntry(filename);
-  } catch (error) {
-    if (!isNotFoundError(error)) throw error;
-  }
-};
-
 const readOptionalWorkspaceManifest = async (
   dirHandle: FileSystemDirectoryHandle,
   filename: string
@@ -1077,47 +1231,12 @@ const readWorkspaceManifestState = async (
   };
 };
 
-const writePersistedWorkspaceManifest = async (
-  dirHandle: FileSystemDirectoryHandle,
-  manifest: WorkspaceManifest
-): Promise<void> => {
-  const nextText = JSON.stringify(manifest, null, 2);
-  const previousText = await readBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST);
-
-  if (previousText && previousText !== nextText) {
-    try {
-      parseWorkspaceManifestText(STORAGE_FILES.MANIFEST, previousText);
-      await writeBackendTextFile(
-        dirHandle,
-        getBackupFilename(STORAGE_FILES.MANIFEST),
-        previousText
-      );
-    } catch (error) {
-      console.warn('Did not preserve an invalid workspace manifest as backup.', error);
-    }
-  } else if (previousText === null) {
-    const legacyRevisionText = await readBackendTextFile(
-      dirHandle,
-      STORAGE_FILES.REVISION
-    );
-    const legacyManifest = createLegacyWorkspaceManifest(
-      parseLegacyWorkspaceRevision(legacyRevisionText)
-    );
-    await writeBackendTextFile(
-      dirHandle,
-      getBackupFilename(STORAGE_FILES.MANIFEST),
-      JSON.stringify(legacyManifest, null, 2)
-    );
-  }
-
-  await writeBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST, nextText);
-};
-
 const readPersistedWorkspaceRevision = async (
   dirHandle: FileSystemDirectoryHandle
-): Promise<number> => (
-  (await readWorkspaceManifestState(dirHandle)).active.revision
-);
+): Promise<number> => {
+  const generation = await ensureWorkspaceGeneration(dirHandle, true);
+  return generation.manifest.revision;
+};
 
 export const synchronizeWorkspaceRevision = async (
   dirHandle: FileSystemDirectoryHandle
@@ -1149,37 +1268,7 @@ const isValidAttachmentId = (id: unknown): id is string => (
   typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)
 );
 
-const createAttachmentId = (): string => {
-  const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
-  if (cryptoWithUuid.randomUUID) return cryptoWithUuid.randomUUID();
-
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-};
-
 const getAttachmentStorageKey = (id: string): string => `${ATTACHMENT_KEY_PREFIX}${id}`;
-
-const writeAttachmentBlob = async (
-  dirHandle: FileSystemDirectoryHandle,
-  id: string,
-  blob: Blob
-): Promise<void> => {
-  if (!isValidAttachmentId(id)) throw new Error('Attachment ID is invalid.');
-
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbWriteRawData(getAttachmentStorageKey(id), blob);
-    return;
-  }
-
-  const attachmentsDir = await getOpfsAttachmentsDirectory(dirHandle, true);
-  if (!attachmentsDir) throw new Error('Attachment directory is unavailable.');
-
-  const fileHandle = await attachmentsDir.getFileHandle(id, { create: true });
-  const writable = await (fileHandle as any).createWritable();
-  await writable.write(blob);
-  await writable.close();
-};
 
 const readAttachmentBlob = async (
   dirHandle: FileSystemDirectoryHandle,
@@ -1202,27 +1291,6 @@ const readAttachmentBlob = async (
   } catch (error) {
     if (isNotFoundError(error)) return null;
     throw error;
-  }
-};
-
-const deleteAttachmentBlob = async (
-  dirHandle: FileSystemDirectoryHandle,
-  id: string
-): Promise<void> => {
-  if (!isValidAttachmentId(id)) return;
-
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbDeleteRawFile(getAttachmentStorageKey(id));
-    return;
-  }
-
-  const attachmentsDir = await getOpfsAttachmentsDirectory(dirHandle, false);
-  if (!attachmentsDir) return;
-  try {
-    await attachmentsDir.removeEntry(id);
-  } catch (error) {
-    if (!isNotFoundError(error)) throw error;
   }
 };
 
@@ -1249,6 +1317,207 @@ const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, rej
 const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
   type && blob.type !== type ? blob.slice(0, blob.size, type) : blob
 );
+
+const readLegacyWorkspaceData = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<{ revision: number; data: WorkspaceGenerationData }> => {
+  const state = await readWorkspaceManifestState(dirHandle);
+  const candidates = [
+    state.active,
+    ...(state.backup ? [state.backup] : [])
+  ];
+  let firstError: unknown = null;
+
+  for (const manifest of candidates) {
+    try {
+      const sessionText = await readBackendTextFile(
+        dirHandle,
+        manifest.files.sessions
+      );
+      const settingsText = await readBackendTextFile(
+        dirHandle,
+        manifest.files.settings
+      );
+      const instructionsText = await readBackendTextFile(
+        dirHandle,
+        manifest.files.instructions
+      );
+      const sessions = sessionText === null
+        ? []
+        : parseJsonText(manifest.files.sessions, sessionText, parseStoredSessions);
+      const settings = settingsText === null
+        ? { theme: 'dark' as const, apiKey: '' }
+        : parseJsonText(
+            manifest.files.settings,
+            settingsText,
+            value => parseAppSettings(value) as AppSettings
+          );
+      const instructions = instructionsText === null
+        ? []
+        : parseJsonText(
+            manifest.files.instructions,
+            instructionsText,
+            parseSystemInstructions
+          );
+      validateWorkspaceReferences(
+        { sessions, settings, instructions },
+        { allowDanglingSelections: true }
+      );
+      return {
+        revision: manifest.revision,
+        data: { sessions, settings, instructions }
+      };
+    } catch (error) {
+      firstError ||= error;
+    }
+  }
+
+  const backupFiles = {
+    sessions: getBackupFilename(state.active.files.sessions),
+    settings: getBackupFilename(state.active.files.settings),
+    instructions: getBackupFilename(state.active.files.instructions)
+  };
+  try {
+    const [sessionText, settingsText, instructionsText] = await Promise.all([
+      readBackendTextFile(dirHandle, backupFiles.sessions),
+      readBackendTextFile(dirHandle, backupFiles.settings),
+      readBackendTextFile(dirHandle, backupFiles.instructions)
+    ]);
+    if (sessionText === null || settingsText === null || instructionsText === null) {
+      throw firstError || new Error('The legacy workspace is incomplete.');
+    }
+    const sessions = parseJsonText(
+      backupFiles.sessions,
+      sessionText,
+      parseStoredSessions
+    );
+    const settings = parseJsonText(
+      backupFiles.settings,
+      settingsText,
+      value => parseAppSettings(value) as AppSettings
+    );
+    const instructions = parseJsonText(
+      backupFiles.instructions,
+      instructionsText,
+      parseSystemInstructions
+    );
+    validateWorkspaceReferences(
+      { sessions, settings, instructions },
+      { allowDanglingSelections: true }
+    );
+    return {
+      revision: Math.max(0, state.active.revision - 1),
+      data: { sessions, settings, instructions }
+    };
+  } catch {
+    throw firstError || new Error('The legacy workspace could not be validated.');
+  }
+};
+
+const migrateSessionsToContentBlobs = async (
+  dirHandle: FileSystemDirectoryHandle,
+  sessions: Session[],
+  strict: boolean
+): Promise<Session[]> => {
+  const store = createWorkspaceGenerationStore(dirHandle);
+
+  return mapSessionAttachments(sessions, async attachment => {
+    const name = typeof attachment.name === 'string' ? attachment.name : 'Attachment';
+    const type = typeof attachment.type === 'string'
+      ? attachment.type
+      : 'application/octet-stream';
+    let blob: Blob | null = null;
+
+    try {
+      if (attachment.localBlob) {
+        blob = await store.readBlob(attachment.localBlob);
+      } else if (attachment.content) {
+        blob = await dataUrlToBlob(attachment.content);
+      } else if (
+        typeof attachment.id === 'string' &&
+        /^[a-f0-9]{64}$/.test(attachment.id) &&
+        Number.isSafeInteger(attachment.size) &&
+        (attachment.size as number) >= 0
+      ) {
+        blob = await store.readBlob({
+          sha256: attachment.id,
+          byteSize: attachment.size as number,
+          ...(type ? { mimeType: type } : {})
+        });
+      } else if (isValidAttachmentId(attachment.id)) {
+        blob = await readAttachmentBlob(dirHandle, attachment.id);
+      }
+      if (!blob) {
+        throw new Error(`Attachment "${name}" is missing from local storage.`);
+      }
+      validateAttachments([{
+        name,
+        type: type || blob.type,
+        size: blob.size
+      }]);
+      const localBlob = await store.storeBlob(blob, type || blob.type);
+      return {
+        name,
+        type: type || blob.type || 'application/octet-stream',
+        size: blob.size,
+        localBlob
+      };
+    } catch (error) {
+      if (strict) throw error;
+      console.warn(`Failed to migrate attachment ${name}.`, error);
+      return {
+        name,
+        type,
+        ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+        ...(attachment.localBlob ? { localBlob: attachment.localBlob } : {}),
+        ...(attachment.content ? { content: attachment.content } : {}),
+        ...(attachment.id ? { id: attachment.id } : {})
+      };
+    }
+  });
+};
+
+const ensureWorkspaceGeneration = async (
+  dirHandle: FileSystemDirectoryHandle,
+  refresh = false
+): Promise<ValidWorkspaceGeneration> => {
+  if (!refresh && workspaceGenerationCache) return workspaceGenerationCache;
+  if (refresh) workspaceGenerationCache = null;
+  const store = createWorkspaceGenerationStore(dirHandle);
+  const current = await store.readCurrent();
+  if (current) {
+    workspaceGenerationCache = current;
+    return current;
+  }
+  if (await store.hasManifestRecords()) {
+    throw new Error(
+      'No complete local workspace generation could be validated. The active workspace was not changed.'
+    );
+  }
+
+  const legacy = await readLegacyWorkspaceData(dirHandle);
+  const sessions = await migrateSessionsToContentBlobs(
+    dirHandle,
+    legacy.data.sessions,
+    true
+  );
+  const data = {
+    ...legacy.data,
+    sessions
+  };
+  const migrated = await store.commit(null, data, {
+    revision: legacy.revision,
+    createdAt: Date.now()
+  });
+  const verified = await store.readCurrent();
+  if (!verified || verified.manifest.revision !== migrated.manifest.revision) {
+    throw new Error(
+      'The migrated workspace generation could not be read back. Legacy data was retained.'
+    );
+  }
+  workspaceGenerationCache = verified;
+  return verified;
+};
 
 // File Operations - automatically uses correct backend
 type WorkspaceDataValue = Session[] | AppSettings | SystemInstruction[];
@@ -1281,72 +1550,62 @@ export const writeJsonFile = async (
 
   const key = getWorkspaceDataKey(filename);
   const parseValue = getWorkspaceDataParser(filename);
-  parseValue(data);
-
-  const manifestState = await readWorkspaceManifestState(dirHandle);
-  if (manifestState.active.revision !== workspaceRevision) {
+  const parsedData = parseValue(data);
+  const current = await ensureWorkspaceGeneration(dirHandle, true);
+  if (current.manifest.revision !== workspaceRevision) {
     throw new WorkspaceRevisionConflictError(
       workspaceRevision,
-      manifestState.active.revision
+      current.manifest.revision
     );
   }
 
-  const physicalFilename = manifestState.active.files[key];
-  const nextText = JSON.stringify(data, null, 2);
-
-  try {
-    const previousText = await readBackendTextFile(dirHandle, physicalFilename);
-    if (previousText && previousText !== nextText) {
-      try {
-        parseJsonText(physicalFilename, previousText, parseValue);
-        await writeBackendTextFile(
+  const nextData: WorkspaceGenerationData = {
+    sessions: key === 'sessions'
+      ? await migrateSessionsToContentBlobs(
           dirHandle,
-          getBackupFilename(physicalFilename),
-          previousText
-        );
-      } catch (error) {
-        console.warn(
-          `Did not preserve invalid ${physicalFilename} as a backup.`,
-          error
-        );
-      }
-    }
-
-    await writeBackendTextFile(dirHandle, physicalFilename, nextText);
-  } catch (error) {
-    console.error(`Failed to write ${filename}`, error);
-    throw error;
+          parsedData as Session[],
+          true
+        )
+      : current.sessions,
+    settings: key === 'settings'
+      ? parsedData as AppSettings
+      : current.settings,
+    instructions: key === 'instructions'
+      ? parsedData as SystemInstruction[]
+      : current.instructions
+  };
+  if (
+    nextData.settings.lastActiveSessionId &&
+    !nextData.sessions.some(session => (
+      session.id === nextData.settings.lastActiveSessionId
+    ))
+  ) {
+    nextData.settings = {
+      ...nextData.settings,
+      lastActiveSessionId: nextData.sessions[0]?.id
+    };
   }
+  const instructionIds = new Set(nextData.instructions.map(item => item.id));
+  nextData.sessions = nextData.sessions.map(session => (
+    session.config.systemInstructionId &&
+    !instructionIds.has(session.config.systemInstructionId)
+      ? {
+          ...session,
+          config: {
+            ...session.config,
+            systemInstructionId: undefined
+          }
+        }
+      : session
+  ));
 
-  const nextRevision = manifestState.active.revision + 1;
-  await writePersistedWorkspaceManifest(dirHandle, {
-    ...manifestState.active,
-    revision: nextRevision
-  });
-  workspaceRevision = nextRevision;
-  return nextRevision;
-};
-
-const readWorkspaceDataFile = async <T>(
-  dirHandle: FileSystemDirectoryHandle,
-  logicalFilename: WorkspaceDataFilename,
-  physicalFilename: string,
-  parseValue: (value: unknown) => T
-): Promise<T | null> => {
-  const text = await readBackendTextFile(dirHandle, physicalFilename);
-  if (text === null) {
-    if (physicalFilename !== logicalFilename) {
-      throw new Error(`Workspace snapshot file ${physicalFilename} is missing.`);
-    }
-    return null;
-  }
-
-  return parseStoredJsonWithBackup<T>(
-    physicalFilename,
-    text,
-    () => readBackendTextFile(dirHandle, getBackupFilename(physicalFilename)),
-    parseValue
+  const committed = await createWorkspaceGenerationStore(dirHandle).commit(
+    workspaceRevision,
+    nextData
   );
+  workspaceGenerationCache = committed;
+  workspaceRevision = committed.manifest.revision;
+  return committed.manifest.revision;
 };
 
 export function readJsonFile(
@@ -1366,40 +1625,10 @@ export async function readJsonFile(
   filename: WorkspaceDataFilename
 ): Promise<Session[] | AppSettings | SystemInstruction[] | null> {
   const key = getWorkspaceDataKey(filename);
-  const parseValue = getWorkspaceDataParser(filename);
-  const manifestState = await readWorkspaceManifestState(dirHandle);
-
-  try {
-    return await readWorkspaceDataFile(
-      dirHandle,
-      filename,
-      manifestState.active.files[key],
-      parseValue
-    );
-  } catch (primaryError) {
-    const fallbackFilename = manifestState.backup?.files[key];
-    if (
-      fallbackFilename &&
-      fallbackFilename !== manifestState.active.files[key]
-    ) {
-      try {
-        const fallback = await readWorkspaceDataFile(
-          dirHandle,
-          filename,
-          fallbackFilename,
-          parseValue
-        );
-        console.warn(
-          `Failed to load ${manifestState.active.files[key]}; `
-          + `loaded snapshot backup ${fallbackFilename} instead.`
-        );
-        return fallback;
-      } catch (backupError) {
-        console.warn(`Failed to load snapshot backup ${fallbackFilename}.`, backupError);
-      }
-    }
-    throw primaryError;
-  }
+  const generation = await ensureWorkspaceGeneration(dirHandle);
+  if (key === 'sessions') return generation.sessions;
+  if (key === 'settings') return generation.settings;
+  return generation.instructions;
 }
 
 const settledMap = async <T, R>(
@@ -1442,7 +1671,9 @@ const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(sessio
               ...(attachment.size !== undefined ? { size: attachment.size } : {})
             };
 
-            if (isValidAttachmentId(attachment.id)) {
+            if (attachment.localBlob) {
+              storedAttachment.localBlob = attachment.localBlob;
+            } else if (isValidAttachmentId(attachment.id)) {
               storedAttachment.id = attachment.id;
             } else if (attachment.content) {
               // Preserve an unreadable legacy attachment until it can be migrated.
@@ -1456,98 +1687,34 @@ const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(sessio
   ))
 }));
 
-const externalizeSessionAttachments = async (
-  dirHandle: FileSystemDirectoryHandle,
-  sessions: Session[],
-  regenerateIds = false,
-  strict = false,
-  onAttachmentStaged?: (id: string) => void
-): Promise<{
-  sessions: Session[];
-  changed: boolean;
-  writtenAttachmentIds: string[];
-}> => {
-  let changed = false;
-  const writtenAttachmentIds: string[] = [];
-
-  const externalizedSessions = await mapSessionAttachments(sessions, async attachment => {
-    const existingId = isValidAttachmentId(attachment.id) ? attachment.id : undefined;
-    const name = typeof attachment.name === 'string' ? attachment.name : 'Attachment';
-    const type = typeof attachment.type === 'string' ? attachment.type : 'application/octet-stream';
-    const size = Number.isSafeInteger(attachment.size) && (attachment.size as number) >= 0
-      ? attachment.size
-      : undefined;
-
-    if (!attachment.content) {
-      const normalizedAttachment: FileAttachment = {
-        name,
-        type,
-        ...(size !== undefined ? { size } : {}),
-        ...(!regenerateIds && existingId ? { id: existingId } : {})
-      };
-
-      if (
-        attachment.previewUrl ||
-        attachment.id !== existingId ||
-        (regenerateIds && existingId)
-      ) {
-        changed = true;
-      }
-      return normalizedAttachment;
-    }
-
-    try {
-      const blob = await dataUrlToBlob(attachment.content);
-      const id = regenerateIds || !existingId ? createAttachmentId() : existingId;
-      const mimeType = getAttachmentMimeType({
-        name,
-        type: type || blob.type
-      });
-      validateAttachments([{
-        name,
-        type: mimeType,
-        size: blob.size
-      }]);
-      writtenAttachmentIds.push(id);
-      onAttachmentStaged?.(id);
-      await writeAttachmentBlob(dirHandle, id, blob);
-      changed = true;
-      return {
-        id,
-        name,
-        type: mimeType,
-        size: blob.size
-      };
-    } catch (error) {
-      if (strict) {
-        throw new Error(
-          `Attachment "${name}" could not be staged: ${getErrorMessage(error)}`
-        );
-      }
-      console.warn(`Failed to externalize attachment ${name}`, error);
-      changed = true;
-      return {
-        name,
-        type,
-        ...(size !== undefined ? { size } : {}),
-        ...(typeof attachment.content === 'string' && attachment.content.startsWith('data:')
-          ? { content: attachment.content }
-          : {})
-      };
-    }
-  });
-
-  return {
-    sessions: externalizedSessions,
-    changed,
-    writtenAttachmentIds
-  };
-};
-
 const addRuntimeAttachmentMetadata = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[]
 ): Promise<Session[]> => mapSessionAttachments(sessions, async attachment => {
+  if (attachment.localBlob) {
+    try {
+      const blob = await createWorkspaceGenerationStore(dirHandle).readBlob(
+        attachment.localBlob
+      );
+      if (!blob) {
+        console.warn(
+          `Stored attachment ${attachment.localBlob.sha256} (${attachment.name}) is missing.`
+        );
+        return attachment;
+      }
+      return {
+        ...attachment,
+        size: blob.size,
+        ...(attachment.type.startsWith('image/')
+          ? { previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type)) }
+          : {})
+      };
+    } catch (error) {
+      console.warn(`Failed to load attachment preview ${attachment.name}.`, error);
+      return attachment;
+    }
+  }
+
   if (!isValidAttachmentId(attachment.id)) {
     if (!attachment.content) return attachment;
 
@@ -1581,95 +1748,22 @@ const addRuntimeAttachmentMetadata = async (
   }
 });
 
-const collectAttachmentIds = (sessions: Session[]): Set<string> => {
-  const ids = new Set<string>();
-
-  sessions.forEach(session => {
-    session.messages.forEach(message => {
-      message.attachments?.forEach(attachment => {
-        if (isValidAttachmentId(attachment.id)) ids.add(attachment.id);
-      });
-    });
-  });
-
-  return ids;
-};
-
-const pruneUnreferencedAttachments = async (
-  dirHandle: FileSystemDirectoryHandle,
-  sessions: Session[],
-  force = false
-): Promise<void> => {
-  const now = Date.now();
-  if (!force && now - lastAttachmentGcAt < ATTACHMENT_GC_INTERVAL_MS) return;
-  lastAttachmentGcAt = now;
-
-  const referencedIds = collectAttachmentIds(sessions);
-  const manifestState = await readWorkspaceManifestState(dirHandle);
-  const recoverySessionFiles = new Set<string>([
-    getBackupFilename(manifestState.active.files.sessions)
-  ]);
-  if (manifestState.backup) {
-    recoverySessionFiles.add(manifestState.backup.files.sessions);
-    recoverySessionFiles.add(
-      getBackupFilename(manifestState.backup.files.sessions)
-    );
-  }
-
-  for (const filename of recoverySessionFiles) {
-    const recoveryText = await readBackendTextFile(dirHandle, filename);
-    if (!recoveryText) continue;
-    try {
-      const recoverySessions = parseJsonText(
-        filename,
-        recoveryText,
-        parseStoredSessions
-      );
-      collectAttachmentIds(recoverySessions).forEach(id => referencedIds.add(id));
-    } catch (error) {
-      console.warn(
-        `Skipped attachment cleanup because recovery file ${filename} is invalid.`,
-        error
-      );
-      return;
-    }
-  }
-
-  const cutoff = now - ATTACHMENT_GC_GRACE_MS;
-  const backend = await getStorageBackend();
-
-  if (backend === 'indexeddb') {
-    const files = await idbListRawFiles(ATTACHMENT_KEY_PREFIX);
-    await Promise.all(files.map(async file => {
-      const id = file.filename.slice(ATTACHMENT_KEY_PREFIX.length);
-      if (!referencedIds.has(id) && file.updatedAt < cutoff) {
-        await idbDeleteRawFile(file.filename);
-      }
-    }));
-    return;
-  }
-
-  const attachmentsDir = await getOpfsAttachmentsDirectory(dirHandle, false);
-  if (!attachmentsDir) return;
-
-  for await (const [name, entry] of (attachmentsDir as any).entries()) {
-    if (entry.kind !== 'file' || referencedIds.has(name)) continue;
-
-    const file = await entry.getFile();
-    if (file.lastModified < cutoff) {
-      await attachmentsDir.removeEntry(name);
-    }
-  }
-};
-
 export const storeAttachment = async (
   dirHandle: FileSystemDirectoryHandle,
   file: File
 ): Promise<string> => {
-  validateAttachments([file]);
-  const id = createAttachmentId();
-  await writeAttachmentBlob(dirHandle, id, file);
-  return id;
+  return (await storeAttachmentBlob(dirHandle, file)).sha256;
+};
+
+export const storeAttachmentBlob = async (
+  dirHandle: FileSystemDirectoryHandle,
+  file: File
+): Promise<LocalBlobReference> => {
+  const [format] = validateAttachments([file]);
+  return createWorkspaceGenerationStore(dirHandle).storeBlob(
+    file,
+    format.mimeType
+  );
 };
 
 export const getAttachmentDataUrl = async (
@@ -1677,6 +1771,20 @@ export const getAttachmentDataUrl = async (
   attachment: FileAttachment
 ): Promise<string | undefined> => {
   if (attachment.content) return attachment.content;
+  if (attachment.localBlob) {
+    const blob = await createWorkspaceGenerationStore(dirHandle).readBlob(
+      attachment.localBlob
+    );
+    if (!blob) {
+      throw new Error(`Attachment "${attachment.name}" is missing from local storage.`);
+    }
+    validateAttachments([{
+      name: attachment.name,
+      type: attachment.type,
+      size: blob.size
+    }]);
+    return blobToDataUrl(applyAttachmentMimeType(blob, getAttachmentMimeType(attachment)));
+  }
   if (!isValidAttachmentId(attachment.id)) return undefined;
 
   const blob = await readAttachmentBlob(dirHandle, attachment.id);
@@ -1698,15 +1806,7 @@ export const writeSessions = async (
   sessions: Session[]
 ): Promise<number> => {
   const storedSessions = toStoredSessions(sessions);
-  const revision = await writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
-
-  try {
-    await pruneUnreferencedAttachments(dirHandle, storedSessions);
-  } catch (error) {
-    console.warn('Failed to clean up unreferenced attachments.', error);
-  }
-
-  return revision;
+  return writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
 };
 
 export const readSessions = async (
@@ -1714,245 +1814,180 @@ export const readSessions = async (
   options: { readOnly?: boolean } = {}
 ): Promise<Session[]> => {
   const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
-  if (options.readOnly) {
-    return addRuntimeAttachmentMetadata(dirHandle, storedSessions);
-  }
-
-  const externalized = await externalizeSessionAttachments(dirHandle, storedSessions);
-
-  if (externalized.changed) {
-    await writeSessions(dirHandle, externalized.sessions);
-  } else {
-    try {
-      await pruneUnreferencedAttachments(dirHandle, externalized.sessions, true);
-    } catch (error) {
-      console.warn('Failed to clean up unreferenced attachments.', error);
-    }
-  }
-
-  return addRuntimeAttachmentMetadata(dirHandle, externalized.sessions);
+  void options;
+  return addRuntimeAttachmentMetadata(dirHandle, storedSessions);
 };
 
-const embedAttachmentDataForBackup = async (
-  dirHandle: FileSystemDirectoryHandle,
-  sessions: Session[]
-): Promise<Session[]> => mapSessionAttachments(sessions, async attachment => {
-  const content = await getAttachmentDataUrl(dirHandle, attachment);
+export interface WorkspaceSnapshot {
+  revision: number;
+  createdAt: number;
+  sessions: Session[];
+  settings: AppSettings;
+  instructions: SystemInstruction[];
+  readBlob: (reference: LocalBlobReference) => Promise<Blob>;
+  release?: () => void;
+}
 
+export interface WorkspaceReplacement {
+  sessions: Session[];
+  settings?: BackupSettings | null;
+  instructions: SystemInstruction[];
+  blobs: ReadonlyMap<string, Blob>;
+}
+
+export const readWorkspaceSnapshot = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<WorkspaceSnapshot> => {
+  const generation = await ensureWorkspaceGeneration(dirHandle);
+  const store = createWorkspaceGenerationStore(dirHandle);
+  const release = store.pin(generation.manifest);
   return {
-    ...(isValidAttachmentId(attachment.id) ? { id: attachment.id } : {}),
-    name: attachment.name,
-    type: attachment.type,
-    ...(attachment.size !== undefined ? { size: attachment.size } : {}),
-    ...(content ? { content } : {})
-  };
-});
-
-export const getWorkspaceBackup = async (
-  dirHandle: FileSystemDirectoryHandle,
-  options: { readOnly?: boolean } = {}
-): Promise<WorkspaceBackup> => {
-  const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
-  const externalized = options.readOnly
-    ? { sessions: storedSessions, changed: false }
-    : await externalizeSessionAttachments(dirHandle, storedSessions);
-  if (externalized.changed) await writeSessions(dirHandle, externalized.sessions);
-
-  const embeddedSessions = await embedAttachmentDataForBackup(
-    dirHandle,
-    externalized.sessions
-  );
-  const settings = await readJsonFile(dirHandle, STORAGE_FILES.SETTINGS);
-  const instructions = await readJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS) || [];
-  const instructionIds = new Set(instructions.map(instruction => instruction.id));
-  const sessions = embeddedSessions.map(session => (
-    session.config.systemInstructionId &&
-    !instructionIds.has(session.config.systemInstructionId)
-      ? {
-          ...session,
-          config: {
-            ...session.config,
-            systemInstructionId: undefined
-          }
-        }
-      : session
-  ));
-
-  let backupSettings: BackupSettings | null = null;
-  if (settings) {
-    backupSettings = { ...settings };
-    delete backupSettings.apiKey;
-    if (
-      backupSettings.lastActiveSessionId &&
-      !sessions.some(session => session.id === backupSettings?.lastActiveSessionId)
-    ) {
-      backupSettings.lastActiveSessionId = sessions[0]?.id;
+    revision: generation.manifest.revision,
+    createdAt: generation.manifest.createdAt,
+    sessions: generation.sessions,
+    settings: generation.settings,
+    instructions: generation.instructions,
+    release,
+    readBlob: async reference => {
+      const blob = await store.readBlob(reference);
+      if (!blob) {
+        throw new Error(`Workspace blob ${reference.sha256} is missing.`);
+      }
+      return blob;
     }
-  }
-
-  return parseWorkspaceBackup({
-    schemaVersion: WORKSPACE_SCHEMA_VERSION,
-    sessions,
-    settings: backupSettings,
-    instructions,
-    timestamp: Date.now()
-  });
+  };
 };
 
-export const restoreWorkspaceBackup = async (
+export const readLocalBlob = async (
   dirHandle: FileSystemDirectoryHandle,
-  backupValue: unknown
+  reference: LocalBlobReference
+): Promise<Blob | null> => (
+  createWorkspaceGenerationStore(dirHandle).readBlob(reference)
+);
+
+export const storeLocalBlob = async (
+  dirHandle: FileSystemDirectoryHandle,
+  blob: Blob,
+  mimeType = blob.type
+): Promise<LocalBlobReference> => (
+  createWorkspaceGenerationStore(dirHandle).storeBlob(blob, mimeType)
+);
+
+const INTERNAL_RECOVERY_ARCHIVE = 'recovery/pre-restore.zip';
+
+export const writeInternalRecoveryArchive = async (
+  dirHandle: FileSystemDirectoryHandle,
+  archive: Blob
 ): Promise<void> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    await idbWriteRawData(INTERNAL_RECOVERY_ARCHIVE, archive);
+  } else {
+    await writeOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE, archive);
+  }
+  const stored = await readInternalRecoveryArchive(dirHandle);
+  if (!stored || stored.size !== archive.size) {
+    throw new Error('The pre-restore recovery archive could not be verified.');
+  }
+};
+
+export const readInternalRecoveryArchive = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<Blob | null> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    const record = await idbReadRawData(INTERNAL_RECOVERY_ARCHIVE);
+    return record?.data instanceof Blob ? record.data : null;
+  }
+  return readOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
+};
+
+export const clearInternalRecoveryArchive = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<void> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    await idbDeleteRawFile(INTERNAL_RECOVERY_ARCHIVE);
+  } else {
+    await deleteOpfsPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
+  }
+};
+
+export const replaceWorkspaceSnapshot = async (
+  dirHandle: FileSystemDirectoryHandle,
+  replacement: WorkspaceReplacement
+): Promise<number> => {
   if (workspaceRevision === null) {
     throw new Error('Workspace revision has not been initialized.');
   }
-
-  const backup = parseWorkspaceBackup(backupValue);
-  const manifestState = await readWorkspaceManifestState(dirHandle);
-  if (manifestState.active.revision !== workspaceRevision) {
+  const current = await ensureWorkspaceGeneration(dirHandle, true);
+  if (current.manifest.revision !== workspaceRevision) {
     throw new WorkspaceRevisionConflictError(
       workspaceRevision,
-      manifestState.active.revision
+      current.manifest.revision
     );
   }
 
-  const currentSettings = await readJsonFile(dirHandle, STORAGE_FILES.SETTINGS);
-  const currentInstructions = backup.instructions === undefined
-    ? await readJsonFile(dirHandle, STORAGE_FILES.INSTRUCTIONS) || []
-    : backup.instructions;
-  const restoredSettings: AppSettings = backup.settings
+  const store = createWorkspaceGenerationStore(dirHandle);
+  for (const [hash, blob] of replacement.blobs) {
+    const stored = await store.storeBlob(blob, blob.type);
+    if (stored.sha256 !== hash) {
+      throw new Error(`Restore blob ${hash} failed its SHA-256 check.`);
+    }
+  }
+  const sessions = await migrateSessionsToContentBlobs(
+    dirHandle,
+    replacement.sessions,
+    true
+  );
+  const restoredSettings: AppSettings = replacement.settings
     ? {
-        theme: backup.settings.theme,
-        apiKey: currentSettings?.apiKey || '',
-        ...(backup.settings.lastActiveSessionId
-          ? { lastActiveSessionId: backup.settings.lastActiveSessionId }
+        theme: replacement.settings.theme,
+        apiKey: current.settings.apiKey,
+        ...(replacement.settings.lastActiveSessionId
+          ? { lastActiveSessionId: replacement.settings.lastActiveSessionId }
           : {})
       }
     : {
-        theme: currentSettings?.theme || 'dark',
-        apiKey: currentSettings?.apiKey || '',
-        ...(currentSettings?.lastActiveSessionId &&
-          backup.sessions.some(session => (
-            session.id === currentSettings.lastActiveSessionId
-          ))
-          ? { lastActiveSessionId: currentSettings.lastActiveSessionId }
-          : backup.sessions[0]
-            ? { lastActiveSessionId: backup.sessions[0].id }
-            : {})
+        theme: current.settings.theme,
+        apiKey: current.settings.apiKey,
+        ...(sessions[0] ? { lastActiveSessionId: sessions[0].id } : {})
       };
-
   validateWorkspaceReferences({
-    sessions: backup.sessions,
+    sessions,
     settings: restoredSettings,
-    instructions: currentInstructions
+    instructions: replacement.instructions
   });
 
-  const snapshotId = createAttachmentId();
-  const stagedFiles: Record<WorkspaceDataKey, string> = {
-    sessions: getWorkspaceDataPhysicalFilename('sessions', snapshotId),
-    settings: getWorkspaceDataPhysicalFilename('settings', snapshotId),
-    instructions: getWorkspaceDataPhysicalFilename('instructions', snapshotId)
-  };
-  let writtenAttachmentIds: string[] = [];
-  let switched = false;
-  let manifestSwitchStarted = false;
+  const committed = await store.commit(workspaceRevision, {
+    sessions: toStoredSessions(sessions),
+    settings: restoredSettings,
+    instructions: replacement.instructions
+  });
+  workspaceGenerationCache = committed;
+  workspaceRevision = committed.manifest.revision;
+  return committed.manifest.revision;
+};
 
-  try {
-    const externalized = await externalizeSessionAttachments(
-      dirHandle,
-      backup.sessions,
-      true,
-      true,
-      id => writtenAttachmentIds.push(id)
+export class LegacyWorkspaceBackupUnsupportedError extends Error {
+  constructor() {
+    super(
+      'Legacy JSON workspace backups are unsupported. Restore a verified OpenAI Studio ZIP backup instead.'
     );
-    const storedSessions = toStoredSessions(externalized.sessions);
-
-    parseStoredSessions(storedSessions);
-    parseAppSettings(restoredSettings);
-    parseSystemInstructions(currentInstructions);
-    validateWorkspaceReferences({
-      sessions: storedSessions,
-      settings: restoredSettings,
-      instructions: currentInstructions
-    });
-
-    const stagedTexts: Record<WorkspaceDataKey, string> = {
-      sessions: JSON.stringify(storedSessions, null, 2),
-      settings: JSON.stringify(restoredSettings, null, 2),
-      instructions: JSON.stringify(currentInstructions, null, 2)
-    };
-
-    const nextManifest: WorkspaceManifest = {
-      schemaVersion: WORKSPACE_SCHEMA_VERSION,
-      revision: manifestState.active.revision + 1,
-      files: stagedFiles
-    };
-    // The helper verifies every staged file before the manifest makes any of
-    // them visible as the active workspace.
-    await commitAtomicWorkspaceSnapshot({
-      files: [
-        {
-          filename: stagedFiles.sessions,
-          text: stagedTexts.sessions,
-          validate: text => {
-            parseJsonText(stagedFiles.sessions, text, parseStoredSessions);
-          }
-        },
-        {
-          filename: stagedFiles.settings,
-          text: stagedTexts.settings,
-          validate: text => {
-            parseJsonText(
-              stagedFiles.settings,
-              text,
-              value => parseAppSettings(value) as AppSettings
-            );
-          }
-        },
-        {
-          filename: stagedFiles.instructions,
-          text: stagedTexts.instructions,
-          validate: text => {
-            parseJsonText(
-              stagedFiles.instructions,
-              text,
-              parseSystemInstructions
-            );
-          }
-        }
-      ],
-      writeText: (filename, text) => (
-        writeBackendTextFile(dirHandle, filename, text)
-      ),
-      readText: filename => readBackendTextFile(dirHandle, filename),
-      deleteFile: filename => deleteBackendFile(dirHandle, filename),
-      beforeSwitch: async () => {
-        const currentManifest = (
-          await readWorkspaceManifestState(dirHandle)
-        ).active;
-        if (currentManifest.revision !== manifestState.active.revision) {
-          throw new WorkspaceRevisionConflictError(
-            manifestState.active.revision,
-            currentManifest.revision
-          );
-        }
-      },
-      switchManifest: async () => {
-        manifestSwitchStarted = true;
-        await writePersistedWorkspaceManifest(dirHandle, nextManifest);
-      }
-    });
-    switched = true;
-    workspaceRevision = nextManifest.revision;
-  } finally {
-    if (!switched && !manifestSwitchStarted) {
-      await Promise.all(writtenAttachmentIds.map(async id => {
-        try {
-          await deleteAttachmentBlob(dirHandle, id);
-        } catch (error) {
-          console.warn(`Failed to remove staged attachment ${id}.`, error);
-        }
-      }));
-    }
+    this.name = 'LegacyWorkspaceBackupUnsupportedError';
   }
+}
+
+export const getWorkspaceBackup = async (
+  _dirHandle: FileSystemDirectoryHandle,
+  _options: { readOnly?: boolean } = {}
+): Promise<WorkspaceBackup> => {
+  throw new LegacyWorkspaceBackupUnsupportedError();
+};
+
+export const restoreWorkspaceBackup = async (
+  _dirHandle: FileSystemDirectoryHandle,
+  _backupValue: unknown
+): Promise<void> => {
+  throw new LegacyWorkspaceBackupUnsupportedError();
 };

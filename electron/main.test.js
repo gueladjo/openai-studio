@@ -56,6 +56,7 @@ const harness = vi.hoisted(() => {
 
   const app = {
     exit: vi.fn(),
+    getPath: vi.fn(() => '/tmp/openai-studio-electron-test'),
     isPackaged: true,
     on: vi.fn((event, handler) => {
       appHandlers.set(event, handler);
@@ -66,6 +67,9 @@ const harness = vi.hoisted(() => {
   };
   const clipboard = {
     writeText: vi.fn()
+  };
+  const dialog = {
+    showOpenDialog: vi.fn()
   };
   const ipcMain = {
     handle: vi.fn((channel, handler) => {
@@ -89,6 +93,7 @@ const harness = vi.hoisted(() => {
     appHandlers,
     BrowserWindow,
     clipboard,
+    dialog,
     ipcHandleHandlers,
     ipcMain,
     ipcOnHandlers,
@@ -102,6 +107,7 @@ vi.mock('electron', () => ({
   app: harness.app,
   BrowserWindow: harness.BrowserWindow,
   clipboard: harness.clipboard,
+  dialog: harness.dialog,
   ipcMain: harness.ipcMain,
   Menu: harness.Menu,
   shell: harness.shell
@@ -128,8 +134,9 @@ describe('Electron main-process policy', () => {
 
   const loadMain = async () => {
     await import('./main.js');
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(harness.windows.length).toBe(1);
+    });
 
     const window = harness.windows[0];
     if (!window) throw new Error('Electron main window was not created.');
@@ -225,5 +232,17 @@ describe('Electron main-process policy', () => {
     confirm({ sender: window.webContents });
     expect(harness.app.quit).toHaveBeenCalledTimes(1);
     expect(window.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps backup IPC scoped to the main renderer and managed filenames', async () => {
+    const window = await loadMain();
+    const status = harness.ipcHandleHandlers.get('backup-destination-status');
+    const startWrite = harness.ipcHandleHandlers.get('backup-write-start');
+
+    expect(() => status({ sender: {} })).toThrow('untrusted renderer');
+    await expect(startWrite(
+      { sender: window.webContents },
+      '../outside.zip'
+    )).rejects.toThrow('filename is invalid');
   });
 });

@@ -9,11 +9,17 @@ import {
   Session,
   ChatConfig,
   FileAttachment,
+  GeneratedFile,
   Message,
   DEFAULT_CONFIG,
   SystemInstruction
 } from './types';
-import { cancelResponse, generateResponse, generateChatTitle } from './services/openaiService';
+import {
+  cancelResponse,
+  fetchGeneratedFileContent,
+  generateResponse,
+  generateChatTitle
+} from './services/openaiService';
 import {
   getStorageHandle,
   getActiveStorageBackend,
@@ -22,10 +28,11 @@ import {
   writeJsonFile,
   readSessions,
   writeSessions,
-  storeAttachment,
+  storeAttachmentBlob,
+  readLocalBlob,
+  storeLocalBlob,
   getAttachmentDataUrl,
-  getWorkspaceBackup,
-  restoreWorkspaceBackup,
+  readWorkspaceSnapshot,
   synchronizeWorkspaceRevision,
   getWorkspaceRevision,
   WorkspaceRevisionConflictError,
@@ -33,10 +40,31 @@ import {
   StorageBackendChoiceRequest,
   STORAGE_FILES,
   AppSettings,
-  MAX_WORKSPACE_BACKUP_BYTES,
-  parseWorkspaceBackup,
   validateWorkspaceReferences
 } from './services/storage';
+import {
+  BackupArchivePreview,
+  BackupArchiveProgress,
+  MAX_BACKUP_ARCHIVE_BYTES,
+  createWorkspaceArchive,
+  inspectWorkspaceArchive,
+  UnsupportedLegacyBackupError
+} from './services/workspaceArchive';
+import {
+  restoreWorkspaceArchive,
+  undoLastWorkspaceRestore
+} from './services/workspaceRestore';
+import {
+  BackupScheduler,
+  BackupSchedulerState
+} from './services/backupScheduler';
+import {
+  chooseBackupDestination,
+  createManagedBackupFilename,
+  loadBackupDestination,
+  reconnectBackupDestination,
+  supportsAutomaticBackupDestination
+} from './services/backupDestination';
 import { WorkspaceCoordinator, WorkspaceRole } from './services/workspaceSync';
 import {
   SaveQueueFailure,
@@ -85,6 +113,23 @@ declare global {
       onCloseRequested: (callback: () => void) => () => void;
       confirmClose: () => void;
       cancelClose: () => void;
+      chooseBackupDirectory?: () => Promise<boolean>;
+      getBackupDestinationStatus?: () => Promise<
+        'connected' | 'permission-required' | 'unavailable'
+      >;
+      writeBackupArchive?: (
+        filename: string,
+        readChunk: () => Promise<Uint8Array | null>,
+        expectedSize: number,
+        expectedSha256: string
+      ) => Promise<void>;
+      listBackupArchives?: () => Promise<Array<{
+        filename: string;
+        size: number;
+        lastModified: number;
+      }>>;
+      readBackupArchive?: (filename: string) => Promise<ArrayBuffer>;
+      deleteBackupArchive?: (filename: string) => Promise<void>;
     }
   }
 }
@@ -99,6 +144,24 @@ const SAVE_DELAYS: Record<SaveKey, number> = {
 };
 const SESSION_SAVE_MAX_WAIT_MS = 5000;
 const SAVE_RETRY_DELAYS_MS = [500, 1500, 5000] as const;
+const DEFAULT_BACKUP_STATE: BackupSchedulerState = {
+  supported: false,
+  enabled: false,
+  destinationStatus: 'unavailable',
+  running: false,
+  backups: []
+};
+
+const downloadBlobFile = (filename: string, blob: Blob): void => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
 
 const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
   sessions.forEach(session => {
@@ -119,11 +182,11 @@ const storeMessageAttachments = async (
   const formats = validateAttachments(files);
   const storedAttachments = await Promise.all(files.map(async file => ({
     file,
-    id: await storeAttachment(dirHandle, file)
+    localBlob: await storeAttachmentBlob(dirHandle, file)
   })));
 
-  return storedAttachments.map(({ file, id }, index) => ({
-    id,
+  return storedAttachments.map(({ file, localBlob }, index) => ({
+    localBlob,
     name: file.name,
     type: formats[index].mimeType,
     size: file.size,
@@ -218,6 +281,20 @@ function App() {
   const [saveFailure, setSaveFailure] = useState<SaveQueueFailure<SaveKey> | null>(null);
   const [isRetryingSave, setIsRetryingSave] = useState(false);
   const [closeSaveError, setCloseSaveError] = useState<string | null>(null);
+  const [backupState, setBackupState] = useState<BackupSchedulerState>(
+    DEFAULT_BACKUP_STATE
+  );
+  const [backupActionError, setBackupActionError] = useState<string | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{
+    file: File;
+    preview: BackupArchivePreview;
+  } | null>(null);
+  const [preparedPortableBackup, setPreparedPortableBackup] = useState<{
+    file: File;
+    canShare: boolean;
+  } | null>(null);
+  const [archiveProgress, setArchiveProgress] = useState<BackupArchiveProgress | null>(null);
+  const [canUndoRestore, setCanUndoRestore] = useState(false);
   const sessionsRef = useRef<Session[]>([]);
   const currentSessionIdRef = useRef<string | null>(null);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
@@ -227,6 +304,8 @@ function App() {
   const workspaceReloadPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const unsubscribeBackendChangesRef = useRef<(() => void) | null>(null);
   const saveQueueRef = useRef<VersionedSaveQueue<SaveKey> | null>(null);
+  const backupSchedulerRef = useRef<BackupScheduler | null>(null);
+  const archiveAbortRef = useRef<AbortController | null>(null);
   const closeRequestPendingRef = useRef(false);
   const initializationStartedRef = useRef(false);
   const operationRegistryRef = useRef(new OperationRegistry());
@@ -340,6 +419,7 @@ function App() {
         revision = await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
       }
       workspaceCoordinatorRef.current?.publishUpdate(revision);
+      void backupSchedulerRef.current?.evaluate().catch(() => undefined);
     } catch (error) {
       if (error instanceof WorkspaceRevisionConflictError) {
         workspaceCanWriteRef.current = false;
@@ -384,6 +464,109 @@ function App() {
 
     getSaveQueue().markDirty(key, immediate);
   }, [getSaveQueue]);
+
+  const cacheGeneratedFile = useCallback(async (
+    generatedFile: GeneratedFile,
+    options: {
+      sessionId?: string;
+      messageId?: string;
+      apiKey?: string;
+      operation?: OperationRecord;
+    } = {}
+  ): Promise<Blob> => {
+    const handle = dirHandleRef.current;
+    if (!handle) throw new Error('Workspace storage is unavailable.');
+    if (generatedFile.localBlob) {
+      const cached = await readLocalBlob(handle, generatedFile.localBlob);
+      if (cached) return cached;
+    }
+
+    const apiKey = options.apiKey ?? settingsRef.current.apiKey;
+    const blob = await fetchGeneratedFileContent(generatedFile, apiKey, {
+      signal: options.operation?.controller.signal
+    });
+    const typedBlob = !blob.type && generatedFile.mimeType
+      ? new Blob([blob], { type: generatedFile.mimeType })
+      : blob;
+    const localBlob = await storeLocalBlob(
+      handle,
+      typedBlob,
+      generatedFile.mimeType || typedBlob.type
+    );
+    if (
+      options.operation &&
+      !operationRegistryRef.current.isCurrent(options.operation)
+    ) {
+      throw createOperationAbortError();
+    }
+
+    let changed = false;
+    const nextSessions = sessionsRef.current.map(session => {
+      if (options.sessionId && session.id !== options.sessionId) return session;
+      let changedSession = false;
+      const messages = session.messages.map(message => {
+        if (options.messageId && message.id !== options.messageId) return message;
+        if (!message.generatedFiles) return message;
+        let changedMessage = false;
+        const generatedFiles = message.generatedFiles.map(file => {
+          if (
+            file.containerId !== generatedFile.containerId ||
+            file.fileId !== generatedFile.fileId
+          ) {
+            return file;
+          }
+          changedMessage = true;
+          return { ...file, localBlob };
+        });
+        if (!changedMessage) return message;
+        changedSession = true;
+        return { ...message, generatedFiles };
+      });
+      if (!changedSession) return session;
+      changed = true;
+      return { ...session, messages, lastModified: Date.now() };
+    });
+    if (changed && workspaceCanWriteRef.current) {
+      forceImmediateSessionSaveRef.current = false;
+      updateSessionsState(nextSessions);
+      scheduleSave('sessions', true);
+    }
+    return typedBlob;
+  }, [scheduleSave, updateSessionsState]);
+
+  const cacheGeneratedFilesInBackground = useCallback((
+    sessionId: string,
+    messageId: string,
+    files: GeneratedFile[],
+    requestApiKey: string
+  ): void => {
+    files.filter(file => !file.localBlob).forEach(file => {
+      const operation = operationRegistryRef.current.begin({
+        id: uuidv4(),
+        kind: 'generated-file-cache',
+        sessionId
+      });
+      void cacheGeneratedFile(file, {
+        sessionId,
+        messageId,
+        apiKey: requestApiKey,
+        operation
+      }).catch(error => {
+        if (!isAbortError(error)) {
+          console.warn(`Generated file ${file.filename} could not be cached.`, error);
+        }
+      }).finally(() => {
+        operationRegistryRef.current.complete(operation);
+        const hasPendingCache = operationRegistryRef.current.getOperations()
+          .some(item => item.kind === 'generated-file-cache');
+        if (!hasPendingCache && workspaceCanWriteRef.current) {
+          void getSaveQueue().flush(['sessions'])
+            .then(() => backupSchedulerRef.current?.evaluate())
+            .catch(() => undefined);
+        }
+      });
+    });
+  }, [cacheGeneratedFile, getSaveQueue]);
 
   const flushPendingSaves = useCallback(async (
     keys: readonly SaveKey[] = SAVE_KEYS
@@ -676,6 +859,7 @@ function App() {
                 workspaceCanWriteRef.current = true;
                 setIsWorkspaceReadOnly(false);
                 coordinator.publishUpdate(getWorkspaceRevision());
+                void backupSchedulerRef.current?.evaluate().catch(() => undefined);
               }
             })
             .catch(error => {
@@ -697,6 +881,35 @@ function App() {
         setIsWorkspaceLoaded(true);
         if (roleAfterLoad === 'writer') {
           coordinator.publishUpdate(getWorkspaceRevision());
+        }
+        try {
+          const backupDestination = await loadBackupDestination();
+          const backupScheduler = new BackupScheduler({
+            dirHandle: handle,
+            destination: backupDestination,
+            supported: supportsAutomaticBackupDestination(),
+            canRun: () => (
+              workspaceCanWriteRef.current &&
+              !workspaceMutationBlockedRef.current &&
+              activeRequestsRef.current.size === 0 &&
+              operationRegistryRef.current.getOperations().length === 0
+            ),
+            onStateChange: setBackupState
+          });
+          backupSchedulerRef.current?.dispose();
+          backupSchedulerRef.current = backupScheduler;
+          await backupScheduler.initialize();
+        } catch (backupError) {
+          console.error('Backup scheduling could not be initialized.', backupError);
+          const message = getErrorMessage(backupError);
+          setBackupActionError(message);
+          if (!backupSchedulerRef.current) {
+            setBackupState({
+              ...DEFAULT_BACKUP_STATE,
+              supported: supportsAutomaticBackupDestination(),
+              error: message
+            });
+          }
         }
       } catch (e) {
         console.error("Critical: Failed to initialize storage", e);
@@ -806,6 +1019,23 @@ function App() {
       window.removeEventListener('beforeunload', flushForLifecycle);
     };
   }, [flushPendingSaves, isWorkspaceLoaded, scheduleSave]);
+
+  useEffect(() => {
+    if (!isWorkspaceLoaded) return;
+    const evaluateBackup = () => {
+      if (document.visibilityState === 'visible') {
+        void backupSchedulerRef.current?.evaluate().catch(() => undefined);
+      }
+    };
+    window.addEventListener('focus', evaluateBackup);
+    window.addEventListener('pageshow', evaluateBackup);
+    document.addEventListener('visibilitychange', evaluateBackup);
+    return () => {
+      window.removeEventListener('focus', evaluateBackup);
+      window.removeEventListener('pageshow', evaluateBackup);
+      document.removeEventListener('visibilitychange', evaluateBackup);
+    };
+  }, [isWorkspaceLoaded]);
 
 
   // --- App Logic ---
@@ -1250,6 +1480,14 @@ function App() {
         () => newBotMessage,
         true
       );
+      if (generatedFiles?.length) {
+        cacheGeneratedFilesInBackground(
+          targetSessionId,
+          assistantMessageId,
+          generatedFiles,
+          apiKey
+        );
+      }
     } catch (error) {
       const failedRequest = activeRequestsRef.current.get(targetSessionId);
       if (
@@ -1297,6 +1535,14 @@ function App() {
         removeProcessingSession(targetSessionId);
       }
       operationRegistryRef.current.complete(operation);
+      if (
+        !operationRegistryRef.current.getOperations()
+          .some(item => item.kind === 'generated-file-cache')
+      ) {
+        void flushPendingSaves(['sessions'])
+          .then(() => backupSchedulerRef.current?.evaluate())
+          .catch(() => undefined);
+      }
     }
   };
 
@@ -1787,9 +2033,10 @@ function App() {
       }
 
       void flushPendingSaves()
+        .then(() => backupSchedulerRef.current?.runDueForClose())
         .then(() => electronApi.confirmClose())
         .catch(error => {
-          console.error('Failed to flush workspace data before closing.', error);
+          console.error('Failed to save or back up the workspace before closing.', error);
           setCloseSaveError(getErrorMessage(error));
         });
     });
@@ -1804,6 +2051,7 @@ function App() {
     setIsRetryingSave(true);
     try {
       await getSaveQueue().retryNow();
+      await backupSchedulerRef.current?.runDueForClose();
       electronApi.confirmClose();
     } catch (error) {
       console.error('Failed to retry workspace save before closing.', error);
@@ -1826,6 +2074,7 @@ function App() {
   useEffect(() => () => {
     operationRegistryRef.current.invalidateWorkspace();
     saveQueueRef.current?.dispose();
+    backupSchedulerRef.current?.dispose();
     workspaceCoordinatorRef.current?.dispose();
     unsubscribeBackendChangesRef.current?.();
     revokeAttachmentPreviewUrls(sessionsRef.current);
@@ -1834,23 +2083,75 @@ function App() {
   // Data Import/Export Handlers
   const handleExportData = async () => {
     if (!dirHandle) return;
+    const controller = new AbortController();
+    archiveAbortRef.current?.abort();
+    archiveAbortRef.current = controller;
     try {
       await flushPendingSaves();
-      const backup = await getWorkspaceBackup(dirHandle, {
-        readOnly: !workspaceCanWriteRef.current
+      const snapshot = await readWorkspaceSnapshot(dirHandle);
+      const archive = await createWorkspaceArchive(snapshot, {
+        reason: 'manual',
+        signal: controller.signal,
+        onProgress: setArchiveProgress
       });
-      if (workspaceCanWriteRef.current) {
-        workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
-      }
-      downloadTextFile(
-        `openai-studio-backup-${new Date().toISOString().slice(0, 10)}.json`,
-        JSON.stringify(backup, null, 2),
-        'application/json;charset=utf-8'
+      const validated = await inspectWorkspaceArchive(archive, {
+        signal: controller.signal,
+        onProgress: setArchiveProgress,
+        retainBlobs: false
+      });
+      const filename = createManagedBackupFilename(
+        validated.manifest.createdAt,
+        validated.manifest.backupId
       );
+      const portableFile = new File([archive], filename, {
+        type: 'application/zip'
+      });
+      const shareData = {
+        title: 'OpenAI Studio workspace backup',
+        files: [portableFile]
+      };
+      if (isMobile) {
+        setPreparedPortableBackup({
+          file: portableFile,
+          canShare: (
+            typeof navigator.share === 'function' &&
+            Boolean(navigator.canShare?.(shareData))
+          )
+        });
+      } else {
+        downloadBlobFile(filename, archive);
+      }
     } catch (e) {
+      if (isAbortError(e)) return;
       console.error("Export failed", e);
-      alert("Failed to export workspace data.");
+      alert(`Failed to export workspace data: ${getErrorMessage(e)}`);
+    } finally {
+      if (archiveAbortRef.current === controller) {
+        archiveAbortRef.current = null;
+        setArchiveProgress(null);
+      }
     }
+  };
+
+  const handleSavePreparedPortableBackup = () => {
+    const prepared = preparedPortableBackup;
+    if (!prepared) return;
+    if (prepared.canShare && typeof navigator.share === 'function') {
+      void navigator.share({
+        title: 'OpenAI Studio workspace backup',
+        files: [prepared.file]
+      }).then(() => {
+        setPreparedPortableBackup(null);
+      }).catch(error => {
+        if (isAbortError(error)) return;
+        console.warn('Native backup sharing failed; using download fallback.', error);
+        downloadBlobFile(prepared.file.name, prepared.file);
+        setPreparedPortableBackup(null);
+      });
+      return;
+    }
+    downloadBlobFile(prepared.file.name, prepared.file);
+    setPreparedPortableBackup(null);
   };
 
   const handleShareConversation = () => {
@@ -1879,65 +2180,183 @@ function App() {
       id: uuidv4(),
       kind: 'import-read'
     });
+    archiveAbortRef.current?.abort();
+    archiveAbortRef.current = readOperation.controller;
 
     try {
-      if (file.size > MAX_WORKSPACE_BACKUP_BYTES) {
+      if (file.size > MAX_BACKUP_ARCHIVE_BYTES) {
         throw new Error('Backup file exceeds the supported size limit.');
       }
-      const text = await file.text();
+      const inspected = await inspectWorkspaceArchive(file, {
+        filename: file.name,
+        signal: readOperation.controller.signal,
+        onProgress: setArchiveProgress,
+        retainBlobs: false
+      });
       if (!isOperationCurrent(readOperation, false)) {
         throw createOperationAbortError();
       }
-      const backup = parseWorkspaceBackup(JSON.parse(text) as unknown);
-
-      // Confirm replacement
-      if (!window.confirm("This will overwrite your current workspace with the backup data. Continue?")) return;
-
+      setPendingRestore({
+        file,
+        preview: inspected.preview
+      });
+    } catch (e) {
+      if (isAbortError(e)) return;
+      console.error("Import failed", e);
+      alert(
+        e instanceof UnsupportedLegacyBackupError
+          ? e.message
+          : `Failed to validate backup: ${getErrorMessage(e)}`
+      );
+    } finally {
       operationRegistryRef.current.complete(readOperation);
-      const importPromise = enqueueDestructiveOperation(async () => {
+      if (archiveAbortRef.current === readOperation.controller) {
+        archiveAbortRef.current = null;
+        setArchiveProgress(null);
+      }
+    }
+  };
+
+  const confirmWorkspaceRestore = async () => {
+    const pending = pendingRestore;
+    if (!pending || !dirHandleRef.current) return;
+    setPendingRestore(null);
+    await flushPendingSaves();
+    invalidateWorkspaceOperations('before workspace restore');
+
+    try {
+      await enqueueDestructiveOperation(async () => {
         const operation = operationRegistryRef.current.begin({
           id: uuidv4(),
-          kind: 'workspace-import'
+          kind: 'workspace-restore'
         });
         const handle = dirHandleRef.current;
-
         try {
           if (!handle || !workspaceCanWriteRef.current) {
             throw createOperationAbortError();
           }
-
-          await flushPendingSaves();
-          if (!isOperationCurrent(operation, false)) {
-            throw createOperationAbortError();
-          }
-
-          await restoreWorkspaceBackup(handle, backup);
-          if (!isOperationCurrent(operation, false)) {
-            throw createOperationAbortError();
-          }
-
+          archiveAbortRef.current = operation.controller;
+          await restoreWorkspaceArchive(handle, pending.file, {
+            filename: pending.file.name,
+            signal: operation.controller.signal,
+            onProgress: setArchiveProgress
+          });
           workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
           await loadWorkspaceData(
             handle,
             'writer',
             () => isOperationCurrent(operation, false)
           );
-          if (!isOperationCurrent(operation, false)) {
-            throw createOperationAbortError();
-          }
+          setCanUndoRestore(true);
         } finally {
+          if (archiveAbortRef.current === operation.controller) {
+            archiveAbortRef.current = null;
+          }
+          setArchiveProgress(null);
           operationRegistryRef.current.complete(operation);
         }
       });
-      invalidateWorkspaceOperations('before workspace import');
-      await importPromise;
-      alert("Workspace restored successfully.");
-    } catch (e) {
-      if (isAbortError(e)) return;
-      console.error("Import failed", e);
-      alert("Failed to import data. The file might be corrupted or invalid.");
-    } finally {
-      operationRegistryRef.current.complete(readOperation);
+    } catch (error) {
+      if (!isAbortError(error)) {
+        alert(`Workspace restore failed: ${getErrorMessage(error)}`);
+      }
+    }
+  };
+
+  const handleUndoRestore = async () => {
+    const handle = dirHandleRef.current;
+    if (!handle || !workspaceCanWriteRef.current) return;
+    await flushPendingSaves();
+    invalidateWorkspaceOperations('before undoing workspace restore');
+    try {
+      await enqueueDestructiveOperation(async () => {
+        await undoLastWorkspaceRestore(handle);
+        workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
+        await loadWorkspaceData(handle, 'writer');
+      });
+      setCanUndoRestore(false);
+    } catch (error) {
+      alert(`Undo restore failed: ${getErrorMessage(error)}`);
+    }
+  };
+
+  const handleChooseBackupFolder = async () => {
+    try {
+      const destination = await chooseBackupDestination();
+      if (!destination) return;
+      await backupSchedulerRef.current?.setDestination(destination);
+      setBackupActionError(null);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleReconnectBackupFolder = async () => {
+    try {
+      const destination = await loadBackupDestination();
+      if (!destination || !(await reconnectBackupDestination(destination))) {
+        throw new Error('Backup folder permission was not granted.');
+      }
+      await backupSchedulerRef.current?.setDestination(destination);
+      setBackupActionError(null);
+      await backupSchedulerRef.current?.evaluate();
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleToggleAutomaticBackups = async (enabled: boolean) => {
+    try {
+      if (enabled && backupState.destinationStatus === 'unavailable') {
+        const destination = await chooseBackupDestination();
+        if (!destination) return;
+        await backupSchedulerRef.current?.setDestination(destination);
+      }
+      await backupSchedulerRef.current?.setEnabled(enabled);
+      setBackupActionError(null);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleBackUpNow = async () => {
+    try {
+      await flushPendingSaves();
+      await backupSchedulerRef.current?.backUpNow();
+      setBackupActionError(null);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleManagedBackupRestore = async (filename: string) => {
+    try {
+      const archive = await backupSchedulerRef.current?.readBackup(filename);
+      if (!archive) throw new Error('The selected backup is unavailable.');
+      await handleImportData(new File([archive], filename, {
+        type: 'application/zip'
+      }));
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleManagedBackupExport = async (filename: string) => {
+    try {
+      const archive = await backupSchedulerRef.current?.readBackup(filename);
+      if (!archive) throw new Error('The selected backup is unavailable.');
+      downloadBlobFile(filename, archive);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleManagedBackupDelete = async (filename: string) => {
+    if (!window.confirm(`Delete managed backup "${filename}"?`)) return;
+    try {
+      await backupSchedulerRef.current?.deleteBackup(filename);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
     }
   };
 
@@ -2093,6 +2512,17 @@ function App() {
               }}
               onExportData={handleExportData}
               onImportData={handleImportData}
+              backupState={backupState}
+              backupActionError={backupActionError}
+              onToggleAutomaticBackups={handleToggleAutomaticBackups}
+              onChooseBackupFolder={handleChooseBackupFolder}
+              onReconnectBackupFolder={handleReconnectBackupFolder}
+              onBackUpNow={handleBackUpNow}
+              onRestoreManagedBackup={handleManagedBackupRestore}
+              onExportManagedBackup={handleManagedBackupExport}
+              onDeleteManagedBackup={handleManagedBackupDelete}
+              canUndoRestore={canUndoRestore}
+              onUndoRestore={handleUndoRestore}
               processingSessionIds={processingSessionIds}
               readOnly={isWorkspaceInteractionReadOnly}
             />
@@ -2147,6 +2577,17 @@ function App() {
                     }}
                     onExportData={handleExportData}
                     onImportData={handleImportData}
+                    backupState={backupState}
+                    backupActionError={backupActionError}
+                    onToggleAutomaticBackups={handleToggleAutomaticBackups}
+                    onChooseBackupFolder={handleChooseBackupFolder}
+                    onReconnectBackupFolder={handleReconnectBackupFolder}
+                    onBackUpNow={handleBackUpNow}
+                    onRestoreManagedBackup={handleManagedBackupRestore}
+                    onExportManagedBackup={handleManagedBackupExport}
+                    onDeleteManagedBackup={handleManagedBackupDelete}
+                    canUndoRestore={canUndoRestore}
+                    onUndoRestore={handleUndoRestore}
                     processingSessionIds={processingSessionIds}
                     isMobile={true}
                     readOnly={isWorkspaceInteractionReadOnly}
@@ -2168,6 +2609,7 @@ function App() {
               onReplaceFailedAttachments={handleReplaceFailedAttachments}
               onRegenerateResponse={handleRegenerateLatestResponse}
               onShareConversation={handleShareConversation}
+              onDownloadGeneratedFile={cacheGeneratedFile}
               apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
@@ -2222,6 +2664,138 @@ function App() {
           </>
         )}
 
+        {archiveProgress && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 px-4">
+            <div
+              role="status"
+              className="w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-700 dark:bg-[#161b22]"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Loader2 size={16} className="animate-spin text-blue-500" />
+                {archiveProgress.phase === 'preparing'
+                  ? 'Preparing portable backup…'
+                  : 'Validating backup integrity…'}
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                <div
+                  className="h-full rounded-full bg-blue-600 transition-[width]"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      archiveProgress.totalBytes > 0
+                        ? archiveProgress.completedBytes /
+                          archiveProgress.totalBytes * 100
+                        : archiveProgress.completedEntries /
+                          Math.max(1, archiveProgress.totalEntries) * 100
+                    )}%`
+                  }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                {archiveProgress.completedEntries} of {archiveProgress.totalEntries} entries
+              </div>
+              <button
+                type="button"
+                onClick={() => archiveAbortRef.current?.abort()}
+                className="mt-4 w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {pendingRestore && (
+          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 px-4">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="restore-preview-title"
+              className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-[#161b22]"
+            >
+              <h2 id="restore-preview-title" className="text-base font-semibold">
+                Restore verified backup?
+              </h2>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                The archive passed ZIP, size, schema, reference, and SHA-256 validation. A verified recovery point will be created before the workspace changes.
+              </p>
+              <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-gray-50 p-3 text-xs dark:bg-[#0d1117]">
+                <dt className="text-gray-500">Created</dt>
+                <dd>{new Date(pendingRestore.preview.createdAt).toLocaleString()}</dd>
+                <dt className="text-gray-500">App version</dt>
+                <dd>v{pendingRestore.preview.appVersion}</dd>
+                <dt className="text-gray-500">Workspace revision</dt>
+                <dd>{pendingRestore.preview.workspaceRevision}</dd>
+                <dt className="text-gray-500">Sessions / messages</dt>
+                <dd>{pendingRestore.preview.counts.sessions} / {pendingRestore.preview.counts.messages}</dd>
+                <dt className="text-gray-500">Attachments / files</dt>
+                <dd>{pendingRestore.preview.counts.attachments} / {pendingRestore.preview.counts.generatedFiles}</dd>
+                <dt className="text-gray-500">Archive size</dt>
+                <dd>{(pendingRestore.preview.archiveBytes / (1024 * 1024)).toFixed(1)} MB</dd>
+              </dl>
+              {pendingRestore.preview.uncachedGeneratedFileCount > 0 && (
+                <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                  {pendingRestore.preview.uncachedGeneratedFileCount} generated-file reference(s) were not cached when this backup was created.
+                </p>
+              )}
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingRestore(null)}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmWorkspaceRestore()}
+                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  Create recovery point and restore
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {preparedPortableBackup && (
+          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 px-4">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="portable-backup-ready-title"
+              className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-[#161b22]"
+            >
+              <h2
+                id="portable-backup-ready-title"
+                className="text-base font-semibold text-gray-900 dark:text-gray-100"
+              >
+                Portable backup ready
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
+                The verified ZIP is ready. Use the button below to
+                {preparedPortableBackup.canShare ? ' share or save it' : ' save it'}.
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPreparedPortableBackup(null)}
+                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePreparedPortableBackup}
+                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  {preparedPortableBackup.canShare ? 'Share or save' : 'Save backup'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {closeSaveError && window.electronAPI && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4">
             <div
@@ -2240,10 +2814,10 @@ function App() {
                     id="close-save-error-title"
                     className="text-base font-semibold text-gray-900 dark:text-gray-100"
                   >
-                    Couldn’t save before quitting
+                    Couldn’t finish close-time protection
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                    Your latest workspace changes are still only in memory. Retry the save, keep the app open, or explicitly quit without saving them.
+                    A workspace save or due backup failed. Retry, keep the app open, or explicitly close without the backup. If saving also failed, in-memory changes will be lost.
                   </p>
                   <pre className="mt-3 max-h-28 overflow-auto rounded-md bg-red-50 p-3 text-xs text-red-900 dark:bg-red-950/30 dark:text-red-100">
                     {closeSaveError}
@@ -2265,7 +2839,7 @@ function App() {
                   disabled={isRetryingSave}
                   className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/30"
                 >
-                  Quit without saving
+                  Close without backup
                 </button>
                 <button
                   type="button"
@@ -2274,7 +2848,7 @@ function App() {
                   className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <RefreshCw size={15} className={isRetryingSave ? 'animate-spin' : ''} />
-                  {isRetryingSave ? 'Retrying…' : 'Retry save'}
+                  {isRetryingSave ? 'Retrying…' : 'Retry'}
                 </button>
               </div>
             </div>

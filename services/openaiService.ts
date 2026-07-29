@@ -1398,7 +1398,8 @@ export const cancelResponse = async (
 
 export const fetchGeneratedFileContent = async (
   generatedFile: GeneratedFile,
-  providedApiKey?: string
+  providedApiKey?: string,
+  options: { signal?: AbortSignal } = {}
 ): Promise<Blob> => {
   const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
 
@@ -1415,10 +1416,16 @@ export const fetchGeneratedFileContent = async (
     dangerouslyAllowBrowser: true
   });
 
-  const response = await openai.containers.files.content.retrieve(
-    generatedFile.fileId,
-    { container_id: generatedFile.containerId }
-  );
+  const response = options.signal
+    ? await openai.containers.files.content.retrieve(
+        generatedFile.fileId,
+        { container_id: generatedFile.containerId },
+        { signal: options.signal }
+      )
+    : await openai.containers.files.content.retrieve(
+        generatedFile.fileId,
+        { container_id: generatedFile.containerId }
+      );
 
   if (!response.ok) {
     throw new Error(`Failed to download generated file (${response.status}).`);

@@ -1,4 +1,12 @@
-import { app, BrowserWindow, ipcMain, shell, Menu, clipboard } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  shell,
+  Menu,
+  clipboard,
+  dialog
+} from 'electron';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import {
@@ -6,6 +14,7 @@ import {
   waitForVerifiedDevServer
 } from './devServer.js';
 import { isSafeExternalUrl, isSameAppDocument } from './urlPolicy.js';
+import { BackupFileManager } from './backupFiles.js';
 
 // Define __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -15,6 +24,15 @@ let mainWindow = null;
 let closeRequestPending = false;
 let closeConfirmed = false;
 let appQuitPending = false;
+const backupFileManager = new BackupFileManager();
+
+const assertMainWindowSender = (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== mainWindow) {
+    throw new Error('Backup operation was requested by an untrusted renderer.');
+  }
+  return win;
+};
 
 const finishWindowClose = (win) => {
   if (!win || win.isDestroyed()) return;
@@ -91,6 +109,64 @@ ipcMain.handle('window-is-maximized', (event) => {
 
 ipcMain.handle('clipboard-write-text', (_event, text) => {
   clipboard.writeText(String(text ?? ''));
+});
+
+ipcMain.handle('backup-choose-directory', async (event) => {
+  const win = assertMainWindowSender(event);
+  const result = await dialog.showOpenDialog(win, {
+    title: 'Choose OpenAI Studio Backup Folder',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || result.filePaths.length !== 1) return false;
+  await backupFileManager.setDestination(result.filePaths[0]);
+  return true;
+});
+
+ipcMain.handle('backup-destination-status', event => {
+  assertMainWindowSender(event);
+  return backupFileManager.getStatus();
+});
+
+ipcMain.handle('backup-write-start', async (event, filename) => {
+  assertMainWindowSender(event);
+  return backupFileManager.startWrite(filename);
+});
+
+ipcMain.handle('backup-write-chunk', async (event, id, chunk) => {
+  assertMainWindowSender(event);
+  if (!(chunk instanceof Uint8Array) && !(chunk instanceof ArrayBuffer)) {
+    throw new Error('Backup chunk is invalid.');
+  }
+  await backupFileManager.writeChunk(id, chunk);
+});
+
+ipcMain.handle(
+  'backup-write-finish',
+  async (event, id, expectedSize, expectedSha256) => {
+    assertMainWindowSender(event);
+    await backupFileManager.finishWrite(id, expectedSize, expectedSha256);
+  }
+);
+
+ipcMain.handle('backup-write-abort', async (event, id) => {
+  assertMainWindowSender(event);
+  await backupFileManager.abortWrite(id);
+});
+
+ipcMain.handle('backup-list', event => {
+  assertMainWindowSender(event);
+  return backupFileManager.list();
+});
+
+ipcMain.handle('backup-read', async (event, filename) => {
+  assertMainWindowSender(event);
+  const data = await backupFileManager.read(filename);
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+});
+
+ipcMain.handle('backup-delete', async (event, filename) => {
+  assertMainWindowSender(event);
+  await backupFileManager.delete(filename);
 });
 
 function createWindow() {
@@ -264,6 +340,11 @@ if (!gotSingleInstanceLock) {
       }
     }
 
+    try {
+      await backupFileManager.initialize(app.getPath('userData'));
+    } catch (error) {
+      console.error('Failed to initialize the backup destination.', error);
+    }
     createWindow();
 
     app.on('activate', () => {

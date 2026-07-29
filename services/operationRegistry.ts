@@ -93,4 +93,8 @@ export class OperationRegistry {
       operation => operation.sessionId === sessionId
     );
   }
+
+  getOperations(): OperationRecord[] {
+    return Array.from(this.operations.values());
+  }
 }

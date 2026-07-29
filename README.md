@@ -16,7 +16,7 @@ This project has no application server. The OpenAI SDK runs in the browser or El
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details.
 - Local chat-title search with light and dark themes.
-- Full workspace JSON backup/restore and per-conversation Markdown export.
+- Checksummed ZIP workspace backup/restore, opt-in daily folder backups, restore undo, and per-conversation Markdown export.
 - Responsive mobile layout, installable PWA output, and Electron desktop packaging.
 
 ## Security And Data
@@ -25,8 +25,8 @@ OpenAI Studio is a direct client, not a local-only inference application:
 
 - Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
 - Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
-- The API key entered in Settings is stored locally in `settings.json` and is not encrypted by this project.
-- A full workspace export includes conversations, system instructions, and attachment data, but never the API key saved in Settings. Importing a backup keeps your current key. Exports can still contain sensitive conversation content — treat them accordingly.
+- The API key entered in Settings is stored in the local workspace settings object and is not encrypted by this project.
+- A portable ZIP includes conversations, system instructions, attachments, and locally cached generated files, but never the API key or device-local backup preferences. Restoring keeps the current device's key. Archives are not encrypted and can contain sensitive content.
 - Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
 
 Do not put a shared or production API key into a publicly deployed build. Each user should enter their own key in Settings.
@@ -74,7 +74,7 @@ For local development or Electron development, an ignored `.env.local` file can 
 OPENAI_API_KEY=sk-...
 ```
 
-Development and Electron modes compile this value into renderer JavaScript. Do not use this mechanism for a build that will be packaged, published, or shared. Production web mode intentionally excludes `OPENAI_API_KEY`; users must enter it in the UI. An environment-only key can authorize model calls, but generated-file download controls require the key to be entered in Settings.
+Development and Electron modes compile this value into renderer JavaScript. Do not use this mechanism for a build that will be packaged, published, or shared. Production web mode intentionally excludes `OPENAI_API_KEY`; users must enter it in the UI. Generated files are cached locally after a response when possible; cached copies remain downloadable without a key, while an uncached download requires the key in Settings.
 
 ## Commands
 
@@ -156,18 +156,34 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 | Browser without OPFS | Uses the `openai-studio-storage` IndexedDB database. |
 | Electron | Requires OPFS; it does not switch to an empty IndexedDB workspace if OPFS fails. |
 
-The logical files are:
+Local persistence uses immutable, content-addressed generations:
 
-- `sessions.json`: conversations, attachment references, response metadata, and per-chat configuration.
-- `settings.json`: theme, API key, and last active session.
-- `system_instructions.json`: reusable instruction records.
-- `attachments/` (or `attachments/<id>` records in IndexedDB): immutable attachment bytes referenced from messages.
+- Two alternating `workspace_manifest_a.json` / `workspace_manifest_b.json` records point to complete generations.
+- Each session, settings object, and instruction list is stored under its SHA-256 hash in `objects/`.
+- Attachment and cached generated-file bytes share `blobs/<sha256>`.
+- Startup validates each manifest, every referenced object, every referenced blob, and all schema/cross-reference rules. It selects the highest complete revision or falls back to the previous complete manifest as a unit.
+- Saves write and verify new objects first, publish the other manifest slot last, reuse unchanged objects, and garbage-collect content not retained by the two valid manifests or an active pinned backup read.
 
-Session writes use a one-second trailing delay with a five-second maximum wait while responses stream; request start and terminal states are saved immediately. Settings and instructions use a 500 ms trailing delay. Pending writes are serialized, flushed when the page is hidden, and acknowledged before Electron closes. Each changed JSON file keeps one previous `<filename>.bak` copy. If a primary file contains malformed JSON, the storage layer attempts to read its backup.
+The first load migrates the previous `sessions.json`, `settings.json`, `system_instructions.json`, and `attachments/` layout only after the new generation reads back successfully. The legacy records are retained during that verification, so a failed migration cannot open an empty workspace.
 
-Older sessions with embedded data URLs are migrated to separate attachment records when loaded. Portable workspace exports remain self-contained JSON files by embedding attachment data during export; restore extracts those attachments back into local storage. These are browser-managed files rather than ordinary project files, so use Settings -> Export for a portable backup.
+Session writes keep the one-second trailing delay and five-second streaming checkpoint; request boundaries save immediately. Settings and instructions use a 500 ms delay. Writes remain serialized and are flushed on suspension and through the Electron close handshake.
 
-Import asks for confirmation and replaces the supplied workspace sections. The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Generated container files can expire, so download files that need to be retained.
+Portable backups are standard `.zip` archives containing a strict `manifest.json`, separate JSON entries, and raw content-addressed blobs. Every entry declares its byte length and SHA-256 digest. Restore rejects extra, missing, duplicate, case-colliding, traversal, oversized, truncated, or digest-mismatched entries before showing a preview. Legacy JSON exports are deliberately unsupported.
+
+Before replacement, restore creates and reads back a verified pre-restore archive in internal storage; restore aborts if that recovery point fails. Settings exposes **Undo last restore** while that recovery archive is available. The current API key is always preserved.
+
+Compatible Chromium browsers and Electron can opt into automatic backups by choosing a folder. Automatic backups:
+
+- are disabled by default;
+- run at the next eligible foreground opportunity, at most once per local day;
+- skip unchanged persisted revisions and run only in the writer tab;
+- pause for responses, generated-file caching, destructive operations, or renewed folder permission;
+- verify a newly written archive before rotation and retain the three newest valid managed archives;
+- never delete unrelated files in the selected folder.
+
+Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Portable copy** (Share when available, download otherwise) and **Restore file**. Browser folder handles and scheduler history are device-local and excluded from archives.
+
+The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 
 Chat deletion asks for confirmation and has no in-app undo. Export the workspace before destructive cleanup.
 
@@ -182,8 +198,12 @@ ChatArea user input -> App request/session state -> openaiService streaming API
 `App.tsx` owns application state and orchestrates save, workspace-coordination,
 and operation state. `components/ChatArea.tsx` owns per-session composer drafts
 through `utils/chatDrafts.ts`.
-`services/storage.ts` is the OPFS/IndexedDB persistence facade and composes
-strict workspace-schema validation, backend selection, and atomic snapshots.
+`services/storage.ts` is the OPFS/IndexedDB persistence facade.
+`services/workspaceGenerationStore.ts` owns immutable generation publication,
+whole-generation validation, pinning, and garbage collection.
+`services/workspaceArchive.ts`, `services/workspaceRestore.ts`,
+`services/backupDestination.ts`, and `services/backupScheduler.ts` own portable
+ZIP integrity, recovery/undo, folder capabilities, retention, and scheduling.
 `services/openaiService.ts` constructs Responses API requests, streams text,
 and handles response metadata and generated files. See
 [AGENTS.md](AGENTS.md) for the canonical contributor task-to-module and
@@ -223,9 +243,14 @@ When changing a protected boundary, update its contract suite:
 - `services/openaiService.generate.test.ts`: SDK payloads, model capabilities,
   attachment parts, streaming events, cancellation, titles, and generated
   files.
-- `services/storage.integration.test.ts`: revisions and backups, conflict
-  detection, atomic restore, attachment/key handling, backend migration, and
-  rollback.
+- `services/storage.integration.test.ts`: v1 migration, immutable revisions,
+  whole-generation fallback, pinned content, recovery/undo, attachment/key
+  handling, backend migration, and rollback.
+- `services/workspaceArchive.test.ts` and `services/backupScheduler.test.ts`:
+  ZIP integrity/path policy, binary round trips, legacy rejection, daily
+  scheduling, close failures, corruption handling, and three-file retention.
+- `electron/backupFiles.test.js`: managed filename validation, streamed writes,
+  fsync/read-back verification, atomic rename, and stale-partial cleanup.
 - `electron/main.test.js` and `buildPolicy.test.ts`: renderer/navigation/close
   policy and production build secret/base-path policy.
 - `services/openaiService.test.ts`: citation markers, annotation replacement,

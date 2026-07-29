@@ -353,7 +353,7 @@ describe('storage public contracts', () => {
     );
   };
 
-  it('round-trips writes with monotonic revisions and recovery copies', async () => {
+  it('round-trips writes through alternating immutable generations', async () => {
     await expect(storage.writeJsonFile(
       handle,
       storage.STORAGE_FILES.SETTINGS,
@@ -372,33 +372,62 @@ describe('storage public contracts', () => {
       theme: 'light',
       apiKey: 'second-key'
     });
+    const manifestA = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    );
+    const manifestB = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_b.json') || ''
+    );
+    expect(manifestA.revision).toBe(2);
+    expect(manifestB.revision).toBe(1);
+    expect(manifestA.settings.sha256).not.toBe(manifestB.settings.sha256);
     expect(JSON.parse(
-      await fileSystem.readText('data/settings.json.bak') || ''
+      await fileSystem.readText(
+        `data/objects/${manifestB.settings.sha256}.json`
+      ) || ''
     )).toEqual({
       theme: 'dark',
       apiKey: 'first-key'
     });
-    expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest.json') || ''
-    ).revision).toBe(2);
-    expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest.json.bak') || ''
-    ).revision).toBe(1);
     expect(storage.getWorkspaceRevision()).toBe(2);
   });
 
-  it('rejects a stale writer before overwriting workspace data', async () => {
-    await fileSystem.writeText(
-      'data/workspace_manifest.json',
-      JSON.stringify({
-        schemaVersion: 1,
-        revision: 1,
-        files: {
-          sessions: 'sessions.json',
-          settings: 'settings.json',
-          instructions: 'system_instructions.json'
+  it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
+    await seedWorkspace([createSession('Reusable')]);
+    for (let index = 0; index < 8; index += 1) {
+      await storage.writeJsonFile(
+        handle,
+        storage.STORAGE_FILES.SETTINGS,
+        {
+          theme: index % 2 === 0 ? 'dark' : 'light',
+          apiKey: `key-${index}`,
+          lastActiveSessionId: 'session-reusable'
         }
-      })
+      );
+    }
+    const manifestA = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    );
+    const manifestB = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_b.json') || ''
+    );
+    expect(manifestA.sessions[0].sha256).toBe(manifestB.sessions[0].sha256);
+    const objects = await fileSystem.getDirectory('data/objects');
+    expect(objects.names().length).toBeLessThanOrEqual(4);
+  });
+
+  it('rejects a stale writer before overwriting workspace data', async () => {
+    await storage.writeJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS,
+      { theme: 'dark', apiKey: 'first' }
+    );
+    const active = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_b.json') || ''
+    );
+    await fileSystem.writeText(
+      'data/workspace_manifest_a.json',
+      JSON.stringify({ ...active, revision: 2, createdAt: active.createdAt + 1 })
     );
 
     await expect(storage.writeJsonFile(
@@ -407,147 +436,267 @@ describe('storage public contracts', () => {
       { theme: 'dark', apiKey: 'must-not-write' }
     )).rejects.toMatchObject({
       name: 'WorkspaceRevisionConflictError',
-      expectedRevision: 0,
-      actualRevision: 1
+      expectedRevision: 1,
+      actualRevision: 2
     });
-    expect(await fileSystem.readText('data/settings.json')).toBeNull();
+    const newest = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    );
+    expect(newest.settings.sha256).toBe(active.settings.sha256);
   });
 
-  it('recovers a corrupt active snapshot through the previous manifest', async () => {
+  it('falls back as a whole when the newest generation is corrupt', async () => {
     const initialSessions = [createSession('Initial')];
     const replacementSessions = [createSession('Replacement')];
     await seedWorkspace(initialSessions);
-    await storage.restoreWorkspaceBackup(
+    await storage.writeSessions(
       handle,
-      createBackup(replacementSessions)
+      replacementSessions
     );
 
-    const manifest = JSON.parse(
-      await fileSystem.readText('data/workspace_manifest.json') || ''
-    );
+    const manifests = await Promise.all([
+      fileSystem.readText('data/workspace_manifest_a.json'),
+      fileSystem.readText('data/workspace_manifest_b.json')
+    ]);
+    const parsed = manifests.map(text => JSON.parse(text || ''));
+    const newest = parsed.sort((left, right) => right.revision - left.revision)[0];
+    const previous = parsed[1];
     expect(await storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS
     )).toEqual(replacementSessions);
 
     await fileSystem.writeText(
-      `data/${manifest.files.sessions}`,
-      '{"not":"sessions"}'
+      `data/objects/${newest.sessions[0].sha256}.json`,
+      '{"not":"the referenced session"}'
     );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(
+      previous.revision
+    );
     await expect(storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS
     )).resolves.toEqual(initialSessions);
 
-    await fileSystem.writeText('data/sessions.json', '{"also":"invalid"}');
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).rejects.toThrow('sessions must be an array');
+    await fileSystem.writeText(
+      `data/objects/${previous.sessions[0].sha256}.json`,
+      '{"also":"invalid"}'
+    );
+    await expect(storage.synchronizeWorkspaceRevision(handle))
+      .rejects.toThrow('No complete local workspace generation');
     warn.mockRestore();
   });
 
-  it('round-trips attachments while excluding and preserving API keys correctly', async () => {
-    const attachmentId = await storage.storeAttachment(
+  it('does not replace two corrupt generation manifests with an empty workspace', async () => {
+    await seedWorkspace([createSession('Protected')]);
+    await fileSystem.writeText('data/workspace_manifest_a.json', '{');
+    await fileSystem.writeText('data/workspace_manifest_b.json', '{"schemaVersion":99}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'No complete local workspace generation'
+    );
+    expect(await fileSystem.readText('data/sessions.json')).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('stores attachment bytes by SHA-256 and resolves them for API input', async () => {
+    const localBlob = await storage.storeAttachmentBlob(
       handle,
       new File(['private notes'], 'notes.txt', { type: 'text/plain' })
     );
     const originalSessions = [createSession('Attached', [{
-      id: attachmentId,
+      localBlob,
       name: 'notes.txt',
       type: 'text/plain',
       size: 13
     }])];
     await seedWorkspace(originalSessions);
 
-    const backup = await storage.getWorkspaceBackup(handle);
-    expect(backup.settings).toEqual({
-      theme: 'dark',
-      lastActiveSessionId: originalSessions[0].id
-    });
-    expect(backup.sessions[0].messages[0].attachments?.[0]).toMatchObject({
-      id: attachmentId,
-      name: 'notes.txt',
-      type: 'text/plain',
-      content: 'data:text/plain;base64,cHJpdmF0ZSBub3Rlcw=='
-    });
-
-    await storage.writeJsonFile(handle, storage.STORAGE_FILES.SETTINGS, {
-      theme: 'light',
-      apiKey: 'current-key',
-      lastActiveSessionId: originalSessions[0].id
-    });
-    await storage.restoreWorkspaceBackup(handle, backup);
-
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({
-      theme: 'dark',
-      apiKey: 'current-key',
-      lastActiveSessionId: originalSessions[0].id
-    });
     const storedSessions = await storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS
     );
-    const restoredAttachment = storedSessions?.[0].messages[0].attachments?.[0];
-    expect(restoredAttachment).toMatchObject({
+    const storedAttachment = storedSessions?.[0].messages[0].attachments?.[0];
+    expect(storedAttachment).toMatchObject({
       name: 'notes.txt',
       type: 'text/plain',
-      size: 13
+      size: 13,
+      localBlob
     });
-    expect(restoredAttachment?.id).not.toBe(attachmentId);
-    expect(restoredAttachment).not.toHaveProperty('content');
     await expect(storage.getAttachmentDataUrl(
       handle,
-      restoredAttachment!
+      storedAttachment!
     )).resolves.toBe(
       'data:text/plain;base64,cHJpdmF0ZSBub3Rlcw=='
     );
+    expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
+      .toBe('private notes');
   });
 
-  it('keeps the active workspace and removes staged data after a restore write fails', async () => {
+  it('does not collect staged bytes before their session reference is published', async () => {
+    const localBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['staged bytes'], 'staged.txt', { type: 'text/plain' })
+    );
+
+    await storage.writeJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS,
+      { theme: 'light', apiKey: 'updated-key' }
+    );
+    expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
+      .toBe('staged bytes');
+
+    await storage.writeSessions(handle, [createSession('Staged', [{
+      name: 'staged.txt',
+      type: 'text/plain',
+      size: 12,
+      localBlob
+    }])]);
+    expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
+      .toBe('staged bytes');
+  });
+
+  it('retains content needed by a pinned snapshot across later saves', async () => {
+    const localBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['pinned bytes'], 'pinned.txt', { type: 'text/plain' })
+    );
+    await seedWorkspace([createSession('Pinned', [{
+      name: 'pinned.txt',
+      type: 'text/plain',
+      size: 12,
+      localBlob
+    }])]);
+    const snapshot = await storage.readWorkspaceSnapshot(handle);
+
+    await storage.writeSessions(handle, [createSession('Second')]);
+    await storage.writeSessions(handle, [createSession('Third')]);
+    await storage.writeSessions(handle, [createSession('Fourth')]);
+    await expect(snapshot.readBlob(localBlob)).resolves.toBeInstanceOf(Blob);
+    expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
+      .toBe('pinned bytes');
+
+    snapshot.release?.();
+    await storage.writeSessions(handle, [createSession('Fifth')]);
+    expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`)).toBeNull();
+  });
+
+  it('keeps the active generation unchanged when a replacement write fails', async () => {
     const initialSessions = [createSession('Initial')];
     await seedWorkspace(initialSessions);
-    const manifestBefore = await fileSystem.readText(
-      'data/workspace_manifest.json'
-    );
-    const dataDirectory = await fileSystem.getDirectory('data');
-    const namesBefore = dataDirectory.names();
-    fileSystem.failNextWrite(
-      /workspace_snapshot_.*_settings\.json$/
-    );
-    const replacementSessions = [createSession('Replacement', [{
-      name: 'replacement.txt',
-      type: 'text/plain',
-      size: 11,
-      content: 'data:text/plain;base64,cmVwbGFjZW1lbnQ='
-    }])];
+    const revisionBefore = storage.getWorkspaceRevision();
+    const manifestBefore = await fileSystem.readText('data/workspace_manifest_a.json');
+    fileSystem.failNextWrite(/objects\/[a-f0-9]{64}\.json$/);
 
-    await expect(storage.restoreWorkspaceBackup(
+    await expect(storage.replaceWorkspaceSnapshot(
       handle,
-      createBackup(replacementSessions)
+      {
+        sessions: [createSession('Replacement')],
+        settings: { theme: 'light' },
+        instructions,
+        blobs: new Map()
+      }
     )).rejects.toThrow('Simulated disk full');
 
-    expect(await fileSystem.readText(
-      'data/workspace_manifest.json'
-    )).toBe(manifestBefore);
-    expect(
-      dataDirectory.names().filter(name => name !== 'attachments')
-    ).toEqual(namesBefore);
-    expect(
-      dataDirectory.names().some(name => name.startsWith('workspace_snapshot_'))
-    ).toBe(false);
+    expect(storage.getWorkspaceRevision()).toBe(revisionBefore);
+    expect(await fileSystem.readText('data/workspace_manifest_a.json'))
+      .toBe(manifestBefore);
     await expect(storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS
     )).resolves.toEqual(initialSessions);
-    const attachmentsDirectory = await fileSystem.getDirectory(
-      'data/attachments'
-    );
-    expect(attachmentsDirectory.names()).toEqual([]);
+  });
+
+  it('rejects legacy JSON restore calls with a specific error', async () => {
+    await expect(storage.restoreWorkspaceBackup(
+      handle,
+      createBackup([createSession('Legacy')])
+    )).rejects.toMatchObject({
+      name: 'LegacyWorkspaceBackupUnsupportedError'
+    });
+  });
+
+  it('creates a verified recovery point, preserves the local key, and supports undo', async () => {
+    const initialSessions = [createSession('Initial')];
+    const replacementSessions = [createSession('Replacement')];
+    await seedWorkspace(initialSessions);
+    const { createWorkspaceArchive } = await import('./workspaceArchive');
+    const {
+      restoreWorkspaceArchive,
+      undoLastWorkspaceRestore
+    } = await import('./workspaceRestore');
+    const archive = await createWorkspaceArchive({
+      revision: 40,
+      createdAt: 40,
+      sessions: replacementSessions,
+      settings: {
+        theme: 'light',
+        apiKey: 'must-not-be-restored',
+        lastActiveSessionId: replacementSessions[0].id
+      },
+      instructions,
+      readBlob: async () => {
+        throw new Error('No blobs are referenced.');
+      }
+    }, { reason: 'manual' });
+
+    await restoreWorkspaceArchive(handle, archive, {
+      filename: 'replacement.zip'
+    });
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(replacementSessions);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toMatchObject({
+      theme: 'light',
+      apiKey: 'initial-key'
+    });
+    expect(await storage.readInternalRecoveryArchive(handle)).not.toBeNull();
+
+    await undoLastWorkspaceRestore(handle);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toMatchObject({
+      theme: 'dark',
+      apiKey: 'initial-key'
+    });
+  });
+
+  it('aborts restore without changing the workspace when recovery persistence fails', async () => {
+    const initialSessions = [createSession('Initial')];
+    await seedWorkspace(initialSessions);
+    const { createWorkspaceArchive } = await import('./workspaceArchive');
+    const { restoreWorkspaceArchive } = await import('./workspaceRestore');
+    const replacementSessions = [createSession('Replacement')];
+    const archive = await createWorkspaceArchive({
+      revision: 2,
+      createdAt: 2,
+      sessions: replacementSessions,
+      settings: { theme: 'light', apiKey: '' },
+      instructions,
+      readBlob: async () => {
+        throw new Error('No blobs are referenced.');
+      }
+    }, { reason: 'manual' });
+    fileSystem.failNextWrite(/recovery\/pre-restore\.zip$/);
+
+    await expect(restoreWorkspaceArchive(handle, archive))
+      .rejects.toThrow('Simulated disk full');
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
   });
 });
 
@@ -655,6 +804,19 @@ describe('storage backend migration contracts', () => {
     expect(await fileSystem.readText('data/settings.json')).toBe(
       indexedDbRecords[1].data
     );
+    expect(JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    )).toMatchObject({
+      schemaVersion: 2,
+      revision: 7
+    });
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toEqual({
+      theme: 'dark',
+      apiKey: 'local-key'
+    });
     expect(await fileSystem.readText(
       'data/attachments/attachment-1'
     )).toBe('attachment bytes');

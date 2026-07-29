@@ -22,6 +22,8 @@
     "deploy": "npm run build:web && gh-pages -d dist"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "@zip.js/zip.js": "^2.8.34",
     "lucide-react": "^0.344.0",
     "openai": "^6.26.0",
     "react": "^18.2.0",

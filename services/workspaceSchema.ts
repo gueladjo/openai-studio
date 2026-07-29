@@ -1,6 +1,7 @@
 import {
   FileAttachment,
   GeneratedFile,
+  LocalBlobReference,
   Message,
   OpenAIResponsesUsage,
   Session,
@@ -41,6 +42,7 @@ const MESSAGE_STATUSES = new Set([
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface AppSettings {
   theme: 'dark' | 'light';
@@ -248,11 +250,41 @@ const parseSource = (value: unknown, path: string): Source => {
   return value as Source;
 };
 
+const parseLocalBlobReference = (
+  value: unknown,
+  path: string
+): LocalBlobReference => {
+  const reference = assertRecord(value, path);
+  assertOnlyKeys(reference, ['sha256', 'byteSize', 'mimeType'], path);
+  if (
+    typeof reference.sha256 !== 'string' ||
+    !SHA256_PATTERN.test(reference.sha256)
+  ) {
+    fail(`${path}.sha256`, 'must be a lowercase SHA-256 digest');
+  }
+  assertSafeInteger(
+    reference.byteSize,
+    `${path}.byteSize`,
+    0,
+    MAX_WORKSPACE_BACKUP_BYTES
+  );
+  assertOptionalString(reference.mimeType, `${path}.mimeType`, 512);
+  return value as LocalBlobReference;
+};
+
 const parseGeneratedFile = (value: unknown, path: string): GeneratedFile => {
   const file = assertRecord(value, path);
   assertOnlyKeys(
     file,
-    ['filename', 'fileId', 'containerId', 'displayName', 'mimeType', 'source'],
+    [
+      'filename',
+      'fileId',
+      'containerId',
+      'displayName',
+      'mimeType',
+      'source',
+      'localBlob'
+    ],
     path
   );
   assertString(file.filename, `${path}.filename`, MAX_SHORT_TEXT_LENGTH, false);
@@ -269,6 +301,9 @@ const parseGeneratedFile = (value: unknown, path: string): GeneratedFile => {
   ) {
     fail(`${path}.source`, 'has an unsupported value');
   }
+  if (file.localBlob !== undefined) {
+    parseLocalBlobReference(file.localBlob, `${path}.localBlob`);
+  }
   return value as GeneratedFile;
 };
 
@@ -278,7 +313,11 @@ const parseAttachment = (
   backup: boolean
 ): FileAttachment => {
   const attachment = assertRecord(value, path);
-  assertOnlyKeys(attachment, ['id', 'name', 'type', 'size', 'content'], path);
+  assertOnlyKeys(
+    attachment,
+    ['id', 'name', 'type', 'size', 'localBlob', 'content'],
+    path
+  );
   const id = attachment.id === undefined
     ? undefined
     : assertAttachmentId(attachment.id, `${path}.id`);
@@ -301,7 +340,24 @@ const parseAttachment = (
   if (content !== undefined && !content.startsWith('data:')) {
     fail(`${path}.content`, 'must be a data URL');
   }
-  if (backup && id !== undefined && content === undefined) {
+  if (attachment.localBlob !== undefined) {
+    const localBlob = parseLocalBlobReference(
+      attachment.localBlob,
+      `${path}.localBlob`
+    );
+    if (
+      attachment.size !== undefined &&
+      attachment.size !== localBlob.byteSize
+    ) {
+      fail(`${path}.size`, 'must match localBlob.byteSize');
+    }
+  }
+  if (
+    backup &&
+    id !== undefined &&
+    content === undefined &&
+    attachment.localBlob === undefined
+  ) {
     fail(path, 'cannot reference a local attachment ID without embedded content');
   }
   return value as FileAttachment;

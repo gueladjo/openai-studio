@@ -67,6 +67,12 @@ export interface Source {
   url: string;
 }
 
+export interface LocalBlobReference {
+  sha256: string;
+  byteSize: number;
+  mimeType?: string;
+}
+
 export interface GeneratedFile {
   filename: string;
   fileId: string;
@@ -74,6 +80,7 @@ export interface GeneratedFile {
   displayName?: string;
   mimeType?: string;
   source?: 'container_file_citation';
+  localBlob?: LocalBlobReference;
 }
 
 export type ResponseIncompleteReason = NonNullable<
@@ -112,6 +119,7 @@ export interface FileAttachment {
   name: string;
   type: string;
   size?: number;
+  localBlob?: LocalBlobReference;
   content?: string; // Legacy/backup data URL, or a transient Responses API input
   previewUrl?: string; // Runtime-only object URL for locally stored images
 }

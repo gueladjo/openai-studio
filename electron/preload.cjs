@@ -16,5 +16,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = () => callback();
     ipcRenderer.on('window-close-requested', listener);
     return () => ipcRenderer.removeListener('window-close-requested', listener);
-  }
+  },
+  chooseBackupDirectory: () => ipcRenderer.invoke('backup-choose-directory'),
+  getBackupDestinationStatus: () => ipcRenderer.invoke('backup-destination-status'),
+  writeBackupArchive: async (
+    filename,
+    readChunk,
+    expectedSize,
+    expectedSha256
+  ) => {
+    const id = await ipcRenderer.invoke('backup-write-start', filename);
+    try {
+      while (true) {
+        const value = await readChunk();
+        if (value === null) break;
+        await ipcRenderer.invoke('backup-write-chunk', id, value);
+      }
+      await ipcRenderer.invoke(
+        'backup-write-finish',
+        id,
+        expectedSize,
+        expectedSha256
+      );
+    } catch (error) {
+      await ipcRenderer.invoke('backup-write-abort', id).catch(() => undefined);
+      throw error;
+    }
+  },
+  listBackupArchives: () => ipcRenderer.invoke('backup-list'),
+  readBackupArchive: (filename) => ipcRenderer.invoke('backup-read', filename),
+  deleteBackupArchive: (filename) => ipcRenderer.invoke('backup-delete', filename)
 });

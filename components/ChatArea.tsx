@@ -13,7 +13,6 @@ import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Glo
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getModelConfig } from '../constants';
-import { fetchGeneratedFileContent } from '../services/openaiService';
 import { getSourcePresentation } from '../utils/sourceUrls';
 import {
   ATTACHMENT_INPUT_ACCEPT,
@@ -42,6 +41,7 @@ interface ChatAreaProps {
   ) => Promise<string | undefined>;
   onRegenerateResponse: () => void;
   onShareConversation: () => void;
+  onDownloadGeneratedFile?: (file: GeneratedFile) => Promise<Blob>;
   apiKey: string;
   isLoading: boolean;
   isMobile?: boolean;
@@ -574,16 +574,17 @@ const isFailedAssistantMessage = (message: Message): boolean => (
 
 const GeneratedFilesBlock = ({
     files,
-    apiKey
+    apiKey,
+    onDownloadGeneratedFile
 }: {
     files: GeneratedFile[];
     apiKey: string;
+    onDownloadGeneratedFile: (file: GeneratedFile) => Promise<Blob>;
 }) => {
     const [downloadStates, setDownloadStates] = useState<Record<string, 'idle' | 'downloading' | 'error'>>({});
 
     if (!files || files.length === 0) return null;
 
-    const canDownload = apiKey.trim().length > 0;
     const hasDownloadError = Object.values(downloadStates).includes('error');
 
     const setDownloadState = (
@@ -597,13 +598,14 @@ const GeneratedFilesBlock = ({
     };
 
     const handleDownload = async (file: GeneratedFile, index: number) => {
+        const canDownload = Boolean(file.localBlob) || apiKey.trim().length > 0;
         if (!canDownload) return;
 
         const fileKey = getGeneratedFileKey(file, index);
         setDownloadState(fileKey, 'downloading');
 
         try {
-            const blob = await fetchGeneratedFileContent(file, apiKey);
+            const blob = await onDownloadGeneratedFile(file);
             const typedBlob = !blob.type && file.mimeType
                 ? new Blob([blob], { type: file.mimeType })
                 : blob;
@@ -628,6 +630,7 @@ const GeneratedFilesBlock = ({
                     const downloadState = downloadStates[fileKey] || 'idle';
                     const isDownloading = downloadState === 'downloading';
                     const didFail = downloadState === 'error';
+                    const canDownload = Boolean(file.localBlob) || apiKey.trim().length > 0;
                     const label = getGeneratedFileLabel(file);
                     const title = `${label}\nContainer: ${file.containerId}\nFile: ${file.fileId}`;
 
@@ -665,9 +668,9 @@ const GeneratedFilesBlock = ({
                     );
                 })}
             </div>
-            {!canDownload && (
+            {!files.some(file => file.localBlob || apiKey.trim().length > 0) && (
                 <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-500">
-                    API key required for download. File IDs remain visible for manual retrieval.
+                    API key required until this file has been cached locally.
                 </div>
             )}
             {hasDownloadError && (
@@ -768,6 +771,7 @@ interface MessageRowProps {
   canRegenerate: boolean;
   canEditAttachments?: boolean;
   apiKey: string;
+  onDownloadGeneratedFile?: (file: GeneratedFile) => Promise<Blob>;
   onRetryFailedMessage: (assistantMessageId: string) => void;
   onRemoveFailedAttachment?: (userMessageId: string, attachmentIndex: number) => void;
   onReplaceFailedAttachments?: (
@@ -785,6 +789,7 @@ export const MessageRow = React.memo(({
   canRegenerate,
   canEditAttachments = false,
   apiKey,
+  onDownloadGeneratedFile,
   onRetryFailedMessage,
   onRemoveFailedAttachment,
   onReplaceFailedAttachments,
@@ -970,7 +975,13 @@ export const MessageRow = React.memo(({
 
             {/* Generated File Chips */}
             {message.role === 'assistant' && message.generatedFiles && message.generatedFiles.length > 0 && (
-                <GeneratedFilesBlock files={message.generatedFiles} apiKey={apiKey} />
+                <GeneratedFilesBlock
+                  files={message.generatedFiles}
+                  apiKey={apiKey}
+                  onDownloadGeneratedFile={onDownloadGeneratedFile || (async () => {
+                    throw new Error('Generated-file download is unavailable.');
+                  })}
+                />
             )}
 
             {/* Message Metadata Footer */}
@@ -1027,6 +1038,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onReplaceFailedAttachments,
   onRegenerateResponse,
   onShareConversation,
+  onDownloadGeneratedFile,
   apiKey,
   isLoading,
   isMobile = false,
@@ -1352,6 +1364,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 canRegenerate={canRegenerate}
                 canEditAttachments={canEditAttachments}
                 apiKey={apiKey}
+                onDownloadGeneratedFile={onDownloadGeneratedFile}
                 onRetryFailedMessage={handleRetryFailedMessage}
                 onRemoveFailedAttachment={onRemoveFailedAttachment}
                 onReplaceFailedAttachments={onReplaceFailedAttachments}

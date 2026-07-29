@@ -27,7 +27,7 @@ One request may run per session, while different sessions may stream concurrentl
 coordination helpers, storage facade, and API service. Keep locally testable
 rules in their existing modules rather than expanding the controller.
 `services/storage.ts` is the public persistence facade and composes schema,
-backend, and atomic-snapshot modules. `services/openaiService.ts` is the
+backend, and immutable-generation modules. `services/openaiService.ts` is the
 Responses API boundary for request construction, streaming, cancellation,
 citations, and generated files.
 
@@ -35,9 +35,13 @@ Use this map to start a change at the narrowest boundary:
 
 | Agent task | Canonical source | Focused contract |
 | --- | --- | --- |
-| Persisted JSON fields, portable backup validation, bounds, IDs, and references | `services/workspaceSchema.ts` | `services/workspaceSchema.test.ts`; add `services/storage.integration.test.ts` when the public storage flow changes |
+| Persisted session/settings/instruction fields, bounds, IDs, and references | `services/workspaceSchema.ts` | `services/workspaceSchema.test.ts`; add `services/storage.integration.test.ts` when the public storage flow changes |
 | OPFS/IndexedDB selection and Electron fallback policy | `services/storageBackend.ts` | `services/storageBackend.test.ts` |
-| All-or-rollback workspace snapshot commits | `services/atomicWorkspaceSnapshot.ts` | `services/atomicWorkspaceSnapshot.test.ts` |
+| Immutable objects, alternating manifests, complete-generation validation, pinning, and GC | `services/workspaceGenerationStore.ts`; manifest types in `services/workspaceGeneration.ts` | `services/storage.integration.test.ts` |
+| Portable ZIP layout, hashes, path/size limits, and restore inspection | `services/workspaceArchive.ts` | `services/workspaceArchive.test.ts` |
+| Mandatory recovery-point creation and restore undo | `services/workspaceRestore.ts` | `services/storage.integration.test.ts` |
+| Daily scheduling, read-back validation, retries, and three-file retention | `services/backupScheduler.ts` | `services/backupScheduler.test.ts` |
+| Web/Electron destination capability and managed-file policy | `services/backupDestination.ts`; `electron/backupFiles.js` | `electron/backupFiles.test.js`; `electron/main.test.js` |
 | Cross-tab writer/reader ownership and reload coordination | `services/workspaceSync.ts` | `services/workspaceSync.test.ts` |
 | Debounced, versioned, retried, and flushed saves | `services/saveQueue.ts` | `services/saveQueue.test.ts` |
 | In-flight operation ownership and session/workspace invalidation | `services/operationRegistry.ts` | `services/operationRegistry.test.ts` |
@@ -58,10 +62,11 @@ Other primary entry points:
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.generate.test.ts`: mocked-SDK contracts for request payloads, model/tool capabilities, attachment input parts, streaming/terminal output, cancellation/download endpoints, optional-capability retry behavior, and conversation history.
 - `services/openaiService.test.ts`: citation marker recognition, annotation application, and redundant source-label cleanup.
-- `services/storage.integration.test.ts`: public storage contracts against in-memory OPFS and IndexedDB, including revisions, recovery, attachments, restore rollback, backend migration, and Electron fallback refusal.
+- `services/storage.integration.test.ts`: public storage contracts against in-memory OPFS and IndexedDB, including v1 migration, immutable revisions, whole-generation recovery, pinned content, attachments, verified restore/undo, backend migration, and Electron fallback refusal.
+- `services/workspaceArchive.test.ts` and `services/backupScheduler.test.ts`: ZIP round trips and adversarial input, daily scheduling, close-time failure, corrupt-file handling, and retention.
 - `utils/conversationExport.ts` and `utils/sourceUrls.ts`: Markdown transcript export and citation URL handling.
 - `types.ts` and `constants.ts`: application/API types, model metadata, defaults, and configuration normalization.
-- `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window assembly, IPC, and the narrow renderer bridge; `electron/main.test.js` covers their integration policy.
+- `electron/main.js`, `electron/preload.cjs`, and `electron/backupFiles.js`: Electron lifecycle, window assembly, narrow renderer IPC, folder configuration, backpressured archive writes, fsync/read-back verification, and atomic publication.
 - `vite.config.ts` and `buildPolicy.test.ts`: build modes, secret injection policy, base paths, and generated PWA behavior.
 - `index.html`, `index.css`, `tailwind.config.js`, and `postcss.config.js`: document shell and build-time Tailwind pipeline.
 - `public/`: tracked static icons. `scripts/generate-icons.js` overwrites the generated PNG icon set.
@@ -149,7 +154,7 @@ that effect:
 - Requests intentionally use `store: true`, which supports response threading. A change to storage policy must also redesign continuation behavior and update user documentation.
 - System prompts belong in top-level `instructions`. Images map to `input_image`; other readable attachments map to base64/data-URL `input_file` parts.
 - Web Search currently sends a medium search context and a hard-coded approximate New York, US location. Code Interpreter uses an automatic container.
-- Generated-file downloads require the in-app API key state plus both container and file IDs. An environment-only key can authorize requests but leaves the download controls unavailable.
+- Generated files are cached into the shared local blob store after a response when possible. Cached downloads work without a key; uncached download controls require the in-app key plus both container and file IDs. Cache failure must retain the remote metadata.
 - New-chat titles are a separate non-streaming GPT-5 Nano request.
 - `thinkingDuration` is time to the first streamed text token, not total reasoning time or chain-of-thought duration.
 - Citation post-processing helpers in `services/openaiService.ts` are pure and covered by `services/openaiService.test.ts`. Keep marker recognition, annotation replacement, source deduplication, and adjacent-label cleanup cases current when changing that pipeline.
@@ -159,25 +164,54 @@ that effect:
 
 - Storage must load successfully before any writes are enabled. Do not allow initialization defaults to overwrite an unread workspace.
 - Prefer OPFS. Browsers may fall back to IndexedDB, but Electron intentionally fails instead of silently opening an empty fallback store when OPFS is unavailable.
-- The logical JSON files are `sessions.json`, `settings.json`, and `system_instructions.json`; attachment bytes live under `attachments/` or in separate IndexedDB records. Each changed JSON write preserves one `<filename>.bak` recovery copy.
-- Keep malformed-primary recovery through the backup file. Schema and migration changes must tolerate older persisted data.
+- Local storage schema v2 uses `workspace_manifest_a.json` and
+  `workspace_manifest_b.json`. Manifests reference immutable SHA-256 JSON
+  objects in `objects/` and attachment/cached-generated-file bytes in
+  `blobs/`. A candidate is usable only when the manifest, every object, every
+  blob, and all runtime schema/reference checks validate as one unit.
+- Publish the alternate manifest slot only after every new object/blob reads
+  back with the declared byte size and hash. Startup selects the highest
+  complete revision; fallback is whole-generation and must never mix files
+  from different revisions.
+- A pinned `readWorkspaceSnapshot()` protects its generation while a portable
+  archive is prepared. Garbage collection retains both valid manifests and
+  pinned content; remove orphans only after a newer manifest verifies.
+- Previous `sessions.json`, `settings.json`, `system_instructions.json`,
+  `.bak`, snapshot, and `attachments/` records are migration inputs only.
+  Keep them until v2 has read back successfully, and never replace failed
+  migration with defaults.
 - Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
-- Persisted sessions reference separate attachment blobs. Legacy embedded data URLs migrate on load, while workspace exports re-embed attachment data and can therefore still be large and sensitive.
+- Persisted attachments and cached generated files use `LocalBlobReference`
+  records with byte size and SHA-256. Legacy IDs/data URLs migrate on load.
 - `services/workspaceSchema.ts` is the canonical strict runtime boundary for
-  persisted JSON and portable workspace backups. It rejects unknown keys and
-  unsupported values, enforces sizes and counts, validates IDs and
-  cross-references, accepts an omitted `schemaVersion` for legacy backups,
-  rejects a declared unsupported version, normalizes successful parses to the
-  current version, and owns primary/`.bak` JSON parsing. Do not treat
-  TypeScript types as sufficient validation.
+  persisted session/settings/instruction values. It rejects unknown keys and
+  unsupported values, enforces sizes and counts, and validates IDs,
+  local-blob metadata, and cross-references. `services/workspaceArchive.ts`
+  owns the strict portable ZIP boundary. Do not treat TypeScript types as
+  sufficient validation.
 - For a persisted-field change, update `types.ts` and
   `constants.ts`/configuration normalization when relevant, every affected
   runtime parser, and the deliberate backward-compatibility or
   `schemaVersion` policy. Re-check ID/reference validation and extend
   `services/workspaceSchema.test.ts`; add
-  `services/storage.integration.test.ts` coverage when storage, recovery, or
-  import/export behavior changes.
-- Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import validates the supplied workspace through the strict schema and overwrites supplied sections only after confirmation.
+  `services/storage.integration.test.ts` coverage when storage or recovery
+  changes; extend `services/workspaceArchive.test.ts` for portable-format
+  changes.
+- Portable archives are standard ZIPs with a strict `manifest.json`, separate
+  workspace JSON entries, and raw `blobs/<sha256>` entries. Enforce the 2 GiB
+  compressed/uncompressed ceiling, 100,000-entry ceiling, per-attachment
+  limit, canonical paths, case-insensitive uniqueness, exact declared-entry
+  set, CRC/read completion, and SHA-256/byte-length checks.
+- Portable export excludes `settings.apiKey`, destination handles/paths,
+  permissions, and scheduler history. Restore preserves the current key,
+  requires a verified pre-restore recovery archive, publishes one generation,
+  and exposes undo from the protected recovery archive. Legacy JSON exports
+  receive a specific unsupported-format error.
+- Automatic backups are opt-in, changed-revision-only, writer-tab-only, and at
+  most once per local day. Re-evaluate after startup/resume/writer acquisition
+  and saves; postpone for responses, file caching, and destructive work.
+  Verify destination read-back before rotation and retain three valid managed
+  archives without touching unrelated files.
 - Chat deletion requires confirmation and has no undo. Preserve that risk in user-facing documentation unless the workflow changes.
 - Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
 
@@ -188,14 +222,23 @@ that effect:
 - `vite.config.ts` is authoritative for the generated PWA manifest and service worker.
 - The PWA caches the built shell and selected assets, including the compiled Tailwind CSS, but model requests require connectivity. Google Fonts remain external and are runtime-cached by Workbox.
 - `__APP_VERSION__` is read from `package.json` at build time.
-- Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes only window controls, maximize state, and clipboard writes.
+- Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes window controls, clipboard writes, and validated managed-backup operations. Absolute destination paths remain main-process-only.
+- Electron backup writes use a unique managed partial, sequential backpressured
+  chunks, SHA-256/size verification, `fsync`, atomic rename, and final
+  read-back. Validate managed filenames in the main process and reject
+  traversal. Close flushes saves and awaits a due backup; failure offers Retry
+  or Close Without Backup.
+- Compatible web/PWA builds use a separately persisted File System Access
+  directory handle and require explicit Reconnect when permission is
+  `prompt`. Unsupported browsers use portable Share/Save plus file-picker
+  restore; do not use browser-private storage as an automatic-transfer folder.
 - Keep external navigation in the system browser and keep renderer IPC narrow. Electron's Chromium sandbox is currently disabled, which makes bridge and navigation discipline especially important.
 
 ## Security And Configuration
 
 - Never commit API keys, real user data, or workspace exports. Local `.env*` files are ignored; `.env.example` is explicitly allowed but is not currently present.
 - Development and Electron modes may inline `OPENAI_API_KEY` from Vite environment files into renderer JavaScript. Never package or distribute a developer key. Production web mode excludes the environment key.
-- The Settings key is stored locally without application-level encryption but is excluded from workspace exports and ignored on import. Do not log it or expose it in diagnostics.
+- The Settings key is stored locally without application-level encryption but is excluded from portable archives and ignored on restore. Archives themselves are unencrypted and can contain sensitive prompts, responses, attachments, and cached generated files.
 - This direct-client architecture is intended for user-owned keys. Do not add a shared deployment key without moving API calls behind an authenticated server.
 - Prompts and attachments are sent to OpenAI, and requests use server-side response storage. Keep privacy claims and backup warnings accurate when behavior changes.
 
@@ -229,9 +272,18 @@ Then smoke-test the affected workflow. Use this risk-based matrix:
 - UI changes: web at desktop and below 768px; check overflow, drawers/modals, keyboard send behavior, and light/dark themes.
 - App request/state changes: extend `App.integration.test.tsx`; cover text deltas, authoritative completion metadata, cross-session routing, stop/failure, retry/regenerate, interrupted-request recovery, destructive operations, and close checkpointing.
 - Attachment/tool/service changes: extend the mocked SDK contracts in `services/openaiService.generate.test.ts`; cover images, non-image files, citations, Code Interpreter output, generated-file downloads, optional-capability fallback, and history/thread construction.
-- Storage changes: extend `services/storage.integration.test.ts` using only its in-memory backends; cover first load, revisions, backup recovery, attachments, atomic restore, export/import key semantics, backend migration, and injected failures. Then smoke-test checkpointed persistence, lifecycle/close flushing, and reload.
+- Storage changes: extend `services/storage.integration.test.ts` using only its in-memory backends; cover v1 migration, immutable object reuse, alternating-manifest failures, whole-generation fallback, both manifests corrupt, stale writers, hashes, bounded GC, pinning, blobs, recovery/undo, key semantics, backend migration, and injected failures.
+- Archive/scheduler changes: extend `services/workspaceArchive.test.ts` and
+  `services/backupScheduler.test.ts`; cover binary round trips, missing cached
+  files, cancellation, limits, malformed/adversarial ZIPs, day rollover,
+  unchanged-revision skip, writer/operation gating, retries, read-back failure,
+  corrupt-file handling, and exactly-three-valid retention.
 - PWA/config changes: keep `buildPolicy.test.ts` current, then run `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
-- Electron/preload changes: keep `electron/main.test.js` current, then run `npm run electron:dev`; exercise window controls, clipboard behavior, external links, close-save failure handling, and storage failure handling.
+- Electron/preload changes: keep `electron/main.test.js` and
+  `electron/backupFiles.test.js` current, then run `npm run electron:dev`;
+  exercise window controls, clipboard behavior, external links, folder
+  selection, partial cleanup, atomic backup publication, close backup
+  Retry/Close Without Backup, and storage failure handling.
 - Packaging changes: when packaging is explicitly in scope, run `npm run dist`
   on the target host with the required packaging/signing tooling.
 
