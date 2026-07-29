@@ -79,6 +79,16 @@ describe('Sidebar workspace merge controls', () => {
     });
   };
 
+  it('shows a settings title and icon without the former user label', async () => {
+    await renderSidebar();
+
+    expect(container.textContent).not.toContain('OpenAI User');
+    expect(container.querySelector('.lucide-settings')).not.toBeNull();
+    const settingsLabel = Array.from(container.querySelectorAll('span'))
+      .find(element => element.textContent === 'Settings');
+    expect(settingsLabel?.classList).toContain('text-base');
+  });
+
   it('uses a separate ZIP input and forwards the selected file immediately', async () => {
     const onMergeData = vi.fn();
     await renderSidebar({ onMergeData });

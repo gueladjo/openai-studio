@@ -18,7 +18,8 @@ import {
   FolderOpen,
   RefreshCw,
   ShieldCheck,
-  GitMerge
+  GitMerge,
+  Settings
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
 
@@ -184,10 +185,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => setShowSettings(!showSettings)}
          >
              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-green-400 to-blue-500"></div>
+                <div className="w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400">
+                  <Settings size={20} aria-hidden="true" />
+                </div>
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-200">OpenAI User</span>
-                  <span className="text-xs text-gray-500">Settings</span>
+                  <span className="text-base font-medium text-gray-700 dark:text-gray-200">Settings</span>
                 </div>
              </div>
              {showSettings ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
