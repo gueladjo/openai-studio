@@ -76,18 +76,19 @@ Use Node.js 20.19+ and install the lockfile exactly:
 npm ci
 ```
 
-On WSL, a non-interactive shell may report that `node` is missing while
-resolving `npm` to a Windows executable under `/mnt/c`. Do not conclude that
-project checks are unavailable. The user's interactive login shell initializes
-the native NVM runtime under `/home/moctar/.nvm`; verify and run commands
-through that environment:
+On WSL, a non-interactive command runner may skip user shell initialization. If
+an expected tool is missing or resolves to a Windows executable under `/mnt/c`,
+do not conclude that the tool or project checks are unavailable. Compare its
+resolution in the user's interactive login shell and run the affected command
+through that environment. For this project, that shell initializes the native
+NVM runtime under `/home/moctar/.nvm`:
 
 ```bash
 bash -ilc 'command -v node && command -v npm && node --version && npm --version'
 bash -ilc 'npm test'
 ```
 
-The resolved `node` and `npm` paths should come from
+In the Node example, the resolved `node` and `npm` paths should come from
 `/home/moctar/.nvm/versions/node/.../bin`, not `/mnt/c`.
 
 Ordinary finite local verification commands are:

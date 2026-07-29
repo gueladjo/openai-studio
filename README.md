@@ -55,10 +55,11 @@ Open `http://localhost:5173/openai-studio/`. Vite provides hot module replacemen
 
 Create a chat, open Settings from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
 
-On WSL, a non-interactive shell may incorrectly resolve `npm` to a Windows
-installation under `/mnt/c` and fail to find `node`. If that happens, run
-project commands through the user's interactive login shell so the native NVM
-runtime is initialized:
+On WSL, a non-interactive command runner may skip user shell initialization. If
+an expected tool is missing or resolves to a Windows executable under `/mnt/c`,
+compare its resolution in the user's interactive login shell and run the
+affected command through that environment. For this project, doing so
+initializes the native NVM runtime:
 
 ```bash
 bash -ilc 'command -v node && command -v npm && node --version && npm --version'
