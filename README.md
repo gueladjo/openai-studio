@@ -55,6 +55,16 @@ Open `http://localhost:5173/openai-studio/`. Vite provides hot module replacemen
 
 Create a chat, open Settings from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
 
+On WSL, a non-interactive shell may incorrectly resolve `npm` to a Windows
+installation under `/mnt/c` and fail to find `node`. If that happens, run
+project commands through the user's interactive login shell so the native NVM
+runtime is initialized:
+
+```bash
+bash -ilc 'command -v node && command -v npm && node --version && npm --version'
+bash -ilc 'npm run dev'
+```
+
 ### Optional Local Environment Key
 
 For local development or Electron development, an ignored `.env.local` file can provide a convenience key:
@@ -109,7 +119,11 @@ Deploy the current web build to the configured `gh-pages` destination with:
 npm run deploy
 ```
 
-The service worker caches the application shell and selected assets. OpenAI requests still require a network connection, so installation does not make model features available offline. Tailwind is loaded from `cdn.tailwindcss.com` and is not covered by the current runtime cache, so uncached styling also requires connectivity.
+The service worker caches the application shell and selected assets, including
+the Tailwind CSS compiled at build time through PostCSS. Google Fonts remain
+external and are runtime-cached by Workbox. OpenAI requests still require a
+network connection, so installation does not make model features available
+offline.
 
 ## Electron
 
@@ -159,30 +173,20 @@ Chat deletion asks for confirmation and has no in-app undo. Export the workspace
 ## Architecture
 
 ```text
-index.tsx
-  -> App.tsx                 application state, persistence, request lifecycle
-      App.integration.test.tsx  mocked request, persistence, and race contracts
-      -> components/         chat, sidebar, configuration, Electron title bar
-      -> services/
-          storage.ts         OPFS/IndexedDB persistence and workspace backup
-          storage.integration.test.ts  in-memory OPFS/IndexedDB contracts
-          openaiService.ts   Responses API requests, streaming, tools, citations
-          openaiService.generate.test.ts  mocked SDK request/stream contracts
-          openaiService.test.ts  citation post-processing unit tests
-      -> utils/              conversation export and source URL handling
-
-electron/                    Electron main and preload processes
-  main.test.js               window, navigation, and close-handshake policy
-types.ts                     application types and OpenAI SDK-backed aliases
-constants.ts                 model metadata and configuration normalization
-vite.config.ts               web/Electron asset modes and generated PWA config
-buildPolicy.test.ts          API-key injection, base-path, and PWA contracts
-vitest.config.ts             Node unit-test configuration
-public/                      static icons
-scripts/                     maintenance utilities
+ChatArea user input -> App request/session state -> openaiService streaming API
+                              |
+                              +-> storage persistence
 ```
 
-`App.tsx` owns the application state and passes it to functional React components. `services/openaiService.ts` threads compatible turns with `previous_response_id`, streams text deltas into placeholders, and parses the completed response for citations, usage, Code Interpreter output, and generated files.
+`App.tsx` owns application state and orchestrates save, workspace-coordination,
+and operation state. `components/ChatArea.tsx` owns per-session composer drafts
+through `utils/chatDrafts.ts`.
+`services/storage.ts` is the OPFS/IndexedDB persistence facade and composes
+strict workspace-schema validation, backend selection, and atomic snapshots.
+`services/openaiService.ts` constructs Responses API requests, streams text,
+and handles response metadata and generated files. See
+[AGENTS.md](AGENTS.md) for the canonical contributor task-to-module and
+focused-test map.
 
 ## Development Verification
 
@@ -194,12 +198,21 @@ npm run build
 npm run build:web
 ```
 
-Use targeted Vitest files while iterating, then run the complete suite before
-handoff. The default environment is Node; `App.integration.test.tsx` opts into
+Use targeted Vitest files while iterating:
+
+```bash
+npm test -- services/workspaceSchema.test.ts
+npm test -- services/openaiService.generate.test.ts
+npm test -- App.integration.test.tsx
+```
+
+Then run the complete suite and affected builds before handoff. The default
+environment is Node; `App.integration.test.tsx` opts into
 `happy-dom`, mocks its child components and I/O boundaries, and uses fake
 timers. `services/storage.integration.test.ts` uses an in-memory OPFS plus
 `fake-indexeddb`. Keep those tests isolated from real user storage and never put
-a real API key or workspace export into a fixture.
+a real API key or workspace export into a fixture. Record and report
+pre-existing failures separately.
 
 When changing a protected boundary, update its contract suite:
 

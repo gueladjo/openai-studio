@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+This file is the canonical mutable contract for coding agents working in this
+repository. Keep user and operator instructions in `README.md`; keep
+tool-specific files such as `CLAUDE.md` limited to compatibility notes and
+links back here rather than duplicating architecture, invariants, or commands.
+
 ## Project Overview
 
 OpenAI Studio is a React 18 and TypeScript client for the OpenAI Responses API. Vite produces either a web/PWA bundle or an Electron renderer bundle. The OpenAI SDK runs directly in the renderer; there is no application server.
@@ -16,31 +21,50 @@ ChatArea user input -> App request/session state -> openaiService streaming API
 
 One request may run per session, while different sessions may stream concurrently.
 
-## Repository Map
+## Task And Ownership Map
+
+`App.tsx` is the state and workflow orchestrator: it composes the extracted
+coordination helpers, storage facade, and API service. Keep locally testable
+rules in their existing modules rather than expanding the controller.
+`services/storage.ts` is the public persistence facade and composes schema,
+backend, and atomic-snapshot modules. `services/openaiService.ts` is the
+Responses API boundary for request construction, streaming, cancellation,
+citations, and generated files.
+
+Use this map to start a change at the narrowest boundary:
+
+| Agent task | Canonical source | Focused contract |
+| --- | --- | --- |
+| Persisted JSON fields, portable backup validation, bounds, IDs, and references | `services/workspaceSchema.ts` | `services/workspaceSchema.test.ts`; add `services/storage.integration.test.ts` when the public storage flow changes |
+| OPFS/IndexedDB selection and Electron fallback policy | `services/storageBackend.ts` | `services/storageBackend.test.ts` |
+| All-or-rollback workspace snapshot commits | `services/atomicWorkspaceSnapshot.ts` | `services/atomicWorkspaceSnapshot.test.ts` |
+| Cross-tab writer/reader ownership and reload coordination | `services/workspaceSync.ts` | `services/workspaceSync.test.ts` |
+| Debounced, versioned, retried, and flushed saves | `services/saveQueue.ts` | `services/saveQueue.test.ts` |
+| In-flight operation ownership and session/workspace invalidation | `services/operationRegistry.ts` | `services/operationRegistry.test.ts` |
+| Serialization of destructive or workspace-wide operations | `services/serializedOperationQueue.ts` | `services/serializedOperationQueue.test.ts` |
+| Supported attachment formats, MIME normalization, and size limits | `utils/attachmentValidation.ts` | `utils/attachmentValidation.test.ts` |
+| Per-session composer draft transitions | `utils/chatDrafts.ts` | `utils/chatDrafts.test.ts` |
+| Destructive chat confirmation policy | `utils/chatDeletion.ts` | `utils/chatDeletion.test.ts` |
+| Electron external-navigation and same-document policy | `electron/urlPolicy.js` | `electron/urlPolicy.test.js` |
+| Electron development-server identity and readiness checks | `electron/devServer.js` | `electron/devServer.test.js` |
+
+Other primary entry points:
 
 - `index.tsx`: React bootstrap.
-- `App.tsx`: central state, storage initialization, serialized/checkpointed saves, response lifecycle, stop/retry/regenerate, and import/export.
 - `App.integration.test.tsx`: happy-dom controller coverage with mocked child components, storage, workspace coordination, and OpenAI calls; protects startup writes, request routing/termination, destructive races, and close flushing.
 - `components/ChatArea.tsx`: composer, attachments, message rendering, response details, citations, generated files, and conversation Markdown export.
 - `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
-- `services/openaiService.ts`: OpenAI SDK integration, stream parsing/cancellation, response threading, citations, and generated-file retrieval.
-- `services/openaiService.generate.test.ts`: mocked-SDK Vitest coverage for request payloads, model/tool capabilities, attachment input parts, streaming/terminal output, cancellation/download endpoints, optional-capability retry behavior, and conversation-history construction.
-- `services/openaiService.test.ts`: Vitest coverage for citation marker recognition, annotation application, and redundant source-label cleanup.
-- `services/storage.ts`: OPFS/IndexedDB abstraction, separate attachment records, rolling backups, and workspace backup/restore.
-- `services/storage.integration.test.ts`: public storage contracts against an in-memory OPFS and `fake-indexeddb`, including revisions, recovery, attachments, restore rollback, backend migration, and Electron fallback refusal.
-- `utils/conversationExport.ts`: Markdown transcript export and filename handling.
-- `utils/sourceUrls.ts`: citation URL validation and display metadata.
-- `types.ts`: application types plus aliases to Responses API SDK types.
-- `constants.ts`: model catalog, defaults, and config normalization.
-- `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window policy, IPC, and the narrow renderer bridge.
-- `electron/main.test.js`: mocked Electron main-process coverage for BrowserWindow isolation, navigation policy, and the renderer-confirmed close/quit handshake.
-- `vite.config.ts`: mode-specific base paths, environment injection, app version, and authoritative generated PWA configuration.
-- `buildPolicy.test.ts`: production-web key exclusion, mode-specific base paths, and generated PWA navigation metadata.
-- `vitest.config.ts`: Node unit-test environment plus the test-only app-version definition.
-- `index.html` and `index.css`: document shell and font links; `index.css` opens with the `@tailwind` directives and holds global/custom CSS. `tailwind.config.js` and `postcss.config.js` drive the build-time Tailwind pipeline.
-- `public/`: static icons. `scripts/generate-icons.js` regenerates PNG icons.
+- `services/openaiService.generate.test.ts`: mocked-SDK contracts for request payloads, model/tool capabilities, attachment input parts, streaming/terminal output, cancellation/download endpoints, optional-capability retry behavior, and conversation history.
+- `services/openaiService.test.ts`: citation marker recognition, annotation application, and redundant source-label cleanup.
+- `services/storage.integration.test.ts`: public storage contracts against in-memory OPFS and IndexedDB, including revisions, recovery, attachments, restore rollback, backend migration, and Electron fallback refusal.
+- `utils/conversationExport.ts` and `utils/sourceUrls.ts`: Markdown transcript export and citation URL handling.
+- `types.ts` and `constants.ts`: application/API types, model metadata, defaults, and configuration normalization.
+- `electron/main.js` and `electron/preload.cjs`: Electron lifecycle, window assembly, IPC, and the narrow renderer bridge; `electron/main.test.js` covers their integration policy.
+- `vite.config.ts` and `buildPolicy.test.ts`: build modes, secret injection policy, base paths, and generated PWA behavior.
+- `index.html`, `index.css`, `tailwind.config.js`, and `postcss.config.js`: document shell and build-time Tailwind pipeline.
+- `public/`: tracked static icons. `scripts/generate-icons.js` overwrites the generated PNG icon set.
 
 Generated `node_modules/`, `dist/`, and `release/` content is ignored and should not be edited.
 
@@ -52,22 +76,53 @@ Use Node.js 20.19+ and install the lockfile exactly:
 npm ci
 ```
 
-- `npm run dev`: web dev server at `http://localhost:5173/openai-studio/`.
+On WSL, a non-interactive shell may report that `node` is missing while
+resolving `npm` to a Windows executable under `/mnt/c`. Do not conclude that
+project checks are unavailable. The user's interactive login shell initializes
+the native NVM runtime under `/home/moctar/.nvm`; verify and run commands
+through that environment:
+
+```bash
+bash -ilc 'command -v node && command -v npm && node --version && npm --version'
+bash -ilc 'npm test'
+```
+
+The resolved `node` and `npm` paths should come from
+`/home/moctar/.nvm/versions/node/.../bin`, not `/mnt/c`.
+
+Ordinary finite local verification commands are:
+
 - `npm test`: run the Vitest unit suite once.
-- `npm run electron:dev`: Vite in Electron mode plus Electron. The Electron main process is fixed to port 5173.
 - `npm run build`: TypeScript check plus Electron-mode Vite output in `dist/`.
 - `npm run build:electron`: explicit equivalent of `npm run build`.
 - `npm run build:web`: TypeScript check plus PWA-enabled web output in `dist/`.
-- `npm run preview`: serves the existing `dist/`; run `npm run build:web` first and open `http://localhost:4173/openai-studio/`.
-- `npm run dist`: Electron build plus host-platform packaging into `release/`.
-- `npm run deploy`: web build plus `gh-pages -d dist`.
-- `node scripts/generate-icons.js`: regenerate application icons; there is no npm alias.
 
 There is no lint or format command. Vitest covers pure logic, server-rendered
 component behavior, mocked-SDK generation, the App controller in `happy-dom`,
 and storage through in-memory OPFS/IndexedDB doubles. The suite must not require
 a live API key, real browser profile, real user storage, or Electron process.
 Prefer fake timers and deferred promises over real waits.
+
+Development servers are interactive, long-running processes:
+
+- `npm run dev`: starts the web development server.
+- `npm run preview`: serves the existing `dist/`; run `npm run build:web` first.
+- `npm run electron:dev`: starts Vite and Electron and reserves port 5173.
+
+The following commands have material side effects and are not ordinary
+verification. Run them only when the task explicitly includes or authorizes
+that effect:
+
+- `npm run clean`: recursively removes `node_modules`, build/package output,
+  and logs. Use `npm run clean -- --dry-run` to inspect targets first.
+- `node scripts/generate-icons.js`: overwrites tracked PNG icons.
+- `npm version patch|minor|major`: updates version files and creates a commit
+  and Git tag by default.
+- `npm run dist`: builds and packages host-platform Electron artifacts into
+  `release/`.
+- `npm run deploy`: builds the web app and publishes `dist/` through
+  `gh-pages`.
+- Live API smoke tests: consume account quota and create stored responses.
 
 ## Coding Conventions
 
@@ -107,7 +162,21 @@ Prefer fake timers and deferred promises over real waits.
 - Keep malformed-primary recovery through the backup file. Schema and migration changes must tolerate older persisted data.
 - Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
 - Persisted sessions reference separate attachment blobs. Legacy embedded data URLs migrate on load, while workspace exports re-embed attachment data and can therefore still be large and sensitive.
-- Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import performs only basic shape validation and overwrites supplied workspace sections after confirmation. Strengthen validation before trusting new fields.
+- `services/workspaceSchema.ts` is the canonical strict runtime boundary for
+  persisted JSON and portable workspace backups. It rejects unknown keys and
+  unsupported values, enforces sizes and counts, validates IDs and
+  cross-references, accepts an omitted `schemaVersion` for legacy backups,
+  rejects a declared unsupported version, normalizes successful parses to the
+  current version, and owns primary/`.bak` JSON parsing. Do not treat
+  TypeScript types as sufficient validation.
+- For a persisted-field change, update `types.ts` and
+  `constants.ts`/configuration normalization when relevant, every affected
+  runtime parser, and the deliberate backward-compatibility or
+  `schemaVersion` policy. Re-check ID/reference validation and extend
+  `services/workspaceSchema.test.ts`; add
+  `services/storage.integration.test.ts` coverage when storage, recovery, or
+  import/export behavior changes.
+- Workspace export strips `settings.apiKey`, and restore ignores any key inside a backup file, preserving the workspace's current key. Import validates the supplied workspace through the strict schema and overwrites supplied sections only after confirmation.
 - Chat deletion requires confirmation and has no undo. Preserve that risk in user-facing documentation unless the workflow changes.
 - Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
 
@@ -131,6 +200,21 @@ Prefer fake timers and deferred promises over real waits.
 
 ## Verification
 
+Run the affected focused contracts before and during a change. The `test`
+script is `vitest run`, so npm appends a test path after `--`:
+
+```bash
+npm test -- services/workspaceSchema.test.ts
+npm test -- services/saveQueue.test.ts
+npm test -- services/openaiService.generate.test.ts
+npm test -- electron/urlPolicy.test.js
+```
+
+The task map above names the focused test for each extracted boundary. After
+the focused checks pass, run the full suite and the builds appropriate to the
+change. Record and report any pre-existing failure separately from failures
+introduced by the change.
+
 For shared React, TypeScript, service, storage, or configuration changes, run the unit suite and both build modes:
 
 ```bash
@@ -147,9 +231,11 @@ Then smoke-test the affected workflow. Use this risk-based matrix:
 - Storage changes: extend `services/storage.integration.test.ts` using only its in-memory backends; cover first load, revisions, backup recovery, attachments, atomic restore, export/import key semantics, backend migration, and injected failures. Then smoke-test checkpointed persistence, lifecycle/close flushing, and reload.
 - PWA/config changes: keep `buildPolicy.test.ts` current, then run `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.
 - Electron/preload changes: keep `electron/main.test.js` current, then run `npm run electron:dev`; exercise window controls, clipboard behavior, external links, close-save failure handling, and storage failure handling.
-- Packaging changes: `npm run dist` on the target host when the required packaging/signing tooling is available.
+- Packaging changes: when packaging is explicitly in scope, run `npm run dist`
+  on the target host with the required packaging/signing tooling.
 
-Live API smoke tests consume account quota and can create stored responses. Use a personal test key and report when API-dependent paths were not exercised.
+When explicitly authorized, use a personal test key for live API smoke tests
+and report which API-dependent paths were or were not exercised.
 
 ## Commits And Pull Requests
 
