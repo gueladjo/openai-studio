@@ -10,6 +10,7 @@ import {
   BackupArchiveError,
   createWorkspaceArchive,
   inspectWorkspaceArchive,
+  selectWorkspaceArchiveBlobEntries,
   UnsupportedLegacyBackupError
 } from './workspaceArchive';
 import type { WorkspaceSnapshot } from './storage';
@@ -153,6 +154,30 @@ describe('portable workspace archive', () => {
     expect(await inspected.replacement.blobs.get(generatedHash)!.text())
       .toBe('cached generated output');
     expect(await archive.text()).not.toContain('must-not-leave-device');
+  });
+
+  it('supports pre-merge recovery archives and filters staged blob entries', async () => {
+    const archive = await createWorkspaceArchive(snapshot, {
+      reason: 'pre-merge'
+    });
+    const inspected = await inspectWorkspaceArchive(archive, {
+      retainBlobs: false
+    });
+
+    expect(inspected.preview.reason).toBe('pre-merge');
+    expect(selectWorkspaceArchiveBlobEntries(
+      inspected.manifest,
+      new Set([generatedHash])
+    )).toEqual([
+      expect.objectContaining({
+        path: `blobs/${generatedHash}`,
+        sha256: generatedHash
+      })
+    ]);
+    expect(selectWorkspaceArchiveBlobEntries(
+      inspected.manifest,
+      new Set()
+    )).toEqual([]);
   });
 
   it('rejects a truncated archive before exposing a restore source', async () => {

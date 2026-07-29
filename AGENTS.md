@@ -38,8 +38,9 @@ Use this map to start a change at the narrowest boundary:
 | Persisted session/settings/instruction fields, bounds, IDs, and references | `services/workspaceSchema.ts` | `services/workspaceSchema.test.ts`; add `services/storage.integration.test.ts` when the public storage flow changes |
 | OPFS/IndexedDB selection and Electron fallback policy | `services/storageBackend.ts` | `services/storageBackend.test.ts` |
 | Immutable objects, alternating manifests, complete-generation validation, pinning, and GC | `services/workspaceGenerationStore.ts`; manifest types in `services/workspaceGeneration.ts` | `services/storage.integration.test.ts` |
-| Portable ZIP layout, hashes, path/size limits, and restore inspection | `services/workspaceArchive.ts` | `services/workspaceArchive.test.ts` |
-| Mandatory recovery-point creation and restore undo | `services/workspaceRestore.ts` | `services/storage.integration.test.ts` |
+| Portable ZIP layout, hashes, path/size limits, and merge/restore inspection | `services/workspaceArchive.ts` | `services/workspaceArchive.test.ts` |
+| Whole-chat backup merge, collision remapping, instruction reuse, ordering, and imported-blob selection | `services/workspaceMerge.ts` | `services/workspaceMerge.test.ts`; `services/storage.integration.test.ts` |
+| Mandatory recovery-point creation and merge/restore undo | `services/workspaceRestore.ts` | `services/storage.integration.test.ts` |
 | Daily scheduling, read-back validation, retries, and three-file retention | `services/backupScheduler.ts` | `services/backupScheduler.test.ts` |
 | Web/Electron destination capability and managed-file policy | `services/backupDestination.ts`; `electron/backupFiles.js` | `electron/backupFiles.test.js`; `electron/main.test.js` |
 | Cross-tab writer/reader ownership and reload coordination | `services/workspaceSync.ts` | `services/workspaceSync.test.ts` |
@@ -57,12 +58,12 @@ Other primary entry points:
 - `index.tsx`: React bootstrap.
 - `App.integration.test.tsx`: happy-dom controller coverage with mocked child components, storage, workspace coordination, and OpenAI calls; protects startup writes, request routing/termination, destructive races, and close flushing.
 - `components/ChatArea.tsx`: composer, attachments, message rendering, response details, citations, generated files, and conversation Markdown export.
-- `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/restore, and app version.
+- `components/Sidebar.tsx`: chat search/selection, theme, API key, workspace backup/merge/restore, and app version.
 - `components/ConfigPanel.tsx`: system instructions, models, reasoning, verbosity, and tools.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.generate.test.ts`: mocked-SDK contracts for request payloads, model/tool capabilities, attachment input parts, streaming/terminal output, cancellation/download endpoints, optional-capability retry behavior, and conversation history.
 - `services/openaiService.test.ts`: citation marker recognition, annotation application, and redundant source-label cleanup.
-- `services/storage.integration.test.ts`: public storage contracts against in-memory OPFS and IndexedDB, including v1 migration, immutable revisions, whole-generation recovery, pinned content, attachments, verified restore/undo, backend migration, and Electron fallback refusal.
+- `services/storage.integration.test.ts`: public storage contracts against in-memory OPFS and IndexedDB, including v1 migration, immutable revisions, whole-generation recovery, pinned content, attachments, verified merge/restore/undo, backend migration, and Electron fallback refusal.
 - `services/workspaceArchive.test.ts` and `services/backupScheduler.test.ts`: ZIP round trips and adversarial input, daily scheduling, close-time failure, corrupt-file handling, and retention.
 - `utils/conversationExport.ts` and `utils/sourceUrls.ts`: Markdown transcript export and citation URL handling.
 - `types.ts` and `constants.ts`: application/API types, model metadata, defaults, and configuration normalization.
@@ -203,10 +204,13 @@ that effect:
   limit, canonical paths, case-insensitive uniqueness, exact declared-entry
   set, CRC/read completion, and SHA-256/byte-length checks.
 - Portable export excludes `settings.apiKey`, destination handles/paths,
-  permissions, and scheduler history. Restore preserves the current key,
-  requires a verified pre-restore recovery archive, publishes one generation,
-  and exposes undo from the protected recovery archive. Legacy JSON exports
-  receive a specific unsupported-format error.
+  permissions, and scheduler history. Restore preserves the current key.
+  Merge preserves all current settings and chats, imports only whole accepted
+  chats and their referenced instructions/blobs, remaps local-ID collisions,
+  and orders chats newest-first with current chats first on ties. Both restore
+  and merge require a verified action-specific recovery archive, publish one
+  generation, and expose single-use undo for the latest successful mutation.
+  Legacy JSON exports receive a specific unsupported-format error.
 - Automatic backups are opt-in, changed-revision-only, writer-tab-only, and at
   most once per local day. Re-evaluate after startup/resume/writer acquisition
   and saves; postpone for responses, file caching, and destructive work.
@@ -273,9 +277,10 @@ Then smoke-test the affected workflow. Use this risk-based matrix:
 - App request/state changes: extend `App.integration.test.tsx`; cover text deltas, authoritative completion metadata, cross-session routing, stop/failure, retry/regenerate, interrupted-request recovery, destructive operations, and close checkpointing.
 - Attachment/tool/service changes: extend the mocked SDK contracts in `services/openaiService.generate.test.ts`; cover images, non-image files, citations, Code Interpreter output, generated-file downloads, optional-capability fallback, and history/thread construction.
 - Storage changes: extend `services/storage.integration.test.ts` using only its in-memory backends; cover v1 migration, immutable object reuse, alternating-manifest failures, whole-generation fallback, both manifests corrupt, stale writers, hashes, bounded GC, pinning, blobs, recovery/undo, key semantics, backend migration, and injected failures.
-- Archive/scheduler changes: extend `services/workspaceArchive.test.ts` and
-  `services/backupScheduler.test.ts`; cover binary round trips, missing cached
-  files, cancellation, limits, malformed/adversarial ZIPs, day rollover,
+- Archive/merge/scheduler changes: extend `services/workspaceArchive.test.ts`,
+  `services/workspaceMerge.test.ts`, and `services/backupScheduler.test.ts`;
+  cover binary round trips, merge collisions and ordering, imported blob
+  selection, missing cached files, cancellation, limits, malformed/adversarial ZIPs, day rollover,
   unchanged-revision skip, writer/operation gating, retries, read-back failure,
   corrupt-file handling, and exactly-three-valid retention.
 - PWA/config changes: keep `buildPolicy.test.ts` current, then run `npm run build:web` followed by `npm run preview`; inspect the `/openai-studio/` base, manifest, registration, and cached shell.

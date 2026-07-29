@@ -37,6 +37,10 @@ interface CapturedSidebarProps {
   onDeleteSession: (event: React.MouseEvent, sessionId: string) => void;
   onExportData: () => Promise<void>;
   onImportData: (file: File) => Promise<void>;
+  onMergeData: (file: File) => Promise<void>;
+  mergeDisabled: boolean;
+  undoWorkspaceAction: 'merge' | 'restore' | null;
+  onUndoWorkspaceMutation: () => Promise<void>;
 }
 
 interface GenerateOptions {
@@ -88,11 +92,13 @@ const mocks = vi.hoisted(() => ({
   fetchGeneratedFileContent: vi.fn(),
   getActiveStorageBackend: vi.fn(),
   getAttachmentDataUrl: vi.fn(),
+  getLastWorkspaceRecoveryAction: vi.fn(),
   getStorageHandle: vi.fn(),
   getWorkspaceBackup: vi.fn(),
   inspectWorkspaceArchive: vi.fn(),
   loadedInstructions: [] as SystemInstruction[],
   loadedSessions: [] as Session[],
+  mergeWorkspaceArchive: vi.fn(),
   parseWorkspaceBackup: vi.fn(),
   readJsonFile: vi.fn(),
   readLocalBlob: vi.fn(),
@@ -105,6 +111,7 @@ const mocks = vi.hoisted(() => ({
   storeLocalBlob: vi.fn(),
   subscribeToStorageBackendChanges: vi.fn(),
   synchronizeWorkspaceRevision: vi.fn(),
+  undoLastWorkspaceMutation: vi.fn(),
   uuidCounter: 0,
   validateWorkspaceReferences: vi.fn(),
   writeJsonFile: vi.fn(),
@@ -186,8 +193,13 @@ vi.mock('./services/workspaceArchive', () => ({
 }));
 
 vi.mock('./services/workspaceRestore', () => ({
+  getLastWorkspaceRecoveryAction: mocks.getLastWorkspaceRecoveryAction,
   restoreWorkspaceArchive: mocks.restoreWorkspaceArchive,
-  undoLastWorkspaceRestore: vi.fn()
+  undoLastWorkspaceMutation: mocks.undoLastWorkspaceMutation
+}));
+
+vi.mock('./services/workspaceMerge', () => ({
+  mergeWorkspaceArchive: mocks.mergeWorkspaceArchive
 }));
 
 vi.mock('./utils/chatDeletion', () => ({
@@ -276,6 +288,7 @@ describe('App workspace and request lifecycle', () => {
     );
     mocks.getActiveStorageBackend.mockReset().mockReturnValue('opfs');
     mocks.getAttachmentDataUrl.mockReset();
+    mocks.getLastWorkspaceRecoveryAction.mockReset().mockResolvedValue(null);
     mocks.getStorageHandle.mockReset().mockResolvedValue({});
     mocks.getWorkspaceBackup.mockReset();
     mocks.inspectWorkspaceArchive.mockReset().mockResolvedValue({
@@ -299,6 +312,15 @@ describe('App workspace and request lifecycle', () => {
       }
     });
     mocks.parseWorkspaceBackup.mockReset().mockImplementation(value => value);
+    mocks.mergeWorkspaceArchive.mockReset().mockResolvedValue({
+      revision: 1,
+      recovery: {},
+      counts: {
+        imported: 1,
+        skipped: 0,
+        divergent: 0
+      }
+    });
     mocks.readJsonFile.mockReset().mockImplementation(
       async (_handle, filename: string) => {
         if (filename === 'settings.json') {
@@ -328,6 +350,7 @@ describe('App workspace and request lifecycle', () => {
     mocks.synchronizeWorkspaceRevision.mockReset().mockImplementation(
       async () => mocks.currentRevision
     );
+    mocks.undoLastWorkspaceMutation.mockReset().mockResolvedValue({});
     mocks.validateWorkspaceReferences.mockReset();
     mocks.writeJsonFile.mockReset().mockImplementation(async () => (
       ++mocks.currentRevision
@@ -418,6 +441,15 @@ describe('App workspace and request lifecycle', () => {
     );
     expect(mocks.writeSessions).not.toHaveBeenCalled();
     expect(mocks.writeJsonFile).not.toHaveBeenCalled();
+  });
+
+  it('restores the latest action-aware undo control on startup', async () => {
+    mocks.getLastWorkspaceRecoveryAction.mockResolvedValueOnce('merge');
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(getSidebarProps().undoWorkspaceAction).toBe('merge');
   });
 
   it('asks for a web backup file location before preparing the archive', async () => {
@@ -808,6 +840,7 @@ describe('App workspace and request lifecycle', () => {
       'workspace-key'
     );
     expect(getSidebarProps().sessions).toEqual([replacement]);
+    expect(getSidebarProps().undoWorkspaceAction).toBe('restore');
 
     await act(async () => {
       response.resolve(completedResult('Late completion.'));
@@ -815,6 +848,179 @@ describe('App workspace and request lifecycle', () => {
     });
     await flushMicrotasks();
     expect(getSidebarProps().sessions).toEqual([replacement]);
+  });
+
+  it('merges a selected archive immediately, reloads its revision, and exposes action-aware undo', async () => {
+    const originalSessions = structuredClone(mocks.loadedSessions);
+    const imported = createSession('session-imported', 'Imported workspace');
+    mocks.mergeWorkspaceArchive.mockImplementationOnce(async () => {
+      mocks.loadedSessions = [imported, ...originalSessions];
+      return {
+        revision: 42,
+        recovery: {},
+        counts: {
+          imported: 1,
+          skipped: 0,
+          divergent: 0
+        }
+      };
+    });
+    mocks.undoLastWorkspaceMutation.mockImplementationOnce(async () => {
+      mocks.loadedSessions = originalSessions;
+    });
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    const archive = new File(['verified archive'], 'merge.zip', {
+      type: 'application/zip'
+    });
+    await act(async () => {
+      await getSidebarProps().onMergeData(archive);
+    });
+    await flushMicrotasks();
+
+    expect(mocks.mergeWorkspaceArchive).toHaveBeenCalledWith(
+      expect.anything(),
+      archive,
+      expect.objectContaining({
+        filename: 'merge.zip',
+        signal: expect.any(AbortSignal),
+        onProgress: expect.any(Function)
+      })
+    );
+    expect(mocks.restoreWorkspaceArchive).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('Restore verified backup?');
+    expect(getSidebarProps().sessions).toEqual([imported, ...originalSessions]);
+    expect(getSidebarProps().undoWorkspaceAction).toBe('merge');
+    expect(mocks.coordinator.publishUpdate).toHaveBeenCalledWith(42);
+
+    await act(async () => {
+      await getSidebarProps().onUndoWorkspaceMutation();
+    });
+    await flushMicrotasks();
+
+    expect(mocks.undoLastWorkspaceMutation).toHaveBeenCalled();
+    expect(getSidebarProps().sessions).toEqual(originalSessions);
+    expect(getSidebarProps().undoWorkspaceAction).toBeNull();
+  });
+
+  it('cancels merge validation from the shared archive progress overlay', async () => {
+    const merge = createDeferred<never>();
+    let signal: AbortSignal | undefined;
+    mocks.mergeWorkspaceArchive.mockImplementationOnce(
+      async (_handle, _archive, options) => {
+        signal = options.signal;
+        options.onProgress({
+          phase: 'validating',
+          completedEntries: 1,
+          totalEntries: 2,
+          completedBytes: 5,
+          totalBytes: 10
+        });
+        return merge.promise;
+      }
+    );
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    let mergeRequest!: Promise<void>;
+    await act(async () => {
+      mergeRequest = getSidebarProps().onMergeData(new File(
+        ['verified archive'],
+        'merge.zip',
+        { type: 'application/zip' }
+      ));
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+    expect(getSidebarProps().mergeDisabled).toBe(true);
+    const cancel = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === 'Cancel');
+    expect(cancel).toBeDefined();
+
+    await act(async () => {
+      cancel?.click();
+      merge.reject(new DOMException('Cancelled', 'AbortError'));
+      await mergeRequest;
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
+  it('reports merge failures without reloading the workspace', async () => {
+    mocks.mergeWorkspaceArchive.mockRejectedValueOnce(
+      new Error('Archive digest mismatch.')
+    );
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    const sessionsBefore = structuredClone(getSidebarProps().sessions);
+
+    await act(async () => {
+      await getSidebarProps().onMergeData(new File(
+        ['corrupt archive'],
+        'merge.zip',
+        { type: 'application/zip' }
+      ));
+    });
+
+    expect(window.alert).toHaveBeenCalledWith(
+      'Workspace merge failed: Archive digest mismatch.'
+    );
+    expect(getSidebarProps().sessions).toEqual(sessionsBefore);
+    expect(getSidebarProps().undoWorkspaceAction).toBeNull();
+  });
+
+  it('disables merge while a response is active', async () => {
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Keep working.', []);
+    });
+    expect(getSidebarProps().mergeDisabled).toBe(true);
+    await act(async () => {
+      await getSidebarProps().onMergeData(new File(
+        ['verified archive'],
+        'merge.zip',
+        { type: 'application/zip' }
+      ));
+    });
+    expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
+
+    await act(async () => {
+      response.resolve(completedResult());
+      await response.promise;
+    });
+    await flushMicrotasks();
+    expect(getSidebarProps().mergeDisabled).toBe(false);
+  });
+
+  it('disables merge in a reader tab', async () => {
+    mocks.coordinator.canWrite = false;
+    mocks.coordinator.currentRole = 'reader';
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(getSidebarProps().mergeDisabled).toBe(true);
+    await act(async () => {
+      await getSidebarProps().onMergeData(new File(
+        ['verified archive'],
+        'merge.zip',
+        { type: 'application/zip' }
+      ));
+    });
+    expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
   });
 
   it('checkpoints partial output and saves it before confirming Electron close', async () => {

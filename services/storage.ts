@@ -1873,6 +1873,7 @@ export const storeLocalBlob = async (
   createWorkspaceGenerationStore(dirHandle).storeBlob(blob, mimeType)
 );
 
+// Keep the original path so existing verified restore points remain readable.
 const INTERNAL_RECOVERY_ARCHIVE = 'recovery/pre-restore.zip';
 
 export const writeInternalRecoveryArchive = async (
@@ -1887,7 +1888,7 @@ export const writeInternalRecoveryArchive = async (
   }
   const stored = await readInternalRecoveryArchive(dirHandle);
   if (!stored || stored.size !== archive.size) {
-    throw new Error('The pre-restore recovery archive could not be verified.');
+    throw new Error('The workspace recovery archive could not be verified.');
   }
 };
 

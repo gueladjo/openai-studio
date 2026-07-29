@@ -16,7 +16,7 @@ This project has no application server. The OpenAI SDK runs in the browser or El
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details.
 - Local chat-title search with light and dark themes.
-- Checksummed ZIP workspace backup/restore, opt-in daily folder backups, restore undo, and per-conversation Markdown export.
+- Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
 - Responsive mobile layout, installable PWA output, and Electron desktop packaging.
 
 ## Security And Data
@@ -168,9 +168,11 @@ The first load migrates the previous `sessions.json`, `settings.json`, `system_i
 
 Session writes keep the one-second trailing delay and five-second streaming checkpoint; request boundaries save immediately. Settings and instructions use a 500 ms delay. Writes remain serialized and are flushed on suspension and through the Electron close handshake.
 
-Portable backups are standard `.zip` archives containing a strict `manifest.json`, separate JSON entries, and raw content-addressed blobs. Every entry declares its byte length and SHA-256 digest. Restore rejects extra, missing, duplicate, case-colliding, traversal, oversized, truncated, or digest-mismatched entries before showing a preview. Legacy JSON exports are deliberately unsupported.
+Portable backups are standard `.zip` archives containing a strict `manifest.json`, separate JSON entries, and raw content-addressed blobs. Every entry declares its byte length and SHA-256 digest. Restore and Merge reject extra, missing, duplicate, case-colliding, traversal, oversized, truncated, or digest-mismatched entries before changing the workspace. Restore shows a verified-backup preview; Merge starts immediately after file selection and imports whole chats without a preview or confirmation. Legacy JSON exports are deliberately unsupported.
 
-Before replacement, restore creates and reads back a verified pre-restore archive in internal storage; restore aborts if that recovery point fails. Settings exposes **Undo last restore** while that recovery archive is available. The current API key is always preserved.
+Merge preserves the current theme, API key, active-chat selection, chats, and custom instructions. Identical chats are skipped. A differing archived chat with the same ID is kept as a separate copy with remapped local session, message, request, pending-request, and attachment IDs; external OpenAI response and generated-file IDs are retained. Referenced custom instructions are reused when identical and remapped when their IDs conflict. Unreferenced archived instructions and blobs belonging only to skipped chats are not imported. The resulting Recent list remains newest-first, with current-workspace chats before archived chats when timestamps tie.
+
+Before replacement or merge publication, the app creates and reads back a verified internal recovery archive. The operation aborts without publishing a generation if validation, recovery, limits, blob staging, or commit fails. Settings exposes action-aware **Undo last restore** or **Undo last merge** for the latest successful workspace mutation. Undo is single-use. Restore preserves the current API key; Merge preserves all current settings.
 
 Compatible Chromium browsers and Electron can opt into automatic backups by choosing a folder. Automatic backups:
 
@@ -181,7 +183,7 @@ Compatible Chromium browsers and Electron can opt into automatic backups by choo
 - verify a newly written archive before rotation and retain the three newest valid managed archives;
 - never delete unrelated files in the selected folder.
 
-Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise) and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.
+Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.
 
 The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 
@@ -201,9 +203,11 @@ through `utils/chatDrafts.ts`.
 `services/storage.ts` is the OPFS/IndexedDB persistence facade.
 `services/workspaceGenerationStore.ts` owns immutable generation publication,
 whole-generation validation, pinning, and garbage collection.
-`services/workspaceArchive.ts`, `services/workspaceRestore.ts`,
+`services/workspaceArchive.ts`, `services/workspaceMerge.ts`,
+`services/workspaceRestore.ts`,
 `services/backupDestination.ts`, and `services/backupScheduler.ts` own portable
-ZIP integrity, recovery/undo, folder capabilities, retention, and scheduling.
+ZIP integrity, chat merge/collision handling, recovery/undo, folder
+capabilities, retention, and scheduling.
 `services/openaiService.ts` constructs Responses API requests, streams text,
 and handles response metadata and generated files. See
 [AGENTS.md](AGENTS.md) for the canonical contributor task-to-module and

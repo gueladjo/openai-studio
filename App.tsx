@@ -51,9 +51,12 @@ import {
   UnsupportedLegacyBackupError
 } from './services/workspaceArchive';
 import {
+  getLastWorkspaceRecoveryAction,
   restoreWorkspaceArchive,
-  undoLastWorkspaceRestore
+  undoLastWorkspaceMutation,
+  WorkspaceRecoveryAction
 } from './services/workspaceRestore';
+import { mergeWorkspaceArchive } from './services/workspaceMerge';
 import {
   BackupScheduler,
   BackupSchedulerState
@@ -309,7 +312,8 @@ function App() {
     canShare: boolean;
   } | null>(null);
   const [archiveProgress, setArchiveProgress] = useState<BackupArchiveProgress | null>(null);
-  const [canUndoRestore, setCanUndoRestore] = useState(false);
+  const [undoWorkspaceAction, setUndoWorkspaceAction] =
+    useState<WorkspaceRecoveryAction | null>(null);
   const sessionsRef = useRef<Session[]>([]);
   const currentSessionIdRef = useRef<string | null>(null);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
@@ -894,6 +898,17 @@ function App() {
         setDirHandle(handle);
         setWorkspaceLoadError(null);
         setIsWorkspaceLoaded(true);
+        try {
+          setUndoWorkspaceAction(
+            await getLastWorkspaceRecoveryAction(handle)
+          );
+        } catch (recoveryError) {
+          console.warn(
+            'The latest workspace recovery point could not be inspected.',
+            recoveryError
+          );
+          setUndoWorkspaceAction(null);
+        }
         if (roleAfterLoad === 'writer') {
           coordinator.publishUpdate(getWorkspaceRevision());
         }
@@ -2274,13 +2289,17 @@ function App() {
             signal: operation.controller.signal,
             onProgress: setArchiveProgress
           });
+          if (archiveAbortRef.current === operation.controller) {
+            archiveAbortRef.current = null;
+            setArchiveProgress(null);
+          }
           workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
           await loadWorkspaceData(
             handle,
             'writer',
             () => isOperationCurrent(operation, false)
           );
-          setCanUndoRestore(true);
+          setUndoWorkspaceAction('restore');
         } finally {
           if (archiveAbortRef.current === operation.controller) {
             archiveAbortRef.current = null;
@@ -2296,20 +2315,87 @@ function App() {
     }
   };
 
-  const handleUndoRestore = async () => {
-    const handle = dirHandleRef.current;
-    if (!handle || !workspaceCanWriteRef.current) return;
-    await flushPendingSaves();
-    invalidateWorkspaceOperations('before undoing workspace restore');
+  const handleMergeData = async (file: File) => {
+    if (
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      activeRequestsRef.current.size > 0 ||
+      processingSessionIdsRef.current.size > 0 ||
+      !dirHandleRef.current
+    ) {
+      return;
+    }
+
     try {
       await enqueueDestructiveOperation(async () => {
-        await undoLastWorkspaceRestore(handle);
+        if (
+          !workspaceCanWriteRef.current ||
+          activeRequestsRef.current.size > 0 ||
+          processingSessionIdsRef.current.size > 0
+        ) {
+          throw new Error('Finish active responses before merging a backup.');
+        }
+        await flushPendingSaves();
+        invalidateWorkspaceOperations('before workspace merge');
+        const operation = operationRegistryRef.current.begin({
+          id: uuidv4(),
+          kind: 'workspace-merge'
+        });
+        const handle = dirHandleRef.current;
+        try {
+          if (!handle || !workspaceCanWriteRef.current) {
+            throw createOperationAbortError();
+          }
+          archiveAbortRef.current?.abort();
+          archiveAbortRef.current = operation.controller;
+          const result = await mergeWorkspaceArchive(handle, file, {
+            filename: file.name,
+            signal: operation.controller.signal,
+            onProgress: setArchiveProgress
+          });
+          if (archiveAbortRef.current === operation.controller) {
+            archiveAbortRef.current = null;
+            setArchiveProgress(null);
+          }
+          workspaceCoordinatorRef.current?.publishUpdate(result.revision);
+          await loadWorkspaceData(
+            handle,
+            'writer',
+            () => isOperationCurrent(operation, false)
+          );
+          setUndoWorkspaceAction('merge');
+        } finally {
+          if (archiveAbortRef.current === operation.controller) {
+            archiveAbortRef.current = null;
+          }
+          setArchiveProgress(null);
+          operationRegistryRef.current.complete(operation);
+        }
+      });
+      await backupSchedulerRef.current?.evaluate();
+    } catch (error) {
+      if (!isAbortError(error)) {
+        alert(`Workspace merge failed: ${getErrorMessage(error)}`);
+      }
+    }
+  };
+
+  const handleUndoWorkspaceMutation = async () => {
+    const handle = dirHandleRef.current;
+    if (!handle || !workspaceCanWriteRef.current) return;
+    const action = undoWorkspaceAction;
+    await flushPendingSaves();
+    invalidateWorkspaceOperations('before undoing workspace mutation');
+    try {
+      await enqueueDestructiveOperation(async () => {
+        await undoLastWorkspaceMutation(handle);
         workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
         await loadWorkspaceData(handle, 'writer');
       });
-      setCanUndoRestore(false);
+      setUndoWorkspaceAction(null);
+      await backupSchedulerRef.current?.evaluate();
     } catch (error) {
-      alert(`Undo restore failed: ${getErrorMessage(error)}`);
+      alert(`Undo ${action || 'workspace change'} failed: ${getErrorMessage(error)}`);
     }
   };
 
@@ -2545,6 +2631,11 @@ function App() {
               }}
               onExportData={handleExportData}
               onImportData={handleImportData}
+              onMergeData={handleMergeData}
+              mergeDisabled={
+                isWorkspaceInteractionReadOnly ||
+                processingSessionIds.size > 0
+              }
               backupState={backupState}
               backupActionError={backupActionError}
               onToggleAutomaticBackups={handleToggleAutomaticBackups}
@@ -2554,8 +2645,8 @@ function App() {
               onRestoreManagedBackup={handleManagedBackupRestore}
               onExportManagedBackup={handleManagedBackupExport}
               onDeleteManagedBackup={handleManagedBackupDelete}
-              canUndoRestore={canUndoRestore}
-              onUndoRestore={handleUndoRestore}
+              undoWorkspaceAction={undoWorkspaceAction}
+              onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
               processingSessionIds={processingSessionIds}
               readOnly={isWorkspaceInteractionReadOnly}
             />
@@ -2610,6 +2701,11 @@ function App() {
                     }}
                     onExportData={handleExportData}
                     onImportData={handleImportData}
+                    onMergeData={handleMergeData}
+                    mergeDisabled={
+                      isWorkspaceInteractionReadOnly ||
+                      processingSessionIds.size > 0
+                    }
                     backupState={backupState}
                     backupActionError={backupActionError}
                     onToggleAutomaticBackups={handleToggleAutomaticBackups}
@@ -2619,8 +2715,8 @@ function App() {
                     onRestoreManagedBackup={handleManagedBackupRestore}
                     onExportManagedBackup={handleManagedBackupExport}
                     onDeleteManagedBackup={handleManagedBackupDelete}
-                    canUndoRestore={canUndoRestore}
-                    onUndoRestore={handleUndoRestore}
+                    undoWorkspaceAction={undoWorkspaceAction}
+                    onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
                     processingSessionIds={processingSessionIds}
                     isMobile={true}
                     readOnly={isWorkspaceInteractionReadOnly}

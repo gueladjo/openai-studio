@@ -6,6 +6,7 @@ import {
   type Session,
   type SystemInstruction
 } from '../types';
+import { sha256Blob } from './contentAddressing';
 
 const notFound = (name: string): DOMException => (
   new DOMException(`${name} was not found.`, 'NotFoundError')
@@ -693,6 +694,223 @@ describe('storage public contracts', () => {
 
     await expect(restoreWorkspaceArchive(handle, archive))
       .rejects.toThrow('Simulated disk full');
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
+  });
+
+  it('merges chats atomically while preserving local settings, selection, and files', async () => {
+    const initialSessions = [createSession('Initial')];
+    await seedWorkspace(initialSessions);
+    const importedBlob = new Blob(['imported attachment'], {
+      type: 'text/plain'
+    });
+    const importedReference = {
+      sha256: await sha256Blob(importedBlob),
+      byteSize: importedBlob.size,
+      mimeType: importedBlob.type
+    };
+    const importedInstruction: SystemInstruction = {
+      id: 'instruction-imported',
+      title: 'Imported',
+      content: 'Use imported rules.'
+    };
+    const importedSession = {
+      ...createSession('Imported', [{
+        id: 'attachment-imported',
+        name: 'imported.txt',
+        type: 'text/plain',
+        size: importedBlob.size,
+        localBlob: importedReference
+      }]),
+      config: {
+        ...DEFAULT_CONFIG,
+        tools: { ...DEFAULT_CONFIG.tools },
+        systemInstructionId: importedInstruction.id
+      },
+      lastModified: 20
+    };
+    const { createWorkspaceArchive, inspectWorkspaceArchive } = await import(
+      './workspaceArchive'
+    );
+    const { mergeWorkspaceArchive } = await import('./workspaceMerge');
+    const {
+      getLastWorkspaceRecoveryAction,
+      undoLastWorkspaceMutation
+    } = await import('./workspaceRestore');
+    const archive = await createWorkspaceArchive({
+      revision: 20,
+      createdAt: 20,
+      sessions: [importedSession],
+      settings: {
+        theme: 'light',
+        apiKey: 'must-not-be-restored',
+        lastActiveSessionId: importedSession.id
+      },
+      instructions: [importedInstruction],
+      readBlob: async reference => {
+        if (reference.sha256 === importedReference.sha256) return importedBlob;
+        throw new Error('Unexpected imported blob.');
+      }
+    }, { reason: 'manual' });
+
+    const result = await mergeWorkspaceArchive(handle, archive, {
+      filename: 'merge.zip'
+    });
+
+    expect(result.counts).toEqual({
+      imported: 1,
+      skipped: 0,
+      divergent: 0
+    });
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toEqual({
+      theme: 'dark',
+      apiKey: 'initial-key',
+      lastActiveSessionId: initialSessions[0].id
+    });
+    const mergedSessions = await storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    ) as Session[];
+    expect(mergedSessions.map(session => session.id)).toEqual([
+      importedSession.id,
+      initialSessions[0].id
+    ]);
+    const mergedAttachment = mergedSessions[0].messages[0].attachments?.[0];
+    await expect(storage.readLocalBlob(
+      handle,
+      mergedAttachment!.localBlob!
+    )).resolves.toBeInstanceOf(Blob);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.INSTRUCTIONS
+    )).resolves.toEqual([...instructions, importedInstruction]);
+    const recoveryArchive = await storage.readInternalRecoveryArchive(handle);
+    expect(recoveryArchive).not.toBeNull();
+    expect((await inspectWorkspaceArchive(
+      recoveryArchive!,
+      { retainBlobs: false }
+    )).preview.reason).toBe('pre-merge');
+    await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBe('merge');
+
+    await undoLastWorkspaceMutation(handle);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
+    await expect(storage.readInternalRecoveryArchive(handle)).resolves.toBeNull();
+    await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBeNull();
+  });
+
+  it('does not publish a merge when recovery or generation persistence fails', async () => {
+    const initialSessions = [createSession('Initial')];
+    const importedSessions = [createSession('Imported')];
+    await seedWorkspace(initialSessions);
+    const { createWorkspaceArchive } = await import('./workspaceArchive');
+    const { mergeWorkspaceArchive } = await import('./workspaceMerge');
+    const archive = await createWorkspaceArchive({
+      revision: 2,
+      createdAt: 2,
+      sessions: importedSessions,
+      settings: { theme: 'light', apiKey: '' },
+      instructions,
+      readBlob: async () => {
+        throw new Error('No blobs are referenced.');
+      }
+    }, { reason: 'manual' });
+
+    fileSystem.failNextWrite(/recovery\/pre-restore\.zip$/);
+    await expect(mergeWorkspaceArchive(handle, archive))
+      .rejects.toThrow('Simulated disk full');
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
+
+    fileSystem.failNextWrite(/objects\/[a-f0-9]{64}\.json$/);
+    await expect(mergeWorkspaceArchive(handle, archive))
+      .rejects.toThrow('Simulated disk full');
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(initialSessions);
+  });
+
+  it('keeps only the latest successful workspace mutation undoable', async () => {
+    const initialSessions = [createSession('Initial')];
+    await seedWorkspace(initialSessions);
+    const { createWorkspaceArchive } = await import('./workspaceArchive');
+    const { mergeWorkspaceArchive } = await import('./workspaceMerge');
+    const { undoLastWorkspaceMutation } = await import('./workspaceRestore');
+    const createMergeArchive = (session: Session, revision: number) => (
+      createWorkspaceArchive({
+        revision,
+        createdAt: revision,
+        sessions: [session],
+        settings: { theme: 'light', apiKey: '' },
+        instructions,
+        readBlob: async () => {
+          throw new Error('No blobs are referenced.');
+        }
+      }, { reason: 'manual' })
+    );
+
+    await mergeWorkspaceArchive(
+      handle,
+      await createMergeArchive(createSession('First'), 10)
+    );
+    const sessionsAfterFirst = await storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    );
+    await mergeWorkspaceArchive(
+      handle,
+      await createMergeArchive(createSession('Second'), 11)
+    );
+
+    await undoLastWorkspaceMutation(handle);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(sessionsAfterFirst);
+    await expect(undoLastWorkspaceMutation(handle))
+      .rejects.toThrow('No verified workspace recovery point');
+  });
+
+  it('retains the prior undo point when a later merge fails', async () => {
+    const initialSessions = [createSession('Initial')];
+    await seedWorkspace(initialSessions);
+    const { createWorkspaceArchive } = await import('./workspaceArchive');
+    const { mergeWorkspaceArchive } = await import('./workspaceMerge');
+    const { undoLastWorkspaceMutation } = await import('./workspaceRestore');
+    const createMergeArchive = (session: Session, revision: number) => (
+      createWorkspaceArchive({
+        revision,
+        createdAt: revision,
+        sessions: [session],
+        settings: { theme: 'light', apiKey: '' },
+        instructions,
+        readBlob: async () => {
+          throw new Error('No blobs are referenced.');
+        }
+      }, { reason: 'manual' })
+    );
+
+    await mergeWorkspaceArchive(
+      handle,
+      await createMergeArchive(createSession('Successful'), 20)
+    );
+    fileSystem.failNextWrite(/objects\/[a-f0-9]{64}\.json$/);
+    await expect(mergeWorkspaceArchive(
+      handle,
+      await createMergeArchive(createSession('Failed'), 21)
+    )).rejects.toThrow('Simulated disk full');
+
+    await undoLastWorkspaceMutation(handle);
     await expect(storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS

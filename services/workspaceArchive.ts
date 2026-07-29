@@ -36,7 +36,7 @@ export const MAX_BACKUP_ARCHIVE_ENTRIES = 100_000;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MANIFEST_PATH = 'manifest.json';
 
-export type BackupReason = 'scheduled' | 'manual' | 'pre-restore';
+export type BackupReason = 'scheduled' | 'manual' | 'pre-restore' | 'pre-merge';
 
 export interface BackupArchiveEntry {
   path: string;
@@ -202,7 +202,8 @@ export const parseBackupArchiveManifest = (
   if (
     value.reason !== 'scheduled' &&
     value.reason !== 'manual' &&
-    value.reason !== 'pre-restore'
+    value.reason !== 'pre-restore' &&
+    value.reason !== 'pre-merge'
   ) {
     throw new BackupArchiveError('manifest.reason is invalid.');
   }
@@ -775,15 +776,28 @@ export const inspectWorkspaceArchive = async (
   }
 };
 
+export const selectWorkspaceArchiveBlobEntries = (
+  manifest: BackupArchiveManifestV1,
+  includedHashes?: ReadonlySet<string>
+): BackupArchiveEntry[] => manifest.entries.filter(entry => (
+    entry.path.startsWith('blobs/') &&
+    (
+      includedHashes === undefined ||
+      includedHashes.has(entry.path.slice('blobs/'.length))
+    )
+  ));
+
 export const stageWorkspaceArchiveBlobs = async (
   dirHandle: FileSystemDirectoryHandle,
   archive: Blob,
   manifest: BackupArchiveManifestV1,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  includedHashes?: ReadonlySet<string>
 ): Promise<void> => {
-  const blobDescriptors = manifest.entries.filter(entry => (
-    entry.path.startsWith('blobs/')
-  ));
+  const blobDescriptors = selectWorkspaceArchiveBlobEntries(
+    manifest,
+    includedHashes
+  );
   if (blobDescriptors.length === 0) return;
   const reader = new ZipReader(new BlobReader(archive), {
     strictness: 'strict'

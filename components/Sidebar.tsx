@@ -17,7 +17,8 @@ import {
   Loader2,
   FolderOpen,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  GitMerge
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
 
@@ -33,6 +34,8 @@ interface SidebarProps {
   onApiKeyChange: (key: string) => void;
   onExportData: () => void;
   onImportData: (file: File) => void;
+  onMergeData: (file: File) => void;
+  mergeDisabled?: boolean;
   backupState: BackupSchedulerState;
   backupActionError?: string | null;
   onToggleAutomaticBackups: (enabled: boolean) => void;
@@ -42,8 +45,8 @@ interface SidebarProps {
   onRestoreManagedBackup: (filename: string) => void;
   onExportManagedBackup: (filename: string) => void;
   onDeleteManagedBackup: (filename: string) => void;
-  canUndoRestore?: boolean;
-  onUndoRestore: () => void;
+  undoWorkspaceAction?: 'merge' | 'restore' | null;
+  onUndoWorkspaceMutation: () => void;
   processingSessionIds?: Set<string>;
   isMobile?: boolean;
   readOnly?: boolean;
@@ -61,6 +64,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onApiKeyChange,
   onExportData,
   onImportData,
+  onMergeData,
+  mergeDisabled = false,
   backupState,
   backupActionError,
   onToggleAutomaticBackups,
@@ -70,8 +75,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRestoreManagedBackup,
   onExportManagedBackup,
   onDeleteManagedBackup,
-  canUndoRestore = false,
-  onUndoRestore,
+  undoWorkspaceAction = null,
+  onUndoWorkspaceMutation,
   processingSessionIds,
   isMobile = false,
   readOnly = false
@@ -79,12 +84,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mergeFileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       onImportData(e.target.files[0]);
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleMergeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      onMergeData(e.target.files[0]);
+    }
+    if (mergeFileInputRef.current) mergeFileInputRef.current.value = '';
   };
 
   const filteredSessions = sessions
@@ -226,13 +239,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <Database size={12} />
                         <span>Data Management</span>
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                         <button 
                             onClick={onExportData}
                             className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
                         >
                             <Download size={12} />
                             Backup
+                        </button>
+                        <button
+                            onClick={() => mergeFileInputRef.current?.click()}
+                            disabled={mergeDisabled}
+                            title={mergeDisabled ? 'Merge is unavailable while the workspace or a response is active' : undefined}
+                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <GitMerge size={12} />
+                            Merge
                         </button>
                         <button 
                             onClick={() => fileInputRef.current?.click()}
@@ -250,16 +272,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             disabled={readOnly}
                             className="hidden" 
                         />
+                        <input
+                            type="file"
+                            accept=".zip,application/zip"
+                            ref={mergeFileInputRef}
+                            onChange={handleMergeFileSelect}
+                            disabled={mergeDisabled}
+                            className="hidden"
+                        />
                     </div>
-                    {canUndoRestore && (
+                    {undoWorkspaceAction && (
                       <button
                         type="button"
-                        onClick={onUndoRestore}
+                        onClick={onUndoWorkspaceMutation}
                         disabled={readOnly}
                         className="flex w-full items-center justify-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
                       >
                         <RefreshCw size={12} />
-                        Undo last restore
+                        Undo last {undoWorkspaceAction}
                       </button>
                     )}
                     {backupState.supported ? (
@@ -362,7 +392,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </div>
                     ) : (
                       <p className="text-[10px] leading-4 text-gray-500">
-                        Automatic folders are unavailable in this browser. Use Backup and Restore.
+                        Automatic folders are unavailable in this browser. Use Backup, Merge, and Restore.
                       </p>
                     )}
                 </div>
