@@ -1501,6 +1501,39 @@ const migrateSessionsToContentBlobs = async (
   });
 };
 
+const normalizeWorkspaceGenerationReferences = (
+  data: WorkspaceGenerationData
+): WorkspaceGenerationData => {
+  const sessionIds = new Set(data.sessions.map(session => session.id));
+  const settings = (
+    data.settings.lastActiveSessionId &&
+    !sessionIds.has(data.settings.lastActiveSessionId)
+  )
+    ? {
+        ...data.settings,
+        lastActiveSessionId: data.sessions[0]?.id
+      }
+    : data.settings;
+  const instructionIds = new Set(data.instructions.map(item => item.id));
+  const sessions = data.sessions.map(session => (
+    session.config.systemInstructionId &&
+    !instructionIds.has(session.config.systemInstructionId)
+      ? {
+          ...session,
+          config: {
+            ...session.config,
+            systemInstructionId: undefined
+          }
+        }
+      : session
+  ));
+
+  return settings === data.settings &&
+    sessions.every((session, index) => session === data.sessions[index])
+    ? data
+    : { ...data, sessions, settings };
+};
+
 const ensureWorkspaceGeneration = async (
   dirHandle: FileSystemDirectoryHandle,
   refresh = false
@@ -1535,10 +1568,14 @@ const ensureWorkspaceGeneration = async (
       sessions => migrateSessionsToContentBlobs(dirHandle, sessions, true)
     );
   }
-  const migrated = await store.commit(null, legacy.data, {
-    revision: legacy.revision,
-    createdAt: Date.now()
-  });
+  const migrated = await store.commit(
+    null,
+    normalizeWorkspaceGenerationReferences(legacy.data),
+    {
+      revision: legacy.revision,
+      createdAt: Date.now()
+    }
+  );
   const verified = await store.readCurrent();
   if (!verified || verified.manifest.revision !== migrated.manifest.revision) {
     throw new Error(
@@ -1589,7 +1626,7 @@ export const writeJsonFile = async (
     );
   }
 
-  const nextData: WorkspaceGenerationData = {
+  const nextData = normalizeWorkspaceGenerationReferences({
     sessions: key === 'sessions'
       ? await migrateSessionsToContentBlobs(
           dirHandle,
@@ -1602,31 +1639,7 @@ export const writeJsonFile = async (
     instructions: key === 'instructions'
       ? parsedData as SystemInstruction[]
       : current.instructions
-  };
-  if (
-    nextData.settings.lastActiveSessionId &&
-    !nextData.sessions.some(session => (
-      session.id === nextData.settings.lastActiveSessionId
-    ))
-  ) {
-    nextData.settings = {
-      ...nextData.settings,
-      lastActiveSessionId: nextData.sessions[0]?.id
-    };
-  }
-  const instructionIds = new Set(nextData.instructions.map(item => item.id));
-  nextData.sessions = nextData.sessions.map(session => (
-    session.config.systemInstructionId &&
-    !instructionIds.has(session.config.systemInstructionId)
-      ? {
-          ...session,
-          config: {
-            ...session.config,
-            systemInstructionId: undefined
-          }
-        }
-      : session
-  ));
+  });
 
   const committed = await createWorkspaceGenerationStore(dirHandle).commit(
     workspaceRevision,

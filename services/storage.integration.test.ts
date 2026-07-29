@@ -1094,6 +1094,49 @@ describe('legacy workspace migration contracts', () => {
       expect.stringContaining('Legacy attachment missing-legacy-attachment')
     );
   });
+
+  it('repairs dangling legacy selections before publishing a strict generation', async () => {
+    const legacySessions = Array.from(
+      { length: 20 },
+      (_value, index) => createSession(`Legacy ${index}`)
+    );
+    legacySessions[18] = {
+      ...legacySessions[18],
+      config: {
+        ...legacySessions[18].config,
+        systemInstructionId: instructions[0].id
+      }
+    };
+    legacySessions[19] = {
+      ...legacySessions[19],
+      config: {
+        ...legacySessions[19].config,
+        systemInstructionId: 'missing-instruction'
+      }
+    };
+    await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
+    await fileSystem.writeText('data/settings.json', JSON.stringify({
+      theme: 'dark',
+      apiKey: 'legacy-key',
+      lastActiveSessionId: 'missing-session'
+    }));
+
+    await expect(loadElectronWorkspace()).resolves.toBe(7);
+
+    const sessions = await storage.readSessions(handle);
+    const settings = await storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    );
+    expect(sessions).toHaveLength(20);
+    expect(sessions[18].config.systemInstructionId).toBe(instructions[0].id);
+    expect(sessions[19].config).not.toHaveProperty('systemInstructionId');
+    expect(settings).toEqual({
+      theme: 'dark',
+      apiKey: 'legacy-key',
+      lastActiveSessionId: legacySessions[0].id
+    });
+  });
 });
 
 describe('storage backend migration contracts', () => {
