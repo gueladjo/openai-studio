@@ -152,6 +152,21 @@ const DEFAULT_BACKUP_STATE: BackupSchedulerState = {
   backups: []
 };
 
+interface PortableBackupFileHandle {
+  createWritable(): Promise<{
+    write(data: Blob): Promise<void>;
+    close(): Promise<void>;
+  }>;
+}
+
+type PortableBackupSavePicker = (options: {
+  suggestedName: string;
+  types: Array<{
+    description: string;
+    accept: Record<string, string[]>;
+  }>;
+}) => Promise<PortableBackupFileHandle>;
+
 const downloadBlobFile = (filename: string, blob: Blob): void => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -2087,6 +2102,20 @@ function App() {
     archiveAbortRef.current?.abort();
     archiveAbortRef.current = controller;
     try {
+      const showSaveFilePicker = !isMobile && !window.electronAPI
+        ? (window as typeof window & {
+            showSaveFilePicker?: PortableBackupSavePicker;
+          }).showSaveFilePicker
+        : undefined;
+      const fileHandle = showSaveFilePicker
+        ? await showSaveFilePicker({
+            suggestedName: 'openai-studio-backup.zip',
+            types: [{
+              description: 'OpenAI Studio backup',
+              accept: { 'application/zip': ['.zip'] }
+            }]
+          })
+        : null;
       await flushPendingSaves();
       const snapshot = await readWorkspaceSnapshot(dirHandle);
       const archive = await createWorkspaceArchive(snapshot, {
@@ -2110,7 +2139,11 @@ function App() {
         title: 'OpenAI Studio workspace backup',
         files: [portableFile]
       };
-      if (isMobile) {
+      if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        await writable.write(archive);
+        await writable.close();
+      } else if (isMobile) {
         setPreparedPortableBackup({
           file: portableFile,
           canShare: (

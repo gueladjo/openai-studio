@@ -35,6 +35,7 @@ interface CapturedSidebarProps {
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (event: React.MouseEvent, sessionId: string) => void;
+  onExportData: () => Promise<void>;
   onImportData: (file: File) => Promise<void>;
 }
 
@@ -79,6 +80,7 @@ const mocks = vi.hoisted(() => ({
     subscribeToRole: vi.fn(),
     subscribeToUpdates: vi.fn()
   },
+  createWorkspaceArchive: vi.fn(),
   createCoordinator: vi.fn(),
   currentRevision: 0,
   generateChatTitle: vi.fn(),
@@ -95,6 +97,7 @@ const mocks = vi.hoisted(() => ({
   readJsonFile: vi.fn(),
   readLocalBlob: vi.fn(),
   readSessions: vi.fn(),
+  readWorkspaceSnapshot: vi.fn(),
   restoreWorkspaceBackup: vi.fn(),
   restoreWorkspaceArchive: vi.fn(),
   sidebarProps: null as CapturedSidebarProps | null,
@@ -160,7 +163,7 @@ vi.mock('./services/storage', () => ({
   getStorageHandle: mocks.getStorageHandle,
   getWorkspaceBackup: mocks.getWorkspaceBackup,
   getWorkspaceRevision: () => mocks.currentRevision,
-  readWorkspaceSnapshot: vi.fn(),
+  readWorkspaceSnapshot: mocks.readWorkspaceSnapshot,
   readLocalBlob: mocks.readLocalBlob,
   parseWorkspaceBackup: mocks.parseWorkspaceBackup,
   readJsonFile: mocks.readJsonFile,
@@ -178,7 +181,7 @@ vi.mock('./services/storage', () => ({
 vi.mock('./services/workspaceArchive', () => ({
   MAX_BACKUP_ARCHIVE_BYTES: 2 * 1024 * 1024 * 1024,
   UnsupportedLegacyBackupError: class UnsupportedLegacyBackupError extends Error {},
-  createWorkspaceArchive: vi.fn(),
+  createWorkspaceArchive: mocks.createWorkspaceArchive,
   inspectWorkspaceArchive: mocks.inspectWorkspaceArchive
 }));
 
@@ -234,6 +237,9 @@ describe('App workspace and request lifecycle', () => {
       value: 1024
     });
     delete window.electronAPI;
+    delete (window as typeof window & {
+      showSaveFilePicker?: unknown;
+    }).showSaveFilePicker;
     document.body.innerHTML = '';
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -260,6 +266,9 @@ describe('App workspace and request lifecycle', () => {
       }
     });
     mocks.createCoordinator.mockReset().mockResolvedValue(mocks.coordinator);
+    mocks.createWorkspaceArchive.mockReset().mockResolvedValue(
+      new Blob(['backup bytes'], { type: 'application/zip' })
+    );
     mocks.generateChatTitle.mockReset().mockResolvedValue('Generated title');
     mocks.generateResponse.mockReset();
     mocks.fetchGeneratedFileContent.mockReset().mockResolvedValue(
@@ -305,6 +314,7 @@ describe('App workspace and request lifecycle', () => {
     mocks.readSessions.mockReset().mockImplementation(
       async () => structuredClone(mocks.loadedSessions)
     );
+    mocks.readWorkspaceSnapshot.mockReset().mockResolvedValue({});
     mocks.readLocalBlob.mockReset().mockResolvedValue(null);
     mocks.restoreWorkspaceBackup.mockReset().mockResolvedValue(undefined);
     mocks.restoreWorkspaceArchive.mockReset().mockResolvedValue(undefined);
@@ -408,6 +418,50 @@ describe('App workspace and request lifecycle', () => {
     );
     expect(mocks.writeSessions).not.toHaveBeenCalled();
     expect(mocks.writeJsonFile).not.toHaveBeenCalled();
+  });
+
+  it('asks for a web backup file location before preparing the archive', async () => {
+    const archive = new Blob(['portable backup'], {
+      type: 'application/zip'
+    });
+    const write = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const showSaveFilePicker = vi.fn().mockResolvedValue({
+      createWritable: vi.fn().mockResolvedValue({ write, close })
+    });
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: showSaveFilePicker
+    });
+    mocks.createWorkspaceArchive.mockResolvedValueOnce(archive);
+    mocks.inspectWorkspaceArchive.mockResolvedValueOnce({
+      manifest: {
+        backupId: 'backup-test',
+        createdAt: 1
+      },
+      preview: {}
+    });
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getSidebarProps().onExportData();
+    });
+
+    expect(showSaveFilePicker).toHaveBeenCalledWith({
+      suggestedName: 'openai-studio-backup.zip',
+      types: [{
+        description: 'OpenAI Studio backup',
+        accept: { 'application/zip': ['.zip'] }
+      }]
+    });
+    expect(showSaveFilePicker.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.createWorkspaceArchive.mock.invocationCallOrder[0]
+    );
+    expect(write).toHaveBeenCalledWith(archive);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('recovers a writer pending request into a persisted retryable failure', async () => {
