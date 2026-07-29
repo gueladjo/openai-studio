@@ -92,7 +92,6 @@ const mocks = vi.hoisted(() => ({
   fetchGeneratedFileContent: vi.fn(),
   getActiveStorageBackend: vi.fn(),
   getAttachmentDataUrl: vi.fn(),
-  getLastWorkspaceRecoveryAction: vi.fn(),
   getStorageHandle: vi.fn(),
   getWorkspaceBackup: vi.fn(),
   inspectWorkspaceArchive: vi.fn(),
@@ -193,7 +192,6 @@ vi.mock('./services/workspaceArchive', () => ({
 }));
 
 vi.mock('./services/workspaceRestore', () => ({
-  getLastWorkspaceRecoveryAction: mocks.getLastWorkspaceRecoveryAction,
   restoreWorkspaceArchive: mocks.restoreWorkspaceArchive,
   undoLastWorkspaceMutation: mocks.undoLastWorkspaceMutation
 }));
@@ -288,7 +286,6 @@ describe('App workspace and request lifecycle', () => {
     );
     mocks.getActiveStorageBackend.mockReset().mockReturnValue('opfs');
     mocks.getAttachmentDataUrl.mockReset();
-    mocks.getLastWorkspaceRecoveryAction.mockReset().mockResolvedValue(null);
     mocks.getStorageHandle.mockReset().mockResolvedValue({});
     mocks.getWorkspaceBackup.mockReset();
     mocks.inspectWorkspaceArchive.mockReset().mockResolvedValue({
@@ -443,13 +440,36 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.writeJsonFile).not.toHaveBeenCalled();
   });
 
-  it('restores the latest action-aware undo control on startup', async () => {
-    mocks.getLastWorkspaceRecoveryAction.mockResolvedValueOnce('merge');
+  it('does not carry the latest undo control across application restarts', async () => {
+    await renderApp();
+    await finishInitialization();
+
+    await act(async () => {
+      await getSidebarProps().onImportData(new File(
+        ['verified archive'],
+        'backup.zip',
+        { type: 'application/zip' }
+      ));
+    });
+    const restoreButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Create recovery point'));
+    await act(async () => {
+      restoreButton?.click();
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+    expect(getSidebarProps().undoWorkspaceAction).toBe('restore');
+
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    mocks.sidebarProps = null;
 
     await renderApp();
     await finishInitialization();
 
-    expect(getSidebarProps().undoWorkspaceAction).toBe('merge');
+    expect(getSidebarProps().undoWorkspaceAction).toBeNull();
   });
 
   it('asks for a web backup file location before preparing the archive', async () => {

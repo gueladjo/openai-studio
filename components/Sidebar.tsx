@@ -240,12 +240,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <span>Data Management</span>
                     </label>
                     <div className="grid grid-cols-3 gap-2">
-                        <button 
+                        <button
                             onClick={onExportData}
-                            className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
+                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
                         >
-                            <Download size={12} />
+                            <Download className="shrink-0" size={12} />
                             Backup
+                        </button>
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={readOnly}
+                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <Upload className="shrink-0" size={12} />
+                            Restore
                         </button>
                         <button
                             onClick={() => mergeFileInputRef.current?.click()}
@@ -255,14 +263,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         >
                             <GitMerge size={12} />
                             Merge
-                        </button>
-                        <button 
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={readOnly}
-                            className="flex items-center justify-center gap-2 px-3 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <Upload size={12} />
-                            Restore
                         </button>
                         <input 
                             type="file" 

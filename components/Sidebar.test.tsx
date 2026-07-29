@@ -117,4 +117,22 @@ describe('Sidebar workspace merge controls', () => {
     expect(merge?.title).toContain('response is active');
     expect(undo).toBeDefined();
   });
+
+  it('orders restore before merge and keeps the backup direction icons visible', async () => {
+    await renderSidebar();
+    const actionButtons = Array.from(container.querySelectorAll('button'))
+      .filter(button => ['Backup', 'Restore', 'Merge'].includes(
+        button.textContent?.trim() || ''
+      ));
+
+    expect(actionButtons.map(button => button.textContent?.trim())).toEqual([
+      'Backup',
+      'Restore',
+      'Merge'
+    ]);
+    expect(actionButtons[0].querySelector('.lucide-download')).not.toBeNull();
+    expect(actionButtons[1].querySelector('.lucide-upload')).not.toBeNull();
+    expect(actionButtons[0].querySelector('svg')?.classList).toContain('shrink-0');
+    expect(actionButtons[1].querySelector('svg')?.classList).toContain('shrink-0');
+  });
 });

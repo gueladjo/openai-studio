@@ -51,7 +51,6 @@ import {
   UnsupportedLegacyBackupError
 } from './services/workspaceArchive';
 import {
-  getLastWorkspaceRecoveryAction,
   restoreWorkspaceArchive,
   undoLastWorkspaceMutation,
   WorkspaceRecoveryAction
@@ -898,17 +897,6 @@ function App() {
         setDirHandle(handle);
         setWorkspaceLoadError(null);
         setIsWorkspaceLoaded(true);
-        try {
-          setUndoWorkspaceAction(
-            await getLastWorkspaceRecoveryAction(handle)
-          );
-        } catch (recoveryError) {
-          console.warn(
-            'The latest workspace recovery point could not be inspected.',
-            recoveryError
-          );
-          setUndoWorkspaceAction(null);
-        }
         if (roleAfterLoad === 'writer') {
           coordinator.publishUpdate(getWorkspaceRevision());
         }
