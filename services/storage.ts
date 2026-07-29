@@ -1319,7 +1319,8 @@ const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
 );
 
 const readLegacyWorkspaceData = async (
-  dirHandle: FileSystemDirectoryHandle
+  dirHandle: FileSystemDirectoryHandle,
+  migrateSessions: (sessions: Session[]) => Promise<Session[]>
 ): Promise<{ revision: number; data: WorkspaceGenerationData }> => {
   const state = await readWorkspaceManifestState(dirHandle);
   const candidates = [
@@ -1342,7 +1343,7 @@ const readLegacyWorkspaceData = async (
         dirHandle,
         manifest.files.instructions
       );
-      const sessions = sessionText === null
+      const parsedSessions = sessionText === null
         ? []
         : parseJsonText(manifest.files.sessions, sessionText, parseStoredSessions);
       const settings = settingsText === null
@@ -1359,6 +1360,11 @@ const readLegacyWorkspaceData = async (
             instructionsText,
             parseSystemInstructions
           );
+      validateWorkspaceReferences(
+        { sessions: parsedSessions, settings, instructions },
+        { allowDanglingSelections: true }
+      );
+      const sessions = await migrateSessions(parsedSessions);
       validateWorkspaceReferences(
         { sessions, settings, instructions },
         { allowDanglingSelections: true }
@@ -1386,7 +1392,7 @@ const readLegacyWorkspaceData = async (
     if (sessionText === null || settingsText === null || instructionsText === null) {
       throw firstError || new Error('The legacy workspace is incomplete.');
     }
-    const sessions = parseJsonText(
+    const parsedSessions = parseJsonText(
       backupFiles.sessions,
       sessionText,
       parseStoredSessions
@@ -1401,6 +1407,11 @@ const readLegacyWorkspaceData = async (
       instructionsText,
       parseSystemInstructions
     );
+    validateWorkspaceReferences(
+      { sessions: parsedSessions, settings, instructions },
+      { allowDanglingSelections: true }
+    );
+    const sessions = await migrateSessions(parsedSessions);
     validateWorkspaceReferences(
       { sessions, settings, instructions },
       { allowDanglingSelections: true }
@@ -1417,7 +1428,7 @@ const readLegacyWorkspaceData = async (
 const migrateSessionsToContentBlobs = async (
   dirHandle: FileSystemDirectoryHandle,
   sessions: Session[],
-  strict: boolean
+  recoverMissingLegacyAttachments = false
 ): Promise<Session[]> => {
   const store = createWorkspaceGenerationStore(dirHandle);
 
@@ -1426,54 +1437,67 @@ const migrateSessionsToContentBlobs = async (
     const type = typeof attachment.type === 'string'
       ? attachment.type
       : 'application/octet-stream';
+    const metadataOnlyAttachment: FileAttachment = {
+      name,
+      type,
+      ...(attachment.size !== undefined ? { size: attachment.size } : {})
+    };
+    const hasStorageLocator = Boolean(
+      attachment.localBlob ||
+      attachment.content ||
+      isValidAttachmentId(attachment.id)
+    );
+    if (!hasStorageLocator) return metadataOnlyAttachment;
+
     let blob: Blob | null = null;
 
-    try {
-      if (attachment.localBlob) {
-        blob = await store.readBlob(attachment.localBlob);
-      } else if (attachment.content) {
-        blob = await dataUrlToBlob(attachment.content);
-      } else if (
-        typeof attachment.id === 'string' &&
-        /^[a-f0-9]{64}$/.test(attachment.id) &&
-        Number.isSafeInteger(attachment.size) &&
-        (attachment.size as number) >= 0
-      ) {
-        blob = await store.readBlob({
-          sha256: attachment.id,
-          byteSize: attachment.size as number,
-          ...(type ? { mimeType: type } : {})
-        });
-      } else if (isValidAttachmentId(attachment.id)) {
+    if (attachment.localBlob) {
+      blob = await store.readBlob(attachment.localBlob);
+    } else if (attachment.content) {
+      blob = await dataUrlToBlob(attachment.content);
+    } else if (
+      typeof attachment.id === 'string' &&
+      /^[a-f0-9]{64}$/.test(attachment.id) &&
+      Number.isSafeInteger(attachment.size) &&
+      (attachment.size as number) >= 0
+    ) {
+      blob = await store.readBlob({
+        sha256: attachment.id,
+        byteSize: attachment.size as number,
+        ...(type ? { mimeType: type } : {})
+      });
+      if (!blob) {
         blob = await readAttachmentBlob(dirHandle, attachment.id);
       }
-      if (!blob) {
-        throw new Error(`Attachment "${name}" is missing from local storage.`);
-      }
-      validateAttachments([{
-        name,
-        type: type || blob.type,
-        size: blob.size
-      }]);
-      const localBlob = await store.storeBlob(blob, type || blob.type);
-      return {
-        name,
-        type: type || blob.type || 'application/octet-stream',
-        size: blob.size,
-        localBlob
-      };
-    } catch (error) {
-      if (strict) throw error;
-      console.warn(`Failed to migrate attachment ${name}.`, error);
-      return {
-        name,
-        type,
-        ...(attachment.size !== undefined ? { size: attachment.size } : {}),
-        ...(attachment.localBlob ? { localBlob: attachment.localBlob } : {}),
-        ...(attachment.content ? { content: attachment.content } : {}),
-        ...(attachment.id ? { id: attachment.id } : {})
-      };
+    } else if (isValidAttachmentId(attachment.id)) {
+      blob = await readAttachmentBlob(dirHandle, attachment.id);
     }
+    if (!blob) {
+      if (
+        recoverMissingLegacyAttachments &&
+        !attachment.localBlob &&
+        !attachment.content &&
+        isValidAttachmentId(attachment.id)
+      ) {
+        console.warn(
+          `Legacy attachment ${attachment.id} (${name}) is missing; preserved its metadata without the unusable local ID.`
+        );
+        return metadataOnlyAttachment;
+      }
+      throw new Error(`Attachment "${name}" is missing from local storage.`);
+    }
+    validateAttachments([{
+      name,
+      type: type || blob.type,
+      size: blob.size
+    }]);
+    const localBlob = await store.storeBlob(blob, type || blob.type);
+    return {
+      name,
+      type: type || blob.type || 'application/octet-stream',
+      size: blob.size,
+      localBlob
+    };
   });
 };
 
@@ -1495,17 +1519,23 @@ const ensureWorkspaceGeneration = async (
     );
   }
 
-  const legacy = await readLegacyWorkspaceData(dirHandle);
-  const sessions = await migrateSessionsToContentBlobs(
-    dirHandle,
-    legacy.data.sessions,
-    true
-  );
-  const data = {
-    ...legacy.data,
-    sessions
-  };
-  const migrated = await store.commit(null, data, {
+  let legacy: { revision: number; data: WorkspaceGenerationData };
+  try {
+    legacy = await readLegacyWorkspaceData(
+      dirHandle,
+      sessions => migrateSessionsToContentBlobs(dirHandle, sessions)
+    );
+  } catch (error) {
+    console.warn(
+      'No complete legacy workspace generation was found; retrying with missing legacy attachment recovery.',
+      error
+    );
+    legacy = await readLegacyWorkspaceData(
+      dirHandle,
+      sessions => migrateSessionsToContentBlobs(dirHandle, sessions, true)
+    );
+  }
+  const migrated = await store.commit(null, legacy.data, {
     revision: legacy.revision,
     createdAt: Date.now()
   });
@@ -1563,8 +1593,7 @@ export const writeJsonFile = async (
     sessions: key === 'sessions'
       ? await migrateSessionsToContentBlobs(
           dirHandle,
-          parsedData as Session[],
-          true
+          parsedData as Session[]
         )
       : current.sessions,
     settings: key === 'settings'
@@ -1938,8 +1967,7 @@ export const replaceWorkspaceSnapshot = async (
   }
   const sessions = await migrateSessionsToContentBlobs(
     dirHandle,
-    replacement.sessions,
-    true
+    replacement.sessions
   );
   const restoredSettings: AppSettings = replacement.settings
     ? {

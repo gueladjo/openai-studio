@@ -304,6 +304,27 @@ const createBackup = (
   timestamp: 2
 });
 
+const seedLegacyWorkspaceFiles = async (
+  fileSystem: MemoryFileSystem,
+  sessions: Session[],
+  revision = 7
+): Promise<void> => {
+  await fileSystem.writeText('data/sessions.json', JSON.stringify(sessions));
+  await fileSystem.writeText('data/settings.json', JSON.stringify({
+    theme: 'dark',
+    apiKey: 'legacy-key',
+    lastActiveSessionId: sessions[0]?.id
+  }));
+  await fileSystem.writeText(
+    'data/system_instructions.json',
+    JSON.stringify(instructions)
+  );
+  await fileSystem.writeText(
+    'data/workspace_revision.json',
+    JSON.stringify({ revision })
+  );
+};
+
 describe('storage public contracts', () => {
   let fileSystem: MemoryFileSystem;
   let storage: StorageModule;
@@ -534,6 +555,27 @@ describe('storage public contracts', () => {
     );
     expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
       .toBe('private notes');
+  });
+
+  it('does not downgrade a missing v2 blob to metadata-only attachment data', async () => {
+    const localBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['protected bytes'], 'protected.txt', { type: 'text/plain' })
+    );
+    await seedWorkspace([createSession('Protected blob', [{
+      name: 'protected.txt',
+      type: 'text/plain',
+      size: 15,
+      localBlob
+    }])]);
+    await fileSystem.remove(`data/blobs/${localBlob.sha256}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'No complete local workspace generation'
+    );
+    expect(await fileSystem.readText('data/sessions.json')).toBeNull();
+    warn.mockRestore();
   });
 
   it('does not collect staged bytes before their session reference is published', async () => {
@@ -915,6 +957,142 @@ describe('storage public contracts', () => {
       handle,
       storage.STORAGE_FILES.SESSIONS
     )).resolves.toEqual(initialSessions);
+  });
+});
+
+describe('legacy workspace migration contracts', () => {
+  let fileSystem: MemoryFileSystem;
+  let storage: StorageModule;
+  let handle: FileSystemDirectoryHandle;
+
+  const loadElectronWorkspace = async (): Promise<number> => {
+    const localStorage = new MemoryStorage();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.stubGlobal('window', {
+      electronAPI: {},
+      localStorage,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    });
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: vi.fn(async () => fileSystem.root)
+      }
+    });
+    vi.stubGlobal('indexedDB', undefined);
+    vi.stubGlobal('FileReader', MemoryFileReader);
+    vi.resetModules();
+
+    storage = await import('./storage');
+    handle = await storage.getStorageHandle();
+    return storage.synchronizeWorkspaceRevision(handle);
+  };
+
+  beforeEach(() => {
+    fileSystem = new MemoryFileSystem();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('falls back to a complete legacy backup when the active attachment is missing', async () => {
+    const activeSessions = [createSession('Active', [{
+      id: 'missing-active-attachment',
+      name: 'dx12user.settings',
+      type: 'application/octet-stream',
+      size: 19
+    }])];
+    const backupSessions = [createSession('Backup', [{
+      id: 'backup-attachment',
+      name: 'notes.txt',
+      type: 'text/plain',
+      size: 12
+    }])];
+    await seedLegacyWorkspaceFiles(fileSystem, activeSessions);
+    await fileSystem.writeText(
+      'data/sessions.json.bak',
+      JSON.stringify(backupSessions)
+    );
+    await fileSystem.writeText(
+      'data/settings.json.bak',
+      JSON.stringify({
+        theme: 'light',
+        apiKey: 'backup-key',
+        lastActiveSessionId: backupSessions[0].id
+      })
+    );
+    await fileSystem.writeText(
+      'data/system_instructions.json.bak',
+      JSON.stringify(instructions)
+    );
+    await fileSystem.writeText(
+      'data/attachments/backup-attachment',
+      'backup bytes'
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(loadElectronWorkspace()).resolves.toBe(6);
+
+    const sessions = await storage.readSessions(handle);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].title).toBe('Backup');
+    expect(sessions[0].messages[0].attachments?.[0]).toEqual({
+      name: 'notes.txt',
+      type: 'text/plain',
+      size: 12,
+      localBlob: {
+        sha256: await sha256Blob(new Blob(['backup bytes'])),
+        byteSize: 12,
+        mimeType: 'text/plain'
+      }
+    });
+    expect(JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    )).toMatchObject({
+      schemaVersion: 2,
+      revision: 6
+    });
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('retrying with missing legacy attachment recovery'),
+      expect.anything()
+    );
+  });
+
+  it('preserves metadata and removes a dead legacy ID when no complete backup exists', async () => {
+    const legacySessions = [createSession('Legacy', [{
+      id: 'missing-legacy-attachment',
+      name: 'dx12user.settings',
+      type: 'application/octet-stream',
+      size: 19
+    }])];
+    await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(loadElectronWorkspace()).resolves.toBe(7);
+
+    const sessions = await storage.readSessions(handle);
+    expect(sessions[0].messages[0].attachments?.[0]).toEqual({
+      name: 'dx12user.settings',
+      type: 'application/octet-stream',
+      size: 19
+    });
+    await expect(storage.writeSessions(handle, sessions)).resolves.toBe(8);
+    expect(JSON.parse(
+      await fileSystem.readText('data/sessions.json') || ''
+    )[0].messages[0].attachments[0]).toMatchObject({
+      id: 'missing-legacy-attachment',
+      name: 'dx12user.settings'
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('retrying with missing legacy attachment recovery'),
+      expect.anything()
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Legacy attachment missing-legacy-attachment')
+    );
   });
 });
 
