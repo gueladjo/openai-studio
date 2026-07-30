@@ -773,6 +773,50 @@ describe('App workspace and request lifecycle', () => {
     ).toBe(false);
   });
 
+  it('keeps other chats interactive while a deletion is still being persisted', async () => {
+    const deletionSave = createDeferred<number>();
+    mocks.generateResponse.mockResolvedValueOnce(
+      completedResult('Started while deletion was saving.')
+    );
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    mocks.writeSessions.mockReturnValueOnce(deletionSave.promise);
+
+    await act(async () => {
+      getSidebarProps().onDeleteSession(
+        { stopPropagation: vi.fn() } as unknown as React.MouseEvent,
+        'session-a'
+      );
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+
+    expect(
+      getSidebarProps().sessions.some(session => session.id === 'session-a')
+    ).toBe(false);
+    expect(mocks.writeSessions).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain('Updating workspace');
+
+    let requestStarted = false;
+    await act(async () => {
+      requestStarted = await getChatAreaProps().onSendMessage(
+        'session-b',
+        'Continue working.',
+        []
+      );
+    });
+    expect(requestStarted).toBe(true);
+    expect(mocks.generateResponse).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      deletionSave.resolve(1);
+      await deletionSave.promise;
+    });
+    await flushMicrotasks();
+  });
+
   it('caches generated files locally and then downloads without another API call', async () => {
     const generatedFile: GeneratedFile = {
       filename: 'result.txt',

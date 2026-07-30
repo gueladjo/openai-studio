@@ -76,7 +76,10 @@ import {
   OperationRecord,
   OperationRegistry
 } from './services/operationRegistry';
-import { SerializedOperationQueue } from './services/serializedOperationQueue';
+import {
+  SerializedOperationOptions,
+  SerializedOperationQueue
+} from './services/serializedOperationQueue';
 import {
   buildConversationFilename,
   downloadTextFile,
@@ -616,8 +619,11 @@ function App() {
   }, [getSaveQueue]);
 
   const enqueueDestructiveOperation = useCallback(<T,>(
-    operation: () => Promise<T>
-  ): Promise<T> => destructiveOperationQueueRef.current!.enqueue(operation), []);
+    operation: () => Promise<T>,
+    options?: SerializedOperationOptions
+  ): Promise<T> => (
+    destructiveOperationQueueRef.current!.enqueue(operation, options)
+  ), []);
 
   const addProcessingSession = (sessionId: string) => {
     processingSessionIdsRef.current.add(sessionId);
@@ -1094,39 +1100,33 @@ function App() {
     if (!deletedSession || !confirmChatDeletion()) return;
 
     invalidateSessionOperations(id, 'before chat deletion');
+    const operation = operationRegistryRef.current.begin({
+      id: uuidv4(),
+      kind: 'delete-session',
+      sessionId: id
+    });
+    const newSessions = sessionsRef.current.filter(session => session.id !== id);
+    forceImmediateSessionSaveRef.current = true;
+    updateSessionsState(newSessions);
+    revokeAttachmentPreviewUrls([deletedSession]);
+    if (currentSessionIdRef.current === id) {
+      updateCurrentSessionId(newSessions[0]?.id || null);
+    }
+    scheduleSave('sessions', true);
 
     void enqueueDestructiveOperation(async () => {
-      const operation = operationRegistryRef.current.begin({
-        id: uuidv4(),
-        kind: 'delete-session',
-        sessionId: id
-      });
-
       try {
-        if (!workspaceCanWriteRef.current) return;
-        const currentDeletedSession = sessionsRef.current.find(session => session.id === id);
-        if (!currentDeletedSession) return;
-
-        const newSessions = sessionsRef.current.filter(session => session.id !== id);
-        forceImmediateSessionSaveRef.current = true;
-        updateSessionsState(newSessions);
-        revokeAttachmentPreviewUrls([currentDeletedSession]);
-        if (currentSessionIdRef.current === id) {
-          updateCurrentSessionId(newSessions[0]?.id || null);
-        }
-
-        scheduleSave('sessions', true);
-        await flushPendingSaves(['sessions']);
         if (
           !operationRegistryRef.current.isCurrent(operation) ||
           !workspaceCanWriteRef.current
         ) {
           return;
         }
+        await flushPendingSaves(['sessions']);
       } finally {
         operationRegistryRef.current.complete(operation);
       }
-    }).catch(error => {
+    }, { blocksInteractions: false }).catch(error => {
       console.error('Failed to persist chat deletion.', error);
     });
   };

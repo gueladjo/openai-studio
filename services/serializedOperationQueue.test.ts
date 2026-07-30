@@ -50,4 +50,56 @@ describe('SerializedOperationQueue', () => {
     await expect(failure).rejects.toThrow('delete failed');
     await expect(next).resolves.toBe('import completed');
   });
+
+  it('serializes non-blocking operations without reporting an interaction lock', async () => {
+    const blockingChanges = vi.fn();
+    const queue = new SerializedOperationQueue(blockingChanges);
+    const saveGate = deferred<void>();
+    const order: string[] = [];
+
+    const save = queue.enqueue(async () => {
+      order.push('save-start');
+      await saveGate.promise;
+      order.push('save-end');
+    }, { blocksInteractions: false });
+    const workspaceMutation = queue.enqueue(async () => {
+      order.push('mutation');
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(['save-start']);
+    expect(queue.isPending).toBe(true);
+    expect(queue.isBlocking).toBe(true);
+    expect(blockingChanges.mock.calls).toEqual([[true]]);
+
+    saveGate.resolve();
+    await Promise.all([save, workspaceMutation]);
+
+    expect(order).toEqual(['save-start', 'save-end', 'mutation']);
+    expect(queue.isPending).toBe(false);
+    expect(queue.isBlocking).toBe(false);
+    expect(blockingChanges.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('does not report an interaction lock for only non-blocking work', async () => {
+    const blockingChanges = vi.fn();
+    const queue = new SerializedOperationQueue(blockingChanges);
+    const saveGate = deferred<void>();
+    const save = queue.enqueue(
+      () => saveGate.promise,
+      { blocksInteractions: false }
+    );
+
+    await Promise.resolve();
+    expect(queue.isPending).toBe(true);
+    expect(queue.isBlocking).toBe(false);
+    expect(blockingChanges).not.toHaveBeenCalled();
+
+    saveGate.resolve();
+    await save;
+
+    expect(queue.isPending).toBe(false);
+    expect(queue.isBlocking).toBe(false);
+    expect(blockingChanges).not.toHaveBeenCalled();
+  });
 });
