@@ -10,6 +10,7 @@ import { LocalBlobReference, Session, SystemInstruction } from '../types';
 import {
   encodeUtf8,
   sha256Blob,
+  sha256Bytes,
   sha256Text
 } from './contentAddressing';
 import {
@@ -121,10 +122,11 @@ const verifyText = (
   text: string,
   reference: ContentObjectReference
 ): void => {
-  if (encodeUtf8(text).byteLength !== reference.byteLength) {
+  const bytes = encodeUtf8(text);
+  if (bytes.byteLength !== reference.byteLength) {
     throw new WorkspaceGenerationError(`${path} has an unexpected byte length.`);
   }
-  if (sha256Text(text) !== reference.sha256) {
+  if (sha256Bytes(bytes) !== reference.sha256) {
     throw new WorkspaceGenerationError(`${path} failed its SHA-256 check.`);
   }
 };
@@ -159,7 +161,36 @@ export class WorkspaceGenerationStore {
   }
 
   async readCurrent(): Promise<ValidWorkspaceGeneration | null> {
-    return (await this.readValidGenerations())[0] || null;
+    const records = await Promise.all(
+      WORKSPACE_MANIFEST_SLOTS.map(async slot => ({
+        slot,
+        text: await this.adapter.readText(slot)
+      }))
+    );
+
+    const candidates: Array<{
+      slot: WorkspaceManifestSlot;
+      manifest: WorkspaceGenerationManifest;
+    }> = [];
+    for (const { slot, text } of records) {
+      if (text === null) continue;
+      try {
+        candidates.push({ slot, manifest: parseWorkspaceGenerationManifest(text, slot) });
+      } catch (error) {
+        console.warn(`Ignored incomplete workspace generation ${slot}.`, error);
+      }
+    }
+    candidates.sort((left, right) => right.manifest.revision - left.manifest.revision);
+
+    // Validate the newest generation first and stop at the first complete one.
+    for (const { slot, manifest } of candidates) {
+      try {
+        return await this.validateGeneration(slot, manifest);
+      } catch (error) {
+        console.warn(`Ignored incomplete workspace generation ${slot}.`, error);
+      }
+    }
+    return null;
   }
 
   pin(manifest: WorkspaceGenerationManifest): () => void {
@@ -321,6 +352,16 @@ export class WorkspaceGenerationStore {
       : blob;
   }
 
+  // Read without re-verifying the content hash; only for callers whose data
+  // was already covered by a generation validation in the same load.
+  async readBlobData(reference: LocalBlobReference): Promise<Blob | null> {
+    const blob = await this.adapter.readBlob(getBlobPath(reference));
+    if (!blob) return null;
+    return reference.mimeType && blob.type !== reference.mimeType
+      ? blob.slice(0, blob.size, reference.mimeType)
+      : blob;
+  }
+
   private async writeObject(
     reference: ContentObjectReference,
     text: string
@@ -344,51 +385,47 @@ export class WorkspaceGenerationStore {
     slot: WorkspaceManifestSlot,
     manifest: WorkspaceGenerationManifest
   ): Promise<ValidWorkspaceGeneration> {
-    const sessions: Session[] = [];
+    const settingsPath = getObjectPath(manifest.settings);
+    const instructionsPath = getObjectPath(manifest.instructions);
+    const [sessions, settingsText, instructionsText] = await Promise.all([
+      Promise.all(manifest.sessions.map(async reference => {
+        const path = getObjectPath(reference);
+        const text = await this.adapter.readText(path);
+        if (text === null) {
+          throw new WorkspaceGenerationError(`${path} is missing.`);
+        }
+        verifyText(path, text, reference);
+        const parsed = parseJsonText(path, text, value => {
+          const values = parseStoredSessions([value]);
+          return values[0];
+        });
+        if (parsed.id !== reference.id) {
+          throw new WorkspaceGenerationError(
+            `${path} does not contain session ${reference.id}.`
+          );
+        }
+        return parsed;
+      })),
+      this.adapter.readText(settingsPath),
+      this.adapter.readText(instructionsPath)
+    ]);
 
-    for (const reference of manifest.sessions) {
-      const path = getObjectPath(reference);
-      const text = await this.adapter.readText(path);
-      if (text === null) {
-        throw new WorkspaceGenerationError(`${path} is missing.`);
-      }
-      verifyText(path, text, reference);
-      const parsed = parseJsonText(path, text, value => {
-        const values = parseStoredSessions([value]);
-        return values[0];
-      });
-      if (parsed.id !== reference.id) {
-        throw new WorkspaceGenerationError(
-          `${path} does not contain session ${reference.id}.`
-        );
-      }
-      sessions.push(parsed);
-    }
-
-    const settingsText = await this.adapter.readText(getObjectPath(manifest.settings));
     if (settingsText === null) {
       throw new WorkspaceGenerationError('The settings object is missing.');
     }
-    verifyText(getObjectPath(manifest.settings), settingsText, manifest.settings);
+    verifyText(settingsPath, settingsText, manifest.settings);
     const settings = parseJsonText(
-      getObjectPath(manifest.settings),
+      settingsPath,
       settingsText,
       value => parseAppSettings(value) as AppSettings
     );
 
-    const instructionsText = await this.adapter.readText(
-      getObjectPath(manifest.instructions)
-    );
     if (instructionsText === null) {
       throw new WorkspaceGenerationError('The instructions object is missing.');
     }
-    verifyText(
-      getObjectPath(manifest.instructions),
-      instructionsText,
-      manifest.instructions
-    );
+    verifyText(instructionsPath, instructionsText, manifest.instructions);
     const instructions = parseJsonText(
-      getObjectPath(manifest.instructions),
+      instructionsPath,
       instructionsText,
       parseSystemInstructions
     );
@@ -403,7 +440,7 @@ export class WorkspaceGenerationStore {
         'The workspace manifest blob list does not match workspace references.'
       );
     }
-    for (const [hash, localReference] of referencedBlobs) {
+    await Promise.all([...referencedBlobs].map(async ([hash, localReference]) => {
       const declared = declaredBlobs.get(hash);
       if (!declared || declared.byteLength !== localReference.byteSize) {
         throw new WorkspaceGenerationError(
@@ -417,7 +454,7 @@ export class WorkspaceGenerationStore {
       if (blob.size !== declared.byteLength || await sha256Blob(blob) !== hash) {
         throw new WorkspaceGenerationError(`Referenced blob ${hash} is corrupt.`);
       }
-    }
+    }));
 
     return { manifest, slot, sessions, settings, instructions };
   }

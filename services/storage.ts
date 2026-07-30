@@ -35,6 +35,9 @@ import {
   WorkspaceGenerationStore
 } from './workspaceGenerationStore';
 import {
+  encodeUtf8
+} from './contentAddressing';
+import {
   WORKSPACE_MANIFEST_SLOTS
 } from './workspaceGeneration';
 
@@ -624,23 +627,17 @@ const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : String(error)
 );
 
-const hashText = (text: string): string => {
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-};
-
 const getRecordsFingerprint = (
   records: BackendRecord[],
   extraDescriptors: string[] = []
 ): string => {
+  // Size-based descriptors keep OPFS and IndexedDB fingerprints comparable
+  // without reading every object's contents; backendRecordsMatch is the
+  // authoritative content check when fingerprints collide.
   const descriptors = records.map(record => (
     typeof record.data === 'string'
-      ? `${record.filename}:text:${record.data.length}:${hashText(record.data)}`
-      : `${record.filename}:blob:${record.data.size}`
+      ? `${record.filename}:size:${encodeUtf8(record.data).byteLength}`
+      : `${record.filename}:size:${record.data.size}`
   ));
   return [...descriptors, ...extraDescriptors].sort().join('|');
 };
@@ -671,18 +668,20 @@ const backendRecordsMatch = async (
     rightRecords.map(record => [record.filename, record])
   );
 
+  // Records may carry text in one backend and blob metadata in the other;
+  // compare UTF-8 bytes either way.
+  const toComparableBlob = (data: string | Blob): Blob => (
+    typeof data === 'string' ? new Blob([data]) : data
+  );
+
   for (const left of leftRecords) {
     const right = rightByFilename.get(left.filename);
-    if (!right || typeof left.data !== typeof right.data) return false;
+    if (!right) return false;
 
-    if (typeof left.data === 'string' && typeof right.data === 'string') {
-      if (left.data !== right.data) return false;
-      continue;
-    }
-
-    if (!(left.data instanceof Blob) || !(right.data instanceof Blob)) return false;
-    if (left.data.size !== right.data.size) return false;
-    if (await getBlobDigest(left.data) !== await getBlobDigest(right.data)) return false;
+    const leftBlob = toComparableBlob(left.data);
+    const rightBlob = toComparableBlob(right.data);
+    if (leftBlob.size !== rightBlob.size) return false;
+    if (await getBlobDigest(leftBlob) !== await getBlobDigest(rightBlob)) return false;
   }
 
   return true;
@@ -852,11 +851,11 @@ const inspectOpfsBackend = async (supported: boolean): Promise<BackendInspection
         continue;
       }
 
+      // Nested records carry blob metadata only: the size-based fingerprint
+      // keeps backend snapshots comparable without reading every object.
       records.push({
         filename: `${name}/${childName}`,
-        data: name === 'objects'
-          ? await (await childEntry.getFile()).text()
-          : await childEntry.getFile()
+        data: await childEntry.getFile()
       });
     }
   }
@@ -1734,26 +1733,33 @@ const addRuntimeAttachmentMetadata = async (
   sessions: Session[]
 ): Promise<Session[]> => mapSessionAttachments(sessions, async attachment => {
   if (attachment.localBlob) {
+    // The generation was already validated during this load, so the declared
+    // byte size is trusted and image previews skip hash verification.
+    const sizedAttachment: FileAttachment = {
+      ...attachment,
+      size: attachment.localBlob.byteSize
+    };
+    if (!attachment.type.startsWith('image/')) {
+      return sizedAttachment;
+    }
+
     try {
-      const blob = await createWorkspaceGenerationStore(dirHandle).readBlob(
+      const blob = await createWorkspaceGenerationStore(dirHandle).readBlobData(
         attachment.localBlob
       );
       if (!blob) {
         console.warn(
           `Stored attachment ${attachment.localBlob.sha256} (${attachment.name}) is missing.`
         );
-        return attachment;
+        return sizedAttachment;
       }
       return {
-        ...attachment,
-        size: blob.size,
-        ...(attachment.type.startsWith('image/')
-          ? { previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type)) }
-          : {})
+        ...sizedAttachment,
+        previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type))
       };
     } catch (error) {
       console.warn(`Failed to load attachment preview ${attachment.name}.`, error);
-      return attachment;
+      return sizedAttachment;
     }
   }
 

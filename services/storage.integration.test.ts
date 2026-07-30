@@ -6,7 +6,7 @@ import {
   type Session,
   type SystemInstruction
 } from '../types';
-import { sha256Blob } from './contentAddressing';
+import { sha256Blob, sha256Text, encodeUtf8 } from './contentAddressing';
 
 const notFound = (name: string): DOMException => (
   new DOMException(`${name} was not found.`, 'NotFoundError')
@@ -555,6 +555,107 @@ describe('storage public contracts', () => {
     );
     expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
       .toBe('private notes');
+  });
+
+  it('adds runtime attachment metadata from validated blob references', async () => {
+    const imageBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['image bytes'], 'image.png', { type: 'image/png' })
+    );
+    const documentBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['document bytes'], 'document.txt', { type: 'text/plain' })
+    );
+    await seedWorkspace([createSession('Attachments', [
+      {
+        name: 'image.png',
+        type: 'image/png',
+        size: imageBlob.byteSize,
+        localBlob: imageBlob
+      },
+      {
+        name: 'document.txt',
+        type: 'text/plain',
+        size: documentBlob.byteSize,
+        localBlob: documentBlob
+      }
+    ])]);
+
+    const sessions = await storage.readSessions(handle);
+    const [image, document] = sessions[0].messages[0].attachments!;
+    expect(image.size).toBe(imageBlob.byteSize);
+    expect(image.previewUrl).toMatch(/^blob:/);
+    expect(document.size).toBe(documentBlob.byteSize);
+    expect(document.previewUrl).toBeUndefined();
+  });
+
+  it('keeps blob reference metadata and warns when an image preview is unreadable', async () => {
+    const imageBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['image bytes'], 'image.png', { type: 'image/png' })
+    );
+    await seedWorkspace([createSession('Broken preview', [{
+      name: 'image.png',
+      type: 'image/png',
+      size: imageBlob.byteSize,
+      localBlob: imageBlob
+    }])]);
+    await fileSystem.remove(`data/blobs/${imageBlob.sha256}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const sessions = await storage.readSessions(handle);
+    const attachment = sessions[0].messages[0].attachments![0];
+    expect(attachment.size).toBe(imageBlob.byteSize);
+    expect(attachment.previewUrl).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('is missing.')
+    );
+    warn.mockRestore();
+  });
+
+  it('preserves manifest session order through repeated validation', async () => {
+    const sessions = ['Alpha', 'Beta', 'Gamma', 'Delta'].map(title => createSession(title));
+    await seedWorkspace(sessions);
+
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(sessions);
+    await storage.synchronizeWorkspaceRevision(handle);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual(sessions);
+  });
+
+  it('warns and falls back when the newest manifest cannot be parsed', async () => {
+    await seedWorkspace([createSession('Stable')]);
+    await storage.writeSessions(handle, [createSession('Updated')]);
+
+    const [manifestA, manifestB] = await Promise.all([
+      fileSystem.readText('data/workspace_manifest_a.json'),
+      fileSystem.readText('data/workspace_manifest_b.json')
+    ]);
+    const generations = ([
+      ['a', manifestA],
+      ['b', manifestB]
+    ] as const)
+      .map(([slot, text]) => ({ slot, revision: JSON.parse(text || '{}').revision }))
+      .sort((left, right) => right.revision - left.revision);
+    await fileSystem.writeText(
+      `data/workspace_manifest_${generations[0].slot}.json`,
+      '{'
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(
+      generations[1].revision
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Ignored incomplete workspace generation'),
+      expect.anything()
+    );
+    warn.mockRestore();
   });
 
   it('does not downgrade a missing v2 blob to metadata-only attachment data', async () => {
@@ -1277,6 +1378,86 @@ describe('storage backend migration contracts', () => {
     expect(await readIndexedDbRecord(database, 'settings.json')).toMatchObject({
       data: indexedDbRecords[1].data
     });
+  });
+
+  it('copies and byte-verifies a v2 IndexedDB workspace with objects and blobs', async () => {
+    const blobBytes = new Blob(['migrated attachment'], { type: 'text/plain' });
+    const blobSha256 = await sha256Blob(blobBytes);
+    const migratedSession = createSession('Migrated', [{
+      name: 'migrated.txt',
+      type: 'text/plain',
+      size: blobBytes.size,
+      localBlob: {
+        sha256: blobSha256,
+        byteSize: blobBytes.size,
+        mimeType: 'text/plain'
+      }
+    }]);
+    const sessionText = JSON.stringify(migratedSession);
+    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'v2-key' });
+    const instructionsText = JSON.stringify(instructions);
+    const objectReference = (text: string) => ({
+      sha256: sha256Text(text),
+      byteLength: encodeUtf8(text).byteLength
+    });
+    const manifest = {
+      schemaVersion: 2,
+      revision: 7,
+      createdAt: 1,
+      sessions: [{ id: migratedSession.id, ...objectReference(sessionText) }],
+      settings: objectReference(settingsText),
+      instructions: objectReference(instructionsText),
+      blobs: [{ sha256: blobSha256, byteLength: blobBytes.size }]
+    };
+    const v2Records: IndexedDbRecord[] = [
+      {
+        filename: 'workspace_manifest_a.json',
+        data: JSON.stringify(manifest),
+        updatedAt: 2
+      },
+      ...[
+        [manifest.sessions[0].sha256, sessionText],
+        [manifest.settings.sha256, settingsText],
+        [manifest.instructions.sha256, instructionsText]
+      ].map(([sha256, text]) => ({
+        filename: `objects/${sha256}.json`,
+        data: text as string,
+        updatedAt: 2
+      })),
+      {
+        filename: `blobs/${blobSha256}`,
+        data: blobBytes,
+        updatedAt: 2
+      }
+    ];
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(['files'], 'readwrite');
+      const store = transaction.objectStore('files');
+      v2Records.forEach(record => store.put(record));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+
+    await storage.getStorageHandle({
+      resolveBackendChoice: async () => 'migrate-to-opfs' as const
+    });
+    const handle = await storage.getStorageHandle();
+
+    expect(storage.getActiveStorageBackend()).toBe('opfs');
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(7);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    )).resolves.toEqual([migratedSession]);
+    expect(await fileSystem.readText(`data/blobs/${blobSha256}`)).toBe(
+      'migrated attachment'
+    );
+    expect(JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    )).toMatchObject({ schemaVersion: 2, revision: 7 });
+    expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
+      .toMatchObject({ data: JSON.stringify(manifest) });
   });
 
   it('rolls back every attempted OPFS record when migration copying fails', async () => {
