@@ -1080,6 +1080,21 @@ describe('legacy workspace migration contracts', () => {
       size: 19
     });
     await expect(storage.writeSessions(handle, sessions)).resolves.toBe(8);
+    const { createWorkspaceArchive, inspectWorkspaceArchive } = await import(
+      './workspaceArchive'
+    );
+    const archive = await createWorkspaceArchive(
+      await storage.readWorkspaceSnapshot(handle),
+      { reason: 'manual' }
+    );
+    const inspected = await inspectWorkspaceArchive(archive);
+    expect(
+      inspected.replacement.sessions[0].messages[0].attachments?.[0]
+    ).toEqual({
+      name: 'dx12user.settings',
+      type: 'application/octet-stream',
+      size: 19
+    });
     expect(JSON.parse(
       await fileSystem.readText('data/sessions.json') || ''
     )[0].messages[0].attachments[0]).toMatchObject({

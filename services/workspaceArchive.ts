@@ -695,10 +695,26 @@ export const inspectWorkspaceArchive = async (
     orderedSessions.forEach(session => {
       session.messages.forEach(message => {
         message.attachments?.forEach(attachment => {
-          if (
-            !attachment.localBlob ||
-            !blobSizes.has(attachment.localBlob.sha256)
-          ) {
+          if (!attachment.localBlob) {
+            if (
+              attachment.id !== undefined ||
+              attachment.content !== undefined
+            ) {
+              throw new BackupArchiveError(
+                `Attachment "${attachment.name}" contains non-portable local data.`
+              );
+            }
+            if (
+              attachment.size !== undefined &&
+              attachment.size > MAX_ATTACHMENT_BYTES
+            ) {
+              throw new BackupArchiveError(
+                `Attachment "${attachment.name}" exceeds the attachment size limit.`
+              );
+            }
+            return;
+          }
+          if (!blobSizes.has(attachment.localBlob.sha256)) {
             throw new BackupArchiveError(
               `Attachment "${attachment.name}" is missing verified bytes.`
             );

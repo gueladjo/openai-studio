@@ -4,7 +4,7 @@ import {
   TextReader,
   ZipWriter
 } from '@zip.js/zip.js';
-import { DEFAULT_CONFIG, type Session } from '../types';
+import { DEFAULT_CONFIG, type FileAttachment, type Session } from '../types';
 import { encodeUtf8, sha256Blob, sha256Text } from './contentAddressing';
 import {
   BackupArchiveError,
@@ -91,6 +91,27 @@ const snapshot: WorkspaceSnapshot = {
   }
 };
 
+const appendAttachment = (
+  attachment: FileAttachment
+): WorkspaceSnapshot => ({
+  ...snapshot,
+  sessions: snapshot.sessions.map((session, sessionIndex) => (
+    sessionIndex === 0
+      ? {
+          ...session,
+          messages: session.messages.map((message, messageIndex) => (
+            messageIndex === 0
+              ? {
+                  ...message,
+                  attachments: [...(message.attachments || []), attachment]
+                }
+              : message
+          ))
+        }
+      : session
+  ))
+});
+
 const createZip = async (
   entries: Array<{ path: string; text: string }>
 ): Promise<Blob> => {
@@ -154,6 +175,49 @@ describe('portable workspace archive', () => {
     expect(await inspected.replacement.blobs.get(generatedHash)!.text())
       .toBe('cached generated output');
     expect(await archive.text()).not.toContain('must-not-leave-device');
+  });
+
+  it('round-trips metadata-only attachments without inventing blob entries', async () => {
+    const metadataOnlyAttachment: FileAttachment = {
+      name: 'dx12user.settings',
+      type: 'application/octet-stream',
+      size: 19
+    };
+    const archive = await createWorkspaceArchive(
+      appendAttachment(metadataOnlyAttachment),
+      { reason: 'manual' }
+    );
+    const inspected = await inspectWorkspaceArchive(archive);
+
+    expect(inspected.preview.counts.attachments).toBe(2);
+    expect(
+      inspected.replacement.sessions[0].messages[0].attachments?.[1]
+    ).toEqual(metadataOnlyAttachment);
+    expect(inspected.replacement.blobs.size).toBe(2);
+  });
+
+  it('rejects attachment-local IDs and inline content from portable archives', async () => {
+    const nonPortableAttachments: FileAttachment[] = [{
+      id: 'legacy-attachment',
+      name: 'legacy.txt',
+      type: 'text/plain',
+      size: 1
+    }, {
+      name: 'embedded.txt',
+      type: 'text/plain',
+      size: 1,
+      content: 'data:text/plain;base64,eA=='
+    }];
+
+    for (const attachment of nonPortableAttachments) {
+      const archive = await createWorkspaceArchive(
+        appendAttachment(attachment),
+        { reason: 'manual' }
+      );
+      await expect(inspectWorkspaceArchive(archive)).rejects.toThrow(
+        `Attachment "${attachment.name}" contains non-portable local data.`
+      );
+    }
   });
 
   it('supports pre-merge recovery archives and filters staged blob entries', async () => {
