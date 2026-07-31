@@ -16,7 +16,7 @@ describe('normalizeChatConfig', () => {
 
   it('normalizes missing tool flags independently', () => {
     const normalized = normalizeChatConfig({
-      model: ModelId.GPT_5_MINI,
+      model: ModelId.GPT_5_6_LUNA,
       tools: { webSearch: false }
     });
 
@@ -56,10 +56,21 @@ describe('model catalog', () => {
   it('tracks the context window for each model', () => {
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_SOL].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_TERRA].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_5_6_LUNA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_5].contextWindowTokens).toBe(1_050_000);
-    expect(MODEL_CONFIGS[ModelId.GPT_5_MINI].contextWindowTokens).toBe(400_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_NANO].contextWindowTokens).toBe(400_000);
     expect(MODEL_CONFIGS[ModelId.GPT_O3].contextWindowTokens).toBe(200_000);
+  });
+
+  it('orders the picker with Luna between Terra and GPT-5.5', () => {
+    expect(MODELS.map(model => model.id)).toEqual([
+      ModelId.GPT_5_6_SOL,
+      ModelId.GPT_5_6_TERRA,
+      ModelId.GPT_5_6_LUNA,
+      ModelId.GPT_5_5,
+      ModelId.GPT_5_NANO,
+      ModelId.GPT_O3
+    ]);
   });
 
   it('places automatic identity metadata before custom instructions', () => {

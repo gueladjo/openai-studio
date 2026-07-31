@@ -17,20 +17,20 @@ import type {
 export enum ModelId {
   GPT_5_6_SOL = 'gpt-5.6-sol',
   GPT_5_6_TERRA = 'gpt-5.6-terra',
+  GPT_5_6_LUNA = 'gpt-5.6-luna',
   GPT_5_5 = 'gpt-5.5',
-  GPT_5_MINI = 'gpt-5-mini',
   GPT_5_NANO = 'gpt-5-nano',
   GPT_O3 = 'o3',
 }
 
 export type ReasoningEffortFlagship = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export type ReasoningEffortGPT56 = ReasoningEffortFlagship | 'max';
-export type ReasoningEffortMiniNano = 'minimal' | 'low' | 'medium' | 'high';
+export type ReasoningEffortNano = 'minimal' | 'low' | 'medium' | 'high';
 export type ReasoningEffortO3 = 'low' | 'medium' | 'high';
 export type ReasoningEffort =
   | ReasoningEffortGPT56
   | ReasoningEffortFlagship
-  | ReasoningEffortMiniNano
+  | ReasoningEffortNano
   | ReasoningEffortO3;
 export type TextVerbosity = 'low' | 'medium' | 'high';
 

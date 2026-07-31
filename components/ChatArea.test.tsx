@@ -46,8 +46,8 @@ describe('ChatArea context window usage', () => {
     const solHtml = renderToStaticMarkup(
       <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_6_SOL, 200_000, 10_000)} />
     );
-    const miniHtml = renderToStaticMarkup(
-      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_MINI, 150_000, 50_000)} />
+    const lunaHtml = renderToStaticMarkup(
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_5_6_LUNA, 150_000, 50_000)} />
     );
     const o3Html = renderToStaticMarkup(
       <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_O3, 150_000, 50_000)} />
@@ -55,8 +55,8 @@ describe('ChatArea context window usage', () => {
 
     expect(solHtml).toContain('20% used');
     expect(solHtml).toContain('· 210K / 1.05M');
-    expect(miniHtml).toContain('50% used');
-    expect(miniHtml).toContain('· 200K / 400K');
+    expect(lunaHtml).toContain('19% used');
+    expect(lunaHtml).toContain('· 200K / 1.05M');
     expect(o3Html).toContain('100% used');
     expect(o3Html).toContain('· 200K / 200K');
   });

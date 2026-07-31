@@ -7,7 +7,7 @@ import {
   ReasoningEffort,
   ReasoningEffortFlagship,
   ReasoningEffortGPT56,
-  ReasoningEffortMiniNano,
+  ReasoningEffortNano,
   ReasoningEffortO3,
   TextVerbosity
 } from './types';
@@ -19,7 +19,7 @@ type ChatConfigInput = Partial<Omit<ChatConfig, 'tools'>> & {
 export const APP_VERSION = __APP_VERSION__;
 export const REASONING_EFFORT_FLAGSHIP: ReasoningEffortFlagship[] = ['none', 'low', 'medium', 'high', 'xhigh'];
 export const REASONING_EFFORT_GPT_5_6: ReasoningEffortGPT56[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
-export const REASONING_EFFORT_MINI_NANO: ReasoningEffortMiniNano[] = ['minimal', 'low', 'medium', 'high'];
+export const REASONING_EFFORT_NANO: ReasoningEffortNano[] = ['minimal', 'low', 'medium', 'high'];
 export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'];
 
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
@@ -41,6 +41,15 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
   },
+  [ModelId.GPT_5_6_LUNA]: {
+    id: ModelId.GPT_5_6_LUNA,
+    name: 'GPT-5.6 Luna',
+    knowledgeCutoff: 'February 16, 2026',
+    contextWindowTokens: 1_050_000,
+    supportsVerbosity: true,
+    reasoningOptions: REASONING_EFFORT_GPT_5_6,
+    defaultReasoningEffort: 'medium'
+  },
   [ModelId.GPT_5_5]: {
     id: ModelId.GPT_5_5,
     name: 'GPT-5.5',
@@ -50,22 +59,13 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_FLAGSHIP,
     defaultReasoningEffort: 'medium'
   },
-  [ModelId.GPT_5_MINI]: {
-    id: ModelId.GPT_5_MINI,
-    name: 'GPT-5 Mini',
-    knowledgeCutoff: 'May 31, 2024',
-    contextWindowTokens: 400_000,
-    supportsVerbosity: true,
-    reasoningOptions: REASONING_EFFORT_MINI_NANO,
-    defaultReasoningEffort: 'medium'
-  },
   [ModelId.GPT_5_NANO]: {
     id: ModelId.GPT_5_NANO,
     name: 'GPT-5 Nano',
     knowledgeCutoff: 'May 31, 2024',
     contextWindowTokens: 400_000,
     supportsVerbosity: true,
-    reasoningOptions: REASONING_EFFORT_MINI_NANO,
+    reasoningOptions: REASONING_EFFORT_NANO,
     defaultReasoningEffort: 'medium'
   },
   [ModelId.GPT_O3]: {
@@ -82,8 +82,8 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
 export const MODELS = [
   MODEL_CONFIGS[ModelId.GPT_5_6_SOL],
   MODEL_CONFIGS[ModelId.GPT_5_6_TERRA],
+  MODEL_CONFIGS[ModelId.GPT_5_6_LUNA],
   MODEL_CONFIGS[ModelId.GPT_5_5],
-  MODEL_CONFIGS[ModelId.GPT_5_MINI],
   MODEL_CONFIGS[ModelId.GPT_5_NANO],
   MODEL_CONFIGS[ModelId.GPT_O3]
 ];
