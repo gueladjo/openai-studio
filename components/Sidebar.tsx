@@ -106,7 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .sort((a, b) => b.lastModified - a.lastModified);
 
   return (
-    <div className={`${isMobile ? 'flex-1' : 'w-64 border-r border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full transition-colors duration-200`}>
+    <div className={`${isMobile ? 'flex-1 min-h-0' : 'w-64 border-r border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full transition-colors duration-200`}>
       {/* Top section */}
       <div className="p-4">
         <button
@@ -133,7 +133,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 space-y-1 py-2">
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1 py-2">
         <h3 className="px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Recent</h3>
         {sessions.length === 0 ? (
           <div className="text-center text-gray-500 text-sm mt-10">No history yet</div>
@@ -196,7 +196,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
          </div>
 
          {showSettings && (
-            <div className="max-h-[70vh] overflow-y-auto px-4 pb-4 space-y-4 animate-in slide-in-from-bottom-2 duration-200">
+            <div className="max-h-[70vh] min-h-0 overflow-y-auto px-4 pb-4 space-y-4 animate-in slide-in-from-bottom-2 duration-200">
                 {/* Theme Toggle */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
