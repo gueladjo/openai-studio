@@ -83,6 +83,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   readOnly = false
 }) => {
   const [showSettings, setShowSettings] = useState(false);
+  const [isAutomaticBackupOpen, setIsAutomaticBackupOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mergeFileInputRef = useRef<HTMLInputElement>(null);
@@ -296,99 +297,116 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     )}
                     {backupState.supported ? (
                       <div className="space-y-2 rounded-md border border-gray-200 p-2 dark:border-gray-700">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-gray-600 dark:text-gray-300">
+                        <button
+                          type="button"
+                          onClick={() => setIsAutomaticBackupOpen(!isAutomaticBackupOpen)}
+                          aria-expanded={isAutomaticBackupOpen}
+                          className="flex w-full items-center justify-between gap-2 text-left group"
+                        >
+                          <span className="text-xs text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition-colors">
                             Automatic daily backups
                           </span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={backupState.enabled}
-                            onClick={() => onToggleAutomaticBackups(!backupState.enabled)}
-                            disabled={readOnly || backupState.running}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
-                              backupState.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
-                            }`}
-                          >
-                            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                              backupState.enabled ? 'translate-x-5' : 'translate-x-1'
-                            }`} />
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={onChooseBackupFolder}
-                            disabled={backupState.running}
-                            className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                          >
-                            <FolderOpen size={11} />
-                            {backupState.destinationStatus === 'unavailable' ? 'Choose folder' : 'Change folder'}
-                          </button>
-                          {backupState.destinationStatus === 'permission-required' ? (
-                            <button
-                              type="button"
-                              onClick={onReconnectBackupFolder}
-                              className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                            >
-                              <RefreshCw size={11} />
-                              Reconnect
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={onBackUpNow}
-                              disabled={readOnly || backupState.running || backupState.destinationStatus !== 'connected'}
-                              className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                            >
-                              {backupState.running ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
-                              Back up now
-                            </button>
-                          )}
-                        </div>
-                        <div className="text-[10px] leading-4 text-gray-500">
-                          {backupState.lastSuccessAt
-                            ? `Last successful: ${new Date(backupState.lastSuccessAt).toLocaleString()}`
-                            : 'No successful managed backup yet.'}
-                          {backupState.nextDueAt
-                            ? ` Next due: ${new Date(backupState.nextDueAt).toLocaleString()}.`
-                            : ''}
-                        </div>
-                        {backupState.backups.slice(0, 3).map(backup => (
-                          <div
-                            key={backup.filename}
-                            className="rounded border border-gray-200 p-2 text-[10px] dark:border-gray-700"
-                          >
+                          {isAutomaticBackupOpen
+                            ? <ChevronUp size={14} className="shrink-0 text-gray-400" />
+                            : <ChevronDown size={14} className="shrink-0 text-gray-400" />}
+                        </button>
+                        {isAutomaticBackupOpen && (
+                          <div className="space-y-2">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-gray-700 dark:text-gray-200">
-                                {backup.preview
-                                  ? new Date(backup.preview.createdAt).toLocaleString()
-                                  : backup.filename}
+                              <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                Enable automatic backups
                               </span>
-                              <span className={backup.integrity === 'valid' ? 'text-green-600' : 'text-red-500'}>
-                                {backup.integrity}
-                              </span>
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={backupState.enabled}
+                                onClick={() => onToggleAutomaticBackups(!backupState.enabled)}
+                                disabled={readOnly || backupState.running}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
+                                  backupState.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
+                                }`}
+                              >
+                                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                                  backupState.enabled ? 'translate-x-5' : 'translate-x-1'
+                                }`} />
+                              </button>
                             </div>
-                            <div className="mt-1 text-gray-500">
-                              {(backup.size / (1024 * 1024)).toFixed(1)} MB
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={onChooseBackupFolder}
+                                disabled={backupState.running}
+                                className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                              >
+                                <FolderOpen size={11} />
+                                {backupState.destinationStatus === 'unavailable' ? 'Choose folder' : 'Change folder'}
+                              </button>
+                              {backupState.destinationStatus === 'permission-required' ? (
+                                <button
+                                  type="button"
+                                  onClick={onReconnectBackupFolder}
+                                  className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                >
+                                  <RefreshCw size={11} />
+                                  Reconnect
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={onBackUpNow}
+                                  disabled={readOnly || backupState.running || backupState.destinationStatus !== 'connected'}
+                                  className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                >
+                                  {backupState.running ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
+                                  Back up now
+                                </button>
+                              )}
                             </div>
-                            {backup.integrity === 'valid' && (
-                              <div className="mt-2 flex flex-wrap gap-1">
-                                <button disabled={readOnly} onClick={() => onRestoreManagedBackup(backup.filename)} className="rounded bg-blue-600 px-2 py-1 text-white disabled:opacity-50">Restore</button>
-                                <button onClick={() => onExportManagedBackup(backup.filename)} className="rounded border border-gray-300 px-2 py-1 dark:border-gray-600">Export</button>
-                                <button disabled={readOnly} onClick={() => onDeleteManagedBackup(backup.filename)} className="rounded border border-red-300 px-2 py-1 text-red-600 disabled:opacity-50 dark:border-red-800">Delete</button>
+                            <div className="text-[10px] leading-4 text-gray-500">
+                              {backupState.lastSuccessAt
+                                ? `Last successful: ${new Date(backupState.lastSuccessAt).toLocaleString()}`
+                                : 'No successful managed backup yet.'}
+                              {backupState.nextDueAt
+                                ? ` Next due: ${new Date(backupState.nextDueAt).toLocaleString()}.`
+                                : ''}
+                            </div>
+                            {backupState.backups.slice(0, 3).map(backup => (
+                              <div
+                                key={backup.filename}
+                                className="rounded border border-gray-200 p-2 text-[10px] dark:border-gray-700"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-gray-700 dark:text-gray-200">
+                                    {backup.preview
+                                      ? new Date(backup.preview.createdAt).toLocaleString()
+                                      : backup.filename}
+                                  </span>
+                                  <span className={backup.integrity === 'valid' ? 'text-green-600' : 'text-red-500'}>
+                                    {backup.integrity}
+                                  </span>
+                                </div>
+                                <div className="mt-1 text-gray-500">
+                                  {(backup.size / (1024 * 1024)).toFixed(1)} MB
+                                </div>
+                                {backup.integrity === 'valid' && (
+                                  <div className="mt-2 flex flex-wrap gap-1">
+                                    <button disabled={readOnly} onClick={() => onRestoreManagedBackup(backup.filename)} className="rounded bg-blue-600 px-2 py-1 text-white disabled:opacity-50">Restore</button>
+                                    <button onClick={() => onExportManagedBackup(backup.filename)} className="rounded border border-gray-300 px-2 py-1 dark:border-gray-600">Export</button>
+                                    <button disabled={readOnly} onClick={() => onDeleteManagedBackup(backup.filename)} className="rounded border border-red-300 px-2 py-1 text-red-600 disabled:opacity-50 dark:border-red-800">Delete</button>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {(backupActionError || backupState.error) && (
+                              <div className="rounded bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                                {backupActionError || backupState.error}
                               </div>
                             )}
-                          </div>
-                        ))}
-                        {(backupActionError || backupState.error) && (
-                          <div className="rounded bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
-                            {backupActionError || backupState.error}
-                          </div>
-                        )}
-                        {backupState.warning && (
-                          <div className="text-[10px] text-amber-700 dark:text-amber-300">
-                            {backupState.warning}
+                            {backupState.warning && (
+                              <div className="text-[10px] text-amber-700 dark:text-amber-300">
+                                {backupState.warning}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
