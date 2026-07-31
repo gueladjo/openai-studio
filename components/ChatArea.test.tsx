@@ -2,7 +2,12 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ReactMarkdown from 'react-markdown';
-import { ContextWindowUsage, markdownComponents, MessageRow } from './ChatArea';
+import {
+  ContextWindowUsage,
+  getResponseModelLabel,
+  markdownComponents,
+  MessageRow
+} from './ChatArea';
 import { DEFAULT_CONFIG, Message, ModelId, Session } from '../types';
 
 const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
@@ -70,6 +75,19 @@ describe('ChatArea context window usage', () => {
     expect(html).toContain('>Context</span>');
     expect(html).toContain('· 0 / 400K');
     expect(html).toContain('GPT-5 Nano has a 400,000 token context window.');
+  });
+});
+
+describe('response model labels', () => {
+  it('uses the name stored on the answer without resolving its model id', () => {
+    expect(getResponseModelLabel({
+      role: 'assistant',
+      content: 'Historical answer',
+      timestamp: 1,
+      model: 'deleted-model',
+      modelName: 'Historical Model',
+      reasoningEffort: 'high'
+    })).toBe('Historical Model high');
   });
 });
 

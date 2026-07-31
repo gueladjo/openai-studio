@@ -390,6 +390,7 @@ const parseMessage = (
       'timestamp',
       'attachments',
       'model',
+      'modelName',
       'reasoningEffort'
     ],
     path
@@ -498,6 +499,16 @@ const parseMessage = (
   }
 
   assertOptionalString(message.model, `${path}.model`, MAX_API_IDENTIFIER_LENGTH, false);
+  if (message.role === 'assistant') {
+    assertString(
+      message.modelName,
+      `${path}.modelName`,
+      MAX_SHORT_TEXT_LENGTH,
+      false
+    );
+  } else if (message.modelName !== undefined) {
+    fail(`${path}.modelName`, 'is only supported for assistant messages');
+  }
   assertOptionalString(
     message.reasoningEffort,
     `${path}.reasoningEffort`,

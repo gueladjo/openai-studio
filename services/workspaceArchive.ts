@@ -30,7 +30,7 @@ import {
 } from './storage';
 
 export const BACKUP_ARCHIVE_FORMAT = 'openai-studio-backup';
-export const BACKUP_ARCHIVE_VERSION = 1;
+export const BACKUP_ARCHIVE_VERSION = 2;
 export const MAX_BACKUP_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_BACKUP_ARCHIVE_ENTRIES = 100_000;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
@@ -52,7 +52,7 @@ export interface BackupArchiveCounts {
   cachedGeneratedFiles: number;
 }
 
-export interface BackupArchiveManifestV1 {
+export interface BackupArchiveManifestV2 {
   format: typeof BACKUP_ARCHIVE_FORMAT;
   version: typeof BACKUP_ARCHIVE_VERSION;
   backupId: string;
@@ -87,7 +87,7 @@ export interface BackupArchivePreview {
 }
 
 export interface ValidatedWorkspaceArchive {
-  manifest: BackupArchiveManifestV1;
+  manifest: BackupArchiveManifestV2;
   preview: BackupArchivePreview;
   replacement: WorkspaceReplacement;
 }
@@ -167,7 +167,7 @@ const assertCanonicalArchivePath = (path: string): void => {
 
 export const parseBackupArchiveManifest = (
   value: unknown
-): BackupArchiveManifestV1 => {
+): BackupArchiveManifestV2 => {
   if (!isRecord(value)) throw new BackupArchiveError('manifest must be an object.');
   assertOnlyKeys(
     value,
@@ -402,7 +402,7 @@ const createWorkspaceArchiveFromSnapshot = async (
     throw new BackupArchiveError('The workspace exceeds the backup size limit.');
   }
   const { counts, uncachedGeneratedFileCount } = getCounts(snapshot.sessions);
-  const manifest: BackupArchiveManifestV1 = {
+  const manifest: BackupArchiveManifestV2 = {
     format: BACKUP_ARCHIVE_FORMAT,
     version: BACKUP_ARCHIVE_VERSION,
     backupId: createBackupId(),
@@ -533,7 +533,7 @@ const verifyEntryBlob = async (
 };
 
 const verifyCounts = (
-  manifest: BackupArchiveManifestV1,
+  manifest: BackupArchiveManifestV2,
   sessions: Session[]
 ): void => {
   const actual = getCounts(sessions);
@@ -793,7 +793,7 @@ export const inspectWorkspaceArchive = async (
 };
 
 export const selectWorkspaceArchiveBlobEntries = (
-  manifest: BackupArchiveManifestV1,
+  manifest: BackupArchiveManifestV2,
   includedHashes?: ReadonlySet<string>
 ): BackupArchiveEntry[] => manifest.entries.filter(entry => (
     entry.path.startsWith('blobs/') &&
@@ -806,7 +806,7 @@ export const selectWorkspaceArchiveBlobEntries = (
 export const stageWorkspaceArchiveBlobs = async (
   dirHandle: FileSystemDirectoryHandle,
   archive: Blob,
-  manifest: BackupArchiveManifestV1,
+  manifest: BackupArchiveManifestV2,
   signal?: AbortSignal,
   includedHashes?: ReadonlySet<string>
 ): Promise<void> => {

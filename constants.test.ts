@@ -2,34 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   MODELS,
   MODEL_CONFIGS,
-  getModelDisplayName,
   getModelInstructions,
   normalizeChatConfig
 } from './constants';
 import { DEFAULT_CONFIG, ModelId } from './types';
-
-describe('getModelDisplayName', () => {
-  it('returns live catalog names for current models', () => {
-    expect(getModelDisplayName(ModelId.GPT_5_6_SOL)).toBe('GPT-5.6 Sol');
-    expect(getModelDisplayName(ModelId.GPT_5_5)).toBe('GPT-5.5');
-    expect(getModelDisplayName(ModelId.GPT_O3)).toBe('o3');
-  });
-
-  it('returns historical product names for retired model ids', () => {
-    expect(getModelDisplayName('gpt-5.2')).toBe('GPT-5.2');
-    expect(getModelDisplayName('gpt-5.4')).toBe('GPT-5.4');
-    expect(getModelDisplayName('gpt-5-mini')).toBe('GPT-5 Mini');
-  });
-
-  it('does not label unknown or retired models as the current default', () => {
-    expect(getModelDisplayName('gpt-5.2')).not.toBe(MODEL_CONFIGS[DEFAULT_CONFIG.model].name);
-    expect(getModelDisplayName('gpt-5-mini')).not.toBe(MODEL_CONFIGS[DEFAULT_CONFIG.model].name);
-    expect(getModelDisplayName('removed-model')).toBe('removed-model');
-    expect(getModelDisplayName('removed-model')).not.toBe(
-      MODEL_CONFIGS[DEFAULT_CONFIG.model].name
-    );
-  });
-});
 
 describe('normalizeChatConfig', () => {
   it('fills a missing tools config with defaults', () => {

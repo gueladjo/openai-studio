@@ -111,6 +111,7 @@ export interface Message {
   timestamp: number;
   attachments?: FileAttachment[];
   model?: string;
+  modelName?: string; // Required for persisted assistant messages
   reasoningEffort?: string;
 }
 

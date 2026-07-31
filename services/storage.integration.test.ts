@@ -523,6 +523,111 @@ describe('storage public contracts', () => {
     warn.mockRestore();
   });
 
+  it('resets a recognized version 2 workspace to a verified empty version 3 generation', async () => {
+    await seedWorkspace([createSession('Incompatible')]);
+    const manifestPaths = [
+      'data/workspace_manifest_a.json',
+      'data/workspace_manifest_b.json'
+    ];
+    const previousManifests = await Promise.all(manifestPaths.map(async path => (
+      JSON.parse(await fileSystem.readText(path) || '')
+    )));
+    const previousRevision = Math.max(
+      ...previousManifests.map(manifest => manifest.revision)
+    );
+    await Promise.all(manifestPaths.map((path, index) => fileSystem.writeText(
+      path,
+      JSON.stringify({ ...previousManifests[index], schemaVersion: 2 })
+    )));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(
+      previousRevision + 1
+    );
+    await expect(storage.readSessions(handle)).resolves.toEqual([]);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toEqual({ theme: 'dark', apiKey: '' });
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.INSTRUCTIONS
+    )).resolves.toEqual([]);
+
+    const manifests = await Promise.all(manifestPaths.map(path => (
+      fileSystem.readText(path)
+    )));
+    expect(manifests.some(text => (
+      text && JSON.parse(text).schemaVersion === 3
+    ))).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'Resetting an incompatible version 2 workspace before manual backup restore.'
+    );
+    warn.mockRestore();
+  });
+
+  it('retains incompatible workspace objects when reset publication fails', async () => {
+    await seedWorkspace([createSession('Protected incompatible')]);
+    const manifestPaths = [
+      'data/workspace_manifest_a.json',
+      'data/workspace_manifest_b.json'
+    ];
+    const previousManifests = await Promise.all(manifestPaths.map(async path => (
+      JSON.parse(await fileSystem.readText(path) || '')
+    )));
+    await Promise.all(manifestPaths.map((path, index) => fileSystem.writeText(
+      path,
+      JSON.stringify({ ...previousManifests[index], schemaVersion: 2 })
+    )));
+    const newestIndex = previousManifests[0].revision > previousManifests[1].revision
+      ? 0
+      : 1;
+    const targetPath = manifestPaths[newestIndex === 0 ? 1 : 0];
+    const objects = await fileSystem.getDirectory('data/objects');
+    const previousObjectNames = objects.names();
+    fileSystem.failNextWrite(new RegExp(`${targetPath}$`));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'Simulated disk full'
+    );
+    expect(objects.names()).toEqual(expect.arrayContaining(previousObjectNames));
+    expect(JSON.parse(
+      await fileSystem.readText(manifestPaths[0]) || ''
+    ).schemaVersion).toBe(2);
+    expect(JSON.parse(
+      await fileSystem.readText(manifestPaths[1]) || ''
+    ).schemaVersion).toBe(2);
+    warn.mockRestore();
+  });
+
+  it('does not reset a mixed current and previous workspace generation', async () => {
+    await seedWorkspace([createSession('Mixed')]);
+    const manifestA = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    );
+    const manifestB = JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_b.json') || ''
+    );
+    await fileSystem.writeText(
+      'data/workspace_manifest_a.json',
+      JSON.stringify({ ...manifestA, schemaVersion: 2 })
+    );
+    await fileSystem.writeText(
+      `data/objects/${manifestB.sessions[0].sha256}.json`,
+      '{"corrupt":true}'
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'No complete local workspace generation'
+    );
+    expect(JSON.parse(
+      await fileSystem.readText('data/workspace_manifest_a.json') || ''
+    ).schemaVersion).toBe(2);
+    warn.mockRestore();
+  });
+
   it('stores attachment bytes by SHA-256 and resolves them for API input', async () => {
     const localBlob = await storage.storeAttachmentBlob(
       handle,
@@ -1153,7 +1258,7 @@ describe('legacy workspace migration contracts', () => {
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
     )).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       revision: 6
     });
     expect(warn).not.toHaveBeenCalledWith(
@@ -1362,7 +1467,7 @@ describe('storage backend migration contracts', () => {
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
     )).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       revision: 7
     });
     await expect(storage.readJsonFile(
@@ -1380,7 +1485,7 @@ describe('storage backend migration contracts', () => {
     });
   });
 
-  it('copies and byte-verifies a v2 IndexedDB workspace with objects and blobs', async () => {
+  it('copies and byte-verifies a v3 IndexedDB workspace with objects and blobs', async () => {
     const blobBytes = new Blob(['migrated attachment'], { type: 'text/plain' });
     const blobSha256 = await sha256Blob(blobBytes);
     const migratedSession = createSession('Migrated', [{
@@ -1394,14 +1499,14 @@ describe('storage backend migration contracts', () => {
       }
     }]);
     const sessionText = JSON.stringify(migratedSession);
-    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'v2-key' });
+    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'v3-key' });
     const instructionsText = JSON.stringify(instructions);
     const objectReference = (text: string) => ({
       sha256: sha256Text(text),
       byteLength: encodeUtf8(text).byteLength
     });
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       revision: 7,
       createdAt: 1,
       sessions: [{ id: migratedSession.id, ...objectReference(sessionText) }],
@@ -1409,7 +1514,7 @@ describe('storage backend migration contracts', () => {
       instructions: objectReference(instructionsText),
       blobs: [{ sha256: blobSha256, byteLength: blobBytes.size }]
     };
-    const v2Records: IndexedDbRecord[] = [
+    const v3Records: IndexedDbRecord[] = [
       {
         filename: 'workspace_manifest_a.json',
         data: JSON.stringify(manifest),
@@ -1433,7 +1538,7 @@ describe('storage backend migration contracts', () => {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(['files'], 'readwrite');
       const store = transaction.objectStore('files');
-      v2Records.forEach(record => store.put(record));
+      v3Records.forEach(record => store.put(record));
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error);
@@ -1455,7 +1560,7 @@ describe('storage backend migration contracts', () => {
     );
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
-    )).toMatchObject({ schemaVersion: 2, revision: 7 });
+    )).toMatchObject({ schemaVersion: 3, revision: 7 });
     expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
       .toMatchObject({ data: JSON.stringify(manifest) });
   });

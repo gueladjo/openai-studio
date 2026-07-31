@@ -531,7 +531,8 @@ describe('App workspace and request lifecycle', () => {
         role: 'assistant',
         content: 'Partial output.',
         status: 'streaming',
-        timestamp: 1
+        timestamp: 1,
+        modelName: 'GPT-5.6 Sol'
       }
     ]);
     interruptedSession.pendingRequest = {
@@ -550,12 +551,40 @@ describe('App workspace and request lifecycle', () => {
     expect(recovered.messages[1]).toMatchObject({
       id: 'assistant-pending',
       content: 'Partial output.',
-      status: 'error'
+      status: 'error',
+      modelName: 'GPT-5.6 Sol'
     });
     expect(mocks.writeSessions).toHaveBeenCalled();
     const persistedSessions = mocks.writeSessions.mock.calls.at(-1)?.[1] as Session[];
     expect(persistedSessions[0].pendingRequest).toBeUndefined();
     expect(persistedSessions[0].messages[1].status).toBe('error');
+  });
+
+  it('snapshots the configured model name on an interrupted request without a placeholder', async () => {
+    const interruptedSession = createSession('session-a', 'Interrupted', [{
+      id: 'user-pending',
+      requestId: 'request-pending',
+      role: 'user',
+      content: 'Continue this.',
+      timestamp: 1
+    }]);
+    interruptedSession.pendingRequest = {
+      id: 'request-pending',
+      userMessageId: 'user-pending',
+      createdAt: 1
+    };
+    mocks.loadedSessions = [interruptedSession];
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(getSidebarProps().sessions[0].messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      status: 'error',
+      model: DEFAULT_CONFIG.model,
+      modelName: 'GPT-5.6 Sol',
+      reasoningEffort: DEFAULT_CONFIG.reasoningEffort
+    });
   });
 
   it('leaves pending requests untouched in a read-only reader tab', async () => {
@@ -573,7 +602,8 @@ describe('App workspace and request lifecycle', () => {
         role: 'assistant',
         content: 'Partial output.',
         status: 'streaming',
-        timestamp: 1
+        timestamp: 1,
+        modelName: 'GPT-5.6 Sol'
       }
     ]);
     interruptedSession.pendingRequest = {
@@ -645,7 +675,8 @@ describe('App workspace and request lifecycle', () => {
         role: 'assistant',
         content: 'Answer for A.',
         status: 'complete',
-        openaiResponseId: 'resp-complete'
+        openaiResponseId: 'resp-complete',
+        modelName: 'GPT-5.6 Sol'
       })
     ]);
     expect(sessionA?.messages.at(-1)?.content).not.toContain(
@@ -682,7 +713,8 @@ describe('App workspace and request lifecycle', () => {
     expect(failedSession?.pendingRequest).toBeUndefined();
     expect(failedSession?.messages.at(-1)).toMatchObject({
       content: 'Useful partial output.\n\nError: Connection lost.',
-      status: 'error'
+      status: 'error',
+      modelName: 'GPT-5.6 Sol'
     });
   });
 
@@ -719,7 +751,8 @@ describe('App workspace and request lifecycle', () => {
     expect(stoppedSession?.pendingRequest).toBeUndefined();
     expect(stoppedSession?.messages.at(-1)).toMatchObject({
       content: 'Unflushed partial output.',
-      status: 'stopped'
+      status: 'stopped',
+      modelName: 'GPT-5.6 Sol'
     });
 
     await act(async () => {

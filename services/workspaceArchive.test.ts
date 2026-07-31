@@ -51,6 +51,7 @@ const sessions: Session[] = [{
       role: 'assistant',
       content: 'Done.',
       timestamp: 11,
+      modelName: 'GPT-5.6 Sol',
       generatedFiles: [{
         filename: 'remote-only.txt',
         fileId: 'file-1',
@@ -128,7 +129,7 @@ const emptyManifest = (entries: Array<{
   sha256?: string;
 }>) => ({
   format: 'openai-studio-backup',
-  version: 1,
+  version: 2,
   backupId: 'backup-test',
   reason: 'manual',
   appVersion: '0.5.0',
@@ -259,6 +260,17 @@ describe('portable workspace archive', () => {
     await expect(inspectWorkspaceArchive(legacy, {
       filename: legacy.name
     })).rejects.toBeInstanceOf(UnsupportedLegacyBackupError);
+  });
+
+  it('rejects version 1 ZIP backups after the hard format cutover', async () => {
+    const archive = await createZip([{
+      path: 'manifest.json',
+      text: JSON.stringify({ ...emptyManifest([]), version: 1 })
+    }]);
+
+    await expect(inspectWorkspaceArchive(archive)).rejects.toThrow(
+      'Backup format version 1 is unsupported'
+    );
   });
 
   it('rejects ZIP files that are not OpenAI Studio archives', async () => {

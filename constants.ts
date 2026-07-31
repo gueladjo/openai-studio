@@ -90,25 +90,8 @@ export const MODELS = [
 
 export const TEXT_VERBOSITY: TextVerbosity[] = ['low', 'medium', 'high'];
 
-// Active config and API paths fall back to Sol when a saved model id is unknown.
-// Historical answer labels must not use that fallback — see getModelDisplayName.
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
   return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_6_SOL];
-};
-
-// Product names for model ids no longer in the picker. Stored message.model
-// values keep these API ids; display must not rewrite them as the current default.
-const RETIRED_MODEL_DISPLAY_NAMES: Record<string, string> = {
-  'gpt-5.2': 'GPT-5.2',
-  'gpt-5.4': 'GPT-5.4',
-  'gpt-5-mini': 'GPT-5 Mini'
-};
-
-export const getModelDisplayName = (model: ModelId | string): string => {
-  const live = MODEL_CONFIGS[model as ModelId];
-  if (live) return live.name;
-  if (RETIRED_MODEL_DISPLAY_NAMES[model]) return RETIRED_MODEL_DISPLAY_NAMES[model];
-  return String(model);
 };
 
 export const getModelInstructions = (

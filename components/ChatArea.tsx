@@ -12,7 +12,7 @@ import { GeneratedFile, Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getModelConfig, getModelDisplayName } from '../constants';
+import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
 import {
   ATTACHMENT_INPUT_ACCEPT,
@@ -337,10 +337,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         };
     }, []);
 
-    const modelName = message.model ? getModelDisplayName(message.model) : null;
-    const modelLabel = modelName
-        ? `${modelName}${message.reasoningEffort ? ` ${message.reasoningEffort}` : ''}`
-        : null;
+    const modelLabel = getResponseModelLabel(message);
     const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
     const hasTokenUsage = Boolean(message.usage);
     const canCopyResponse = message.content.length > 0;
@@ -467,6 +464,12 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         </div>
     );
 };
+
+export const getResponseModelLabel = (message: Message): string | null => (
+    message.modelName
+        ? `${message.modelName}${message.reasoningEffort ? ` ${message.reasoningEffort}` : ''}`
+        : null
+);
 
 const SourcesBlock = ({ sources }: { sources: Source[] }) => {
     if (!sources || sources.length === 0) return null;

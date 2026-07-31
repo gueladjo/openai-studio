@@ -122,7 +122,8 @@ describe('workspace merge planning', () => {
         content: 'Local answer',
         requestId: 'shared-request',
         openaiResponseId: 'resp-local',
-        timestamp: 7
+        timestamp: 7,
+        modelName: 'GPT-5.6 Sol'
       }]
     };
     const importedDivergent: Session = {

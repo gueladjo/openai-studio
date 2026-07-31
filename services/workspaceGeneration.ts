@@ -1,7 +1,8 @@
 import { LocalBlobReference } from '../types';
 import { SHA256_PATTERN } from './contentAddressing';
 
-export const LOCAL_WORKSPACE_SCHEMA_VERSION = 2;
+export const LOCAL_WORKSPACE_SCHEMA_VERSION = 3;
+export const PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION = 2;
 export const WORKSPACE_MANIFEST_SLOTS = [
   'workspace_manifest_a.json',
   'workspace_manifest_b.json'
@@ -20,14 +21,21 @@ export interface SessionObjectReference extends ContentObjectReference {
   id: string;
 }
 
-export interface WorkspaceGenerationManifest {
-  schemaVersion: typeof LOCAL_WORKSPACE_SCHEMA_VERSION;
+interface WorkspaceGenerationManifestData {
   revision: number;
   createdAt: number;
   sessions: SessionObjectReference[];
   settings: ContentObjectReference;
   instructions: ContentObjectReference;
   blobs: ContentObjectReference[];
+}
+
+export interface WorkspaceGenerationManifest extends WorkspaceGenerationManifestData {
+  schemaVersion: typeof LOCAL_WORKSPACE_SCHEMA_VERSION;
+}
+
+export interface PreviousWorkspaceGenerationManifest extends WorkspaceGenerationManifestData {
+  schemaVersion: typeof PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION;
 }
 
 export class WorkspaceGenerationError extends Error {
@@ -77,10 +85,11 @@ const parseContentReference = (
   };
 };
 
-export const parseWorkspaceGenerationManifest = (
+const parseWorkspaceGenerationManifestVersion = <TVersion extends number>(
   text: string,
-  filename = 'workspace manifest'
-): WorkspaceGenerationManifest => {
+  filename: string,
+  expectedVersion: TVersion
+): WorkspaceGenerationManifestData & { schemaVersion: TVersion } => {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -95,9 +104,9 @@ export const parseWorkspaceGenerationManifest = (
     ['schemaVersion', 'revision', 'createdAt', 'sessions', 'settings', 'instructions', 'blobs'],
     filename
   );
-  if (value.schemaVersion !== LOCAL_WORKSPACE_SCHEMA_VERSION) {
+  if (value.schemaVersion !== expectedVersion) {
     throw new WorkspaceGenerationError(
-      `${filename}.schemaVersion must be ${LOCAL_WORKSPACE_SCHEMA_VERSION}.`
+      `${filename}.schemaVersion must be ${expectedVersion}.`
     );
   }
   const createdAt = parseNonNegativeInteger(value.createdAt, `${filename}.createdAt`);
@@ -147,7 +156,7 @@ export const parseWorkspaceGenerationManifest = (
   });
 
   return {
-    schemaVersion: LOCAL_WORKSPACE_SCHEMA_VERSION,
+    schemaVersion: expectedVersion,
     revision: parseNonNegativeInteger(value.revision, `${filename}.revision`),
     createdAt,
     sessions,
@@ -156,6 +165,24 @@ export const parseWorkspaceGenerationManifest = (
     blobs
   };
 };
+
+export const parseWorkspaceGenerationManifest = (
+  text: string,
+  filename = 'workspace manifest'
+): WorkspaceGenerationManifest => parseWorkspaceGenerationManifestVersion(
+  text,
+  filename,
+  LOCAL_WORKSPACE_SCHEMA_VERSION
+);
+
+export const parsePreviousWorkspaceGenerationManifest = (
+  text: string,
+  filename = 'workspace manifest'
+): PreviousWorkspaceGenerationManifest => parseWorkspaceGenerationManifestVersion(
+  text,
+  filename,
+  PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION
+);
 
 export const getObjectPath = (reference: ContentObjectReference): string => (
   `${WORKSPACE_OBJECT_PREFIX}${reference.sha256}.json`

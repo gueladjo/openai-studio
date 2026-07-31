@@ -86,7 +86,7 @@ import {
   formatConversationMarkdown
 } from './utils/conversationExport';
 import { confirmChatDeletion } from './utils/chatDeletion';
-import { normalizeChatConfig } from './constants';
+import { getModelConfig, normalizeChatConfig } from './constants';
 import { AlertTriangle, Loader2, Menu, RefreshCw, Settings, X } from 'lucide-react';
 import { validateAttachments } from './utils/attachmentValidation';
 
@@ -285,6 +285,17 @@ const resolveStorageBackendChoice = (
   );
   return useOpfs ? 'opfs' : 'indexeddb';
 };
+
+type AssistantModelSnapshot = Required<Pick<
+  Message,
+  'model' | 'modelName' | 'reasoningEffort'
+>>;
+
+const getAssistantModelSnapshot = (session: Session): AssistantModelSnapshot => ({
+  model: session.config.model,
+  modelName: getModelConfig(session.config.model).name,
+  reasoningEffort: session.config.reasoningEffort
+});
 
 function App() {
   // Storage State
@@ -694,13 +705,15 @@ function App() {
 
       hasChanges = true;
       const interruptedContent = 'Error: Previous request was interrupted and has been marked as failed. Please retry if needed.';
+      const modelSnapshot = getAssistantModelSnapshot(session);
       const failureMessage: Message = {
         id: uuidv4(),
         requestId: session.pendingRequest.id,
         role: 'assistant',
         content: interruptedContent,
         status: 'error',
-        timestamp: now
+        timestamp: now,
+        ...modelSnapshot
       };
       const hasPendingAssistant = Boolean(session.pendingRequest.assistantMessageId);
       const pendingAssistantExists = session.messages.some(message => (
@@ -1191,7 +1204,7 @@ function App() {
   const createAssistantPlaceholder = (
     id: string,
     requestId: string,
-    session: Session,
+    modelSnapshot: AssistantModelSnapshot,
     timestamp: number
   ): Message => ({
     id,
@@ -1200,8 +1213,7 @@ function App() {
     content: '',
     status: 'streaming',
     timestamp,
-    model: session.config.model,
-    reasoningEffort: session.config.reasoningEffort
+    ...modelSnapshot
   });
 
   const updateAssistantMessage = (
@@ -1258,7 +1270,8 @@ function App() {
     session,
     messagesForApi,
     requestId,
-    assistantMessageId
+    assistantMessageId,
+    modelSnapshot
   }: {
     operation: OperationRecord;
     targetSessionId: string;
@@ -1266,6 +1279,7 @@ function App() {
     messagesForApi: Message[];
     requestId: string;
     assistantMessageId: string;
+    modelSnapshot: AssistantModelSnapshot;
   }) => {
     const controller = operation.controller;
     const currentSession = sessionsRef.current.find(item => item.id === targetSessionId);
@@ -1488,8 +1502,7 @@ function App() {
         sources,
         generatedFiles,
         timestamp: Date.now(),
-        model: session.config.model,
-        reasoningEffort: session.config.reasoningEffort
+        ...modelSnapshot
       };
 
       updateAssistantMessage(
@@ -1537,8 +1550,7 @@ function App() {
               : `Error: ${errorMessage}`,
             status: 'error',
             timestamp: Date.now(),
-            model: session.config.model,
-            reasoningEffort: session.config.reasoningEffort
+            ...modelSnapshot
           }),
           true
         );
@@ -1644,10 +1656,11 @@ function App() {
           ? { attachments: processedAttachments }
           : {})
       };
+      const modelSnapshot = getAssistantModelSnapshot(session);
       const assistantPlaceholder = createAssistantPlaceholder(
         assistantMessageId,
         requestId,
-        session,
+        modelSnapshot,
         requestTimestamp
       );
 
@@ -1694,7 +1707,8 @@ function App() {
         session,
         messagesForApi,
         requestId,
-        assistantMessageId
+        assistantMessageId,
+        modelSnapshot
       });
       return true;
 
@@ -1704,12 +1718,15 @@ function App() {
       }
 
       forceImmediateSessionSaveRef.current = true;
+      const failedSession = sessionsRef.current.find(s => s.id === targetSessionId);
+      if (!failedSession) return false;
       const errorMessage: Message = {
         id: uuidv4(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
         status: 'error',
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        ...getAssistantModelSnapshot(failedSession)
       };
       updateSessionsState(prev => prev.map(s => {
         if (s.id === targetSessionId) {
@@ -1767,10 +1784,11 @@ function App() {
         ? { ...message, id: userMessageId }
         : message
     ));
+    const modelSnapshot = getAssistantModelSnapshot(session);
     const assistantPlaceholder = createAssistantPlaceholder(
       newAssistantMessageId,
       requestId,
-      session,
+      modelSnapshot,
       requestTimestamp
     );
     const operation = operationRegistryRef.current.begin({
@@ -1804,7 +1822,8 @@ function App() {
       session,
       messagesForApi,
       requestId,
-      assistantMessageId: newAssistantMessageId
+      assistantMessageId: newAssistantMessageId,
+      modelSnapshot
     });
   };
 

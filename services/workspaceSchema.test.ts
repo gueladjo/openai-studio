@@ -29,6 +29,7 @@ const createSession = (): Session => ({
       requestId: 'request-1',
       status: 'complete' as const,
       timestamp: 2,
+      modelName: 'GPT-5.6 Sol',
       sources: [{ title: 'OpenAI', url: 'https://openai.com' }],
       usage: {
         input_tokens: 10,
@@ -161,6 +162,20 @@ describe('workspace runtime schema', () => {
     sessions[0].messages[1].sources = [{} as any];
     expect(() => parseStoredSessions(sessions)).toThrow(
       'sources[0].title must be a string'
+    );
+  });
+
+  it('requires static model names only on assistant messages', () => {
+    const missingName = createBackup();
+    delete missingName.sessions[0].messages[1].modelName;
+    expect(() => parseWorkspaceBackup(missingName)).toThrow(
+      'messages[1].modelName must be a string'
+    );
+
+    const userName = createBackup();
+    userName.sessions[0].messages[0].modelName = 'GPT-5.6 Sol';
+    expect(() => parseWorkspaceBackup(userName)).toThrow(
+      'messages[0].modelName is only supported for assistant messages'
     );
   });
 

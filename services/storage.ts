@@ -1545,6 +1545,36 @@ const ensureWorkspaceGeneration = async (
     workspaceGenerationCache = current;
     return current;
   }
+  const previous = await store.readResettablePreviousManifest();
+  if (previous) {
+    const targetSlot = previous.slot === WORKSPACE_MANIFEST_SLOTS[0]
+      ? WORKSPACE_MANIFEST_SLOTS[1]
+      : WORKSPACE_MANIFEST_SLOTS[0];
+    console.warn(
+      'Resetting an incompatible version 2 workspace before manual backup restore.'
+    );
+    const reset = await store.commit(
+      null,
+      {
+        sessions: [],
+        settings: { theme: 'dark', apiKey: '' },
+        instructions: []
+      },
+      {
+        revision: previous.manifest.revision + 1,
+        createdAt: Date.now(),
+        targetSlot
+      }
+    );
+    const verified = await store.readCurrent();
+    if (!verified || verified.manifest.revision !== reset.manifest.revision) {
+      throw new Error(
+        'The reset workspace generation could not be read back.'
+      );
+    }
+    workspaceGenerationCache = verified;
+    return verified;
+  }
   if (await store.hasManifestRecords()) {
     throw new Error(
       'No complete local workspace generation could be validated. The active workspace was not changed.'
