@@ -12,7 +12,7 @@ import { GeneratedFile, Message, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getModelConfig } from '../constants';
+import { getModelConfig, getModelDisplayName } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
 import {
   ATTACHMENT_INPUT_ACCEPT,
@@ -337,7 +337,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         };
     }, []);
 
-    const modelName = message.model ? getModelConfig(message.model).name : null;
+    const modelName = message.model ? getModelDisplayName(message.model) : null;
     const modelLabel = modelName
         ? `${modelName}${message.reasoningEffort ? ` ${message.reasoningEffort}` : ''}`
         : null;
