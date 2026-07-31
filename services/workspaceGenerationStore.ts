@@ -20,10 +20,7 @@ import {
   getBlobPath,
   getObjectPath,
   LOCAL_WORKSPACE_SCHEMA_VERSION,
-  PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION,
-  parsePreviousWorkspaceGenerationManifest,
   parseWorkspaceGenerationManifest,
-  PreviousWorkspaceGenerationManifest,
   SessionObjectReference,
   WorkspaceGenerationError,
   WorkspaceGenerationManifest,
@@ -50,11 +47,6 @@ export interface WorkspaceGenerationData {
 
 export interface ValidWorkspaceGeneration extends WorkspaceGenerationData {
   manifest: WorkspaceGenerationManifest;
-  slot: WorkspaceManifestSlot;
-}
-
-export interface PreviousWorkspaceGenerationRecord {
-  manifest: PreviousWorkspaceGenerationManifest;
   slot: WorkspaceManifestSlot;
 }
 
@@ -149,53 +141,6 @@ export class WorkspaceGenerationStore {
     return records.some(text => text !== null);
   }
 
-  async readResettablePreviousManifest(): Promise<PreviousWorkspaceGenerationRecord | null> {
-    const records = await Promise.all(
-      WORKSPACE_MANIFEST_SLOTS.map(async slot => ({
-        slot,
-        text: await this.adapter.readText(slot)
-      }))
-    );
-    const candidates: PreviousWorkspaceGenerationRecord[] = [];
-
-    for (const { slot, text } of records) {
-      if (text === null) continue;
-
-      let value: unknown;
-      try {
-        value = JSON.parse(text);
-      } catch {
-        return null;
-      }
-      if (
-        typeof value !== 'object' ||
-        value === null ||
-        Array.isArray(value)
-      ) {
-        return null;
-      }
-      if (
-        (value as Record<string, unknown>).schemaVersion !==
-        PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION
-      ) {
-        return null;
-      }
-
-      try {
-        candidates.push({
-          slot,
-          manifest: parsePreviousWorkspaceGenerationManifest(text, slot)
-        });
-      } catch {
-        return null;
-      }
-    }
-
-    return candidates.sort(
-      (left, right) => right.manifest.revision - left.manifest.revision
-    )[0] || null;
-  }
-
   async readValidGenerations(): Promise<ValidWorkspaceGeneration[]> {
     const results = await Promise.all(WORKSPACE_MANIFEST_SLOTS.map(async slot => {
       const text = await this.adapter.readText(slot);
@@ -265,11 +210,7 @@ export class WorkspaceGenerationStore {
   async commit(
     expectedRevision: number | null,
     data: WorkspaceGenerationData,
-    options: {
-      revision?: number;
-      createdAt?: number;
-      targetSlot?: WorkspaceManifestSlot;
-    } = {}
+    options: { revision?: number; createdAt?: number } = {}
   ): Promise<ValidWorkspaceGeneration> {
     parseStoredSessions(data.sessions);
     parseAppSettings(data.settings);
@@ -281,11 +222,6 @@ export class WorkspaceGenerationStore {
     if (actualRevision !== expectedRevision) {
       throw new WorkspaceGenerationError(
         `Workspace revision changed (expected ${String(expectedRevision)}, found ${String(actualRevision)}).`
-      );
-    }
-    if (options.targetSlot && current) {
-      throw new WorkspaceGenerationError(
-        'An explicit manifest slot is only allowed when no current generation exists.'
       );
     }
 
@@ -350,11 +286,9 @@ export class WorkspaceGenerationStore {
       instructions,
       blobs: blobReferences
     };
-    const nextSlot = options.targetSlot || (
-      current?.slot === WORKSPACE_MANIFEST_SLOTS[0]
-        ? WORKSPACE_MANIFEST_SLOTS[1]
-        : WORKSPACE_MANIFEST_SLOTS[0]
-    );
+    const nextSlot = current?.slot === WORKSPACE_MANIFEST_SLOTS[0]
+      ? WORKSPACE_MANIFEST_SLOTS[1]
+      : WORKSPACE_MANIFEST_SLOTS[0];
     await this.adapter.writeText(nextSlot, serializeJson(manifest));
 
     const verified = await this.validateGeneration(nextSlot, manifest);

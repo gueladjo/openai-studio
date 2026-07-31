@@ -148,6 +148,7 @@ that effect:
 
 - `services/openaiService.ts` creates the SDK client in the renderer with `dangerouslyAllowBrowser: true`. The UI-supplied key takes precedence over `process.env.OPENAI_API_KEY`.
 - Preserve the streamed lifecycle: create an assistant placeholder, record the ID from `response.created`, append `response.output_text.delta`, and parse `response.completed` for the authoritative final content and metadata.
+- Snapshot `message.modelName` from the active model config when the assistant placeholder is created, and preserve it through completion, stop, failure, and interrupted-request recovery. Historical answer labels must render this stored name without consulting the current model catalog.
 - Automatic SDK retries are disabled for streamed generation and cancellation to avoid duplicate calls. Title generation and generated-file retrieval still use SDK defaults; coordinate any retry-policy changes with persisted request IDs and UI state.
 - Stop generation attempts `responses.cancel(responseId)` when available, aborts the local stream, and retains partial content with `stopped` status.
 - Persisted `pendingRequest` records are marked failed and retryable on the next startup. Preserve this recovery behavior when changing message state.
@@ -165,7 +166,7 @@ that effect:
 
 - Storage must load successfully before any writes are enabled. Do not allow initialization defaults to overwrite an unread workspace.
 - Prefer OPFS. Browsers may fall back to IndexedDB, but Electron intentionally fails instead of silently opening an empty fallback store when OPFS is unavailable.
-- Local storage schema v2 uses `workspace_manifest_a.json` and
+- Local storage schema v3 uses `workspace_manifest_a.json` and
   `workspace_manifest_b.json`. Manifests reference immutable SHA-256 JSON
   objects in `objects/` and attachment/cached-generated-file bytes in
   `blobs/`. A candidate is usable only when the manifest, every object, every
@@ -179,7 +180,7 @@ that effect:
   pinned content; remove orphans only after a newer manifest verifies.
 - Previous `sessions.json`, `settings.json`, `system_instructions.json`,
   `.bak`, snapshot, and `attachments/` records are migration inputs only.
-  Keep them until v2 has read back successfully, and never replace failed
+  Keep them until v3 has read back successfully, and never replace failed
   migration with defaults.
 - Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
 - Persisted attachments and cached generated files use `LocalBlobReference`

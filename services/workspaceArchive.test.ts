@@ -262,7 +262,7 @@ describe('portable workspace archive', () => {
     })).rejects.toBeInstanceOf(UnsupportedLegacyBackupError);
   });
 
-  it('rejects version 1 ZIP backups after the hard format cutover', async () => {
+  it('rejects unsupported ZIP backup versions', async () => {
     const archive = await createZip([{
       path: 'manifest.json',
       text: JSON.stringify({ ...emptyManifest([]), version: 1 })

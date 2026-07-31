@@ -14,7 +14,7 @@ This project has no application server. The OpenAI SDK runs in the browser or El
 - Optional Web Search and Code Interpreter tools.
 - Multiple image and file attachments, including files pasted from the clipboard.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
-- Per-response model, reasoning effort, time-to-first-token, and token-usage details.
+- Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
 - Local chat-title search with light and dark themes.
 - Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
 - Responsive mobile layout, installable PWA output, and Electron desktop packaging.
