@@ -219,11 +219,11 @@ over `process.env.OPENAI_API_KEY`. The project uses OpenAI JavaScript SDK v7,
 whose development and build tooling requires Node.js 22 or newer; Responses API
 request, response, usage, and stream-event types remain direct SDK aliases.
 
-Streamed generation and cancellation set SDK `maxRetries: 0` to avoid ambiguous
-duplicate requests. Title generation and generated-file retrieval retain SDK
-default retry behavior. Optional reasoning-summary capability is retried only
-when the API explicitly rejects that option; unrelated or ambiguous failures
-are not retried.
+Streamed generation and background-response cancellation both set SDK
+`maxRetries: 0` to avoid ambiguous duplicate requests. Title generation and
+generated-file retrieval retain SDK default retry behavior. Optional reasoning-summary
+capability is retried only when the API explicitly rejects that option;
+unrelated or ambiguous failures are not retried.
 
 Conversation requests intentionally use `store: true`. When the immediately
 preceding assistant turn has an OpenAI response ID, the next request sends
@@ -241,21 +241,18 @@ The streamed lifecycle is:
 
 1. Create the assistant placeholder, record request ownership in workspace
    state, and mark the session for immediate persistence.
-2. Record the response ID from `response.created`.
-3. Accumulate reasoning-summary and `response.output_text.delta` events while
+2. Accumulate reasoning-summary and `response.output_text.delta` events while
    routing visible deltas to the originating session.
-4. Treat `response.completed` or `response.incomplete` as the authoritative
+3. Treat `response.completed` or `response.incomplete` as the authoritative
    terminal response, including content, citations, generated files, refusal,
    usage, model metadata, and incomplete reason.
-5. Reject a stream that ends without a terminal response.
+4. Reject a stream that ends without a terminal response.
 
 `thinkingDuration` is the time to the first streamed user-visible text token,
 not total request time, reasoning time, or chain-of-thought duration. Stopping
-attempts `responses.cancel(responseId)` when an ID is available, then aborts the
-local stream and retains partial content. The local abort is authoritative for
-the foreground streaming requests used here; the API cancellation endpoint only
-cancels responses created with `background: true`, so a rejected remote cancel
-does not prevent the local stop.
+aborts the foreground stream's request signal and retains partial content. It
+does not call `responses.cancel`; that remote endpoint is reserved for responses
+created with `background: true`.
 
 Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes

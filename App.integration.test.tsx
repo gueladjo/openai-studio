@@ -45,7 +45,6 @@ interface CapturedSidebarProps {
 
 interface GenerateOptions {
   signal?: AbortSignal;
-  onResponseCreated?: (responseId: string) => void;
   onTextDelta?: (delta: string) => void;
   onReasoningSummaryDelta?: (delta: string) => void;
 }
@@ -72,7 +71,6 @@ const createDeferred = <T,>() => {
 
 const mocks = vi.hoisted(() => ({
   apiKey: 'workspace-key',
-  cancelResponse: vi.fn(),
   chatAreaProps: null as CapturedChatAreaProps | null,
   confirmChatDeletion: vi.fn(),
   coordinator: {
@@ -144,7 +142,6 @@ vi.mock('./components/TitleBar', () => ({
 }));
 
 vi.mock('./services/openaiService', () => ({
-  cancelResponse: mocks.cancelResponse,
   fetchGeneratedFileContent: mocks.fetchGeneratedFileContent,
   generateChatTitle: mocks.generateChatTitle,
   generateResponse: mocks.generateResponse
@@ -266,7 +263,6 @@ describe('App workspace and request lifecycle', () => {
     ];
     mocks.loadedInstructions = [];
 
-    mocks.cancelResponse.mockReset().mockResolvedValue(undefined);
     mocks.confirmChatDeletion.mockReset().mockReturnValue(true);
     mocks.coordinator.canWrite = true;
     mocks.coordinator.currentRole = 'writer';
@@ -735,7 +731,6 @@ describe('App workspace and request lifecycle', () => {
     });
     const options = getGenerateOptions();
     await act(async () => {
-      options.onResponseCreated?.('resp-streaming');
       options.onTextDelta?.('Unflushed partial output.');
       getChatAreaProps().onStopGenerating();
     });
@@ -744,10 +739,6 @@ describe('App workspace and request lifecycle', () => {
       session => session.id === 'session-a'
     );
     expect(options.signal?.aborted).toBe(true);
-    expect(mocks.cancelResponse).toHaveBeenCalledWith(
-      'resp-streaming',
-      'workspace-key'
-    );
     expect(stoppedSession?.pendingRequest).toBeUndefined();
     expect(stoppedSession?.messages.at(-1)).toMatchObject({
       content: 'Unflushed partial output.',
@@ -915,7 +906,6 @@ describe('App workspace and request lifecycle', () => {
     });
     const options = getGenerateOptions();
     await act(async () => {
-      options.onResponseCreated?.('resp-before-import');
       await getSidebarProps().onImportData(new File(
         ['verified archive'],
         'backup.zip',
@@ -932,10 +922,6 @@ describe('App workspace and request lifecycle', () => {
     await flushMicrotasks();
 
     expect(options.signal?.aborted).toBe(true);
-    expect(mocks.cancelResponse).toHaveBeenCalledWith(
-      'resp-before-import',
-      'workspace-key'
-    );
     expect(getSidebarProps().sessions).toEqual([replacement]);
     expect(getSidebarProps().undoWorkspaceAction).toBe('restore');
 
@@ -1154,7 +1140,6 @@ describe('App workspace and request lifecycle', () => {
     });
     const options = getGenerateOptions();
     await act(async () => {
-      options.onResponseCreated?.('resp-before-close');
       options.onTextDelta?.('Saved before close.');
     });
     mocks.writeSessions.mockImplementationOnce(() => save.promise);
@@ -1166,10 +1151,7 @@ describe('App workspace and request lifecycle', () => {
     await flushMicrotasks();
 
     expect(confirmClose).not.toHaveBeenCalled();
-    expect(mocks.cancelResponse).toHaveBeenCalledWith(
-      'resp-before-close',
-      'workspace-key'
-    );
+    expect(options.signal?.aborted).toBe(true);
     expect(mocks.writeSessions).toHaveBeenCalledTimes(1);
     const closingSessions = mocks.writeSessions.mock.calls[0][1] as Session[];
     expect(

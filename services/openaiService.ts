@@ -68,7 +68,6 @@ interface GenerateResponseResult {
 
 interface GenerateResponseOptions {
   signal?: AbortSignal;
-  onResponseCreated?: (responseId: string) => void;
   onReasoningSummaryDelta?: (delta: string) => void;
   onTextDelta?: (delta: string) => void;
   resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
@@ -1302,9 +1301,7 @@ export const generateResponse = async (
         throw createAbortError();
       }
 
-      if (event.type === 'response.created') {
-        options.onResponseCreated?.(event.response.id);
-      } else if (event.type === 'response.reasoning_summary_text.delta') {
+      if (event.type === 'response.reasoning_summary_text.delta') {
         const summaryPart = `${event.output_index}:${event.summary_index}`;
         const separator = streamedThinking && activeReasoningSummaryPart !== summaryPart
           ? '\n\n'
@@ -1368,14 +1365,15 @@ export const generateResponse = async (
   }
 };
 
-export const cancelResponse = async (
+// The remote endpoint only accepts responses created with `background: true`.
+export const cancelBackgroundResponse = async (
   responseId: string,
   providedApiKey?: string
 ): Promise<void> => {
   const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
 
   if (!apiKey) {
-    throw new Error('OpenAI API Key is missing. Please enter it in the settings before cancelling a response.');
+    throw new Error('OpenAI API Key is missing. Please enter it in the settings before cancelling a background response.');
   }
 
   const openai = new OpenAI({

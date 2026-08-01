@@ -15,7 +15,6 @@ import {
   SystemInstruction
 } from './types';
 import {
-  cancelResponse,
   fetchGeneratedFileContent,
   generateResponse,
   generateChatTitle
@@ -220,8 +219,6 @@ interface ActiveChatRequest {
   controller: AbortController;
   operationId: string;
   assistantMessageId: string;
-  apiKey: string;
-  responseId?: string;
   getPartialContent?: () => string;
   getPartialThinking?: () => string;
   checkpointPartialContent?: () => string;
@@ -659,37 +656,28 @@ function App() {
     )
   );
 
-  const cancelActiveRequest = (
-    sessionId: string,
-    warningContext: string
-  ): ActiveChatRequest | undefined => {
+  const abortActiveRequest = (sessionId: string): ActiveChatRequest | undefined => {
     const activeRequest = activeRequestsRef.current.get(sessionId);
     if (!activeRequest) return undefined;
 
-    if (activeRequest.responseId) {
-      cancelResponse(activeRequest.responseId, activeRequest.apiKey).catch(error => {
-        console.warn(`Failed to cancel OpenAI response ${warningContext}:`, error);
-      });
-    }
     activeRequest.controller.abort();
     activeRequestsRef.current.delete(sessionId);
     return activeRequest;
   };
 
   const invalidateSessionOperations = (
-    sessionId: string,
-    warningContext: string
+    sessionId: string
   ): ActiveChatRequest | undefined => {
     operationRegistryRef.current.invalidateSession(sessionId);
-    const activeRequest = cancelActiveRequest(sessionId, warningContext);
+    const activeRequest = abortActiveRequest(sessionId);
     removeProcessingSession(sessionId);
     return activeRequest;
   };
 
-  const invalidateWorkspaceOperations = (warningContext: string): void => {
+  const invalidateWorkspaceOperations = (): void => {
     operationRegistryRef.current.invalidateWorkspace();
     activeRequestsRef.current.forEach((_, sessionId) => {
-      cancelActiveRequest(sessionId, warningContext);
+      abortActiveRequest(sessionId);
     });
     activeRequestsRef.current.clear();
     processingSessionIdsRef.current.clear();
@@ -884,7 +872,7 @@ function App() {
           workspaceCanWriteRef.current = false;
           setIsWorkspaceReadOnly(true);
           if (role === 'reader') {
-            invalidateWorkspaceOperations('after workspace role change');
+            invalidateWorkspaceOperations();
           }
           if (!isWorkspaceLoadedRef.current) return;
 
@@ -1112,7 +1100,7 @@ function App() {
     const deletedSession = sessionsRef.current.find(session => session.id === id);
     if (!deletedSession || !confirmChatDeletion()) return;
 
-    invalidateSessionOperations(id, 'before chat deletion');
+    invalidateSessionOperations(id);
     const operation = operationRegistryRef.current.begin({
       id: uuidv4(),
       kind: 'delete-session',
@@ -1295,8 +1283,7 @@ function App() {
     activeRequestsRef.current.set(targetSessionId, {
       controller,
       operationId: operation.id,
-      assistantMessageId,
-      apiKey
+      assistantMessageId
     });
     const matchesActiveRequest = (
       request: ActiveChatRequest | undefined
@@ -1420,20 +1407,6 @@ function App() {
         systemInstructionContent,
         {
           signal: controller.signal,
-          onResponseCreated: (createdResponseId) => {
-            const activeRequest = activeRequestsRef.current.get(targetSessionId);
-
-            if (
-              matchesActiveRequest(activeRequest) &&
-              isOperationCurrent(operation)
-            ) {
-              activeRequest.responseId = createdResponseId;
-            } else {
-              cancelResponse(createdResponseId, apiKey).catch(error => {
-                console.warn('Failed to cancel a stale OpenAI response:', error);
-              });
-            }
-          },
           onReasoningSummaryDelta: (delta) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
@@ -1997,7 +1970,7 @@ function App() {
       operation.sessionId === targetSessionId &&
       operation.kind === 'response'
     ));
-    cancelActiveRequest(targetSessionId, 'after the user stopped generation');
+    abortActiveRequest(targetSessionId);
     removeProcessingSession(targetSessionId);
     if (activeRequest) {
       markAssistantStopped(
@@ -2023,11 +1996,6 @@ function App() {
       operationRegistryRef.current.invalidateWorkspace();
 
       activeRequests.forEach(request => {
-        if (request.responseId) {
-          cancelResponse(request.responseId, request.apiKey).catch(error => {
-            console.warn('Failed to cancel OpenAI response while closing:', error);
-          });
-        }
         request.controller.abort();
       });
       activeRequestsRef.current.clear();
@@ -2277,7 +2245,7 @@ function App() {
     if (!pending || !dirHandleRef.current) return;
     setPendingRestore(null);
     await flushPendingSaves();
-    invalidateWorkspaceOperations('before workspace restore');
+    invalidateWorkspaceOperations();
 
     try {
       await enqueueDestructiveOperation(async () => {
@@ -2343,7 +2311,7 @@ function App() {
           throw new Error('Finish active responses before merging a backup.');
         }
         await flushPendingSaves();
-        invalidateWorkspaceOperations('before workspace merge');
+        invalidateWorkspaceOperations();
         const operation = operationRegistryRef.current.begin({
           id: uuidv4(),
           kind: 'workspace-merge'
@@ -2392,7 +2360,7 @@ function App() {
     if (!handle || !workspaceCanWriteRef.current) return;
     const action = undoWorkspaceAction;
     await flushPendingSaves();
-    invalidateWorkspaceOperations('before undoing workspace mutation');
+    invalidateWorkspaceOperations();
     try {
       await enqueueDestructiveOperation(async () => {
         await undoLastWorkspaceMutation(handle);
