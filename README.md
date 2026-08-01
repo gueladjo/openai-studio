@@ -41,7 +41,7 @@ Do not put a shared or production API key into a publicly deployed build. Each u
 
 ## Prerequisites
 
-- Node.js 22 or newer and npm.
+- Node.js 22.12 or newer and npm.
 - An OpenAI API key with access to the selected models and tools.
 - A modern browser for the web app. The app prefers OPFS and falls back to IndexedDB outside Electron.
 

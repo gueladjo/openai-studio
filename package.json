@@ -7,7 +7,7 @@
   "description": "A professional chat interface for OpenAI GPT-5 models.",
   "type": "module",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "clean": "node scripts/clean.js",
@@ -24,32 +24,33 @@
   "dependencies": {
     "@noble/hashes": "^2.2.0",
     "@zip.js/zip.js": "^2.8.34",
-    "lucide-react": "^0.344.0",
+    "lucide-react": "^1.28.0",
     "openai": "^7.3.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-markdown": "^9.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "uuid": "^11.1.1"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "@types/react": "^18.2.56",
-    "@types/react-dom": "^18.2.19",
-    "@vitejs/plugin-react": "^5.2.0",
-    "autoprefixer": "^10.5.2",
-    "concurrently": "^8.2.2",
-    "electron": "^43.1.0",
-    "electron-builder": "^26.15.3",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "autoprefixer": "^10.5.4",
+    "concurrently": "^10.0.4",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.7",
     "fake-indexeddb": "^6.2.5",
     "gh-pages": "^6.3.0",
     "happy-dom": "^20.11.1",
     "postcss": "^8.5.16",
-    "sharp": "^0.34.5",
-    "tailwindcss": "^3.4.19",
-    "typescript": "^5.2.2",
-    "vite": "^7.3.6",
+    "sharp": "^0.35.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.10"
   },
   "build": {
     "appId": "com.openaistudio.app",

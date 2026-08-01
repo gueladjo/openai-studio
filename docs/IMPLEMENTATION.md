@@ -441,6 +441,10 @@ may also be lost.
 
 ## Web, PWA, Mobile, And Electron Constraints
 
+The build toolchain requires Node.js 22.12 or newer. Tailwind CSS is compiled
+through its dedicated PostCSS adapter, with `index.css` loading the canonical
+JavaScript theme configuration before importing Tailwind.
+
 Electron mode uses relative asset paths and disables PWA generation. Every
 non-Electron Vite mode currently uses `/openai-studio/`; the generated PWA
 `scope` and `start_url` derive from that base. A deployment under another path

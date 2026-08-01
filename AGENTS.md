@@ -16,7 +16,7 @@ to these canonical documents.
 
 ## Project Overview
 
-OpenAI Studio is a React 18 and TypeScript client for the OpenAI Responses API.
+OpenAI Studio is a React 19 and TypeScript client for the OpenAI Responses API.
 Vite produces web/PWA or Electron renderer bundles, and the SDK runs directly in
 the renderer. Start work at the narrowest boundary in the map below; use the
 implementation specification for the behavior those boundaries must preserve.
@@ -76,7 +76,7 @@ Generated `node_modules/`, `dist/`, and `release/` content is ignored and should
 
 ## Install And Commands
 
-Use Node.js 22+ and install the lockfile exactly:
+Use Node.js 22.12+ and install the lockfile exactly:
 
 ```bash
 npm ci
@@ -138,7 +138,7 @@ that effect:
 - Use PascalCase for component files and components; use camelCase for functions and utilities.
 - Keep state in `App.tsx` unless a component-local concern is genuinely isolated. Follow the current prop-driven data flow before adding a new state abstraction.
 - Prefer the existing component, service, and utility boundaries. Avoid unrelated refactors.
-- Tailwind utilities are written inline and compiled at build time (Tailwind v3 through Vite's PostCSS pipeline; config in `tailwind.config.js`). Class names must appear as complete literal strings so the JIT content scan can find them. Reserve `index.css` for global and complex reusable rules.
+- Tailwind utilities are written inline and compiled at build time (Tailwind v4 through its dedicated PostCSS adapter; compatibility theme config in `tailwind.config.js`). Class names must appear as complete literal strings so automatic source detection can find them. Reserve `index.css` for global and complex reusable rules.
 - Use `lucide-react` for UI icons and preserve accessible names/tooltips on icon-only controls.
 - Keep fixed controls and responsive layouts stable at desktop and mobile widths. The mobile breakpoint in `App.tsx` is 768px.
 - Add brief comments only for logic whose intent is not apparent from the code.

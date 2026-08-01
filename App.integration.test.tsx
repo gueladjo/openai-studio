@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
-import React from 'react';
-import { act } from 'react-dom/test-utils';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   afterEach,
@@ -360,8 +359,8 @@ describe('App workspace and request lifecycle', () => {
     ));
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(window, 'alert').mockImplementation(() => undefined);
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.stubGlobal('alert', vi.fn());
+    vi.stubGlobal('confirm', vi.fn(() => true));
   });
 
   afterEach(async () => {
@@ -371,6 +370,7 @@ describe('App workspace and request lifecycle', () => {
       });
     }
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT;
