@@ -86,6 +86,24 @@ const messageOutput = {
   }]
 } as OpenAIResponse['output'][number];
 
+const createPhasedMessageOutput = (
+  id: string,
+  text: string,
+  phase: 'commentary' | 'final_answer'
+) => ({
+  id,
+  type: 'message',
+  role: 'assistant',
+  status: 'completed',
+  phase,
+  content: [{
+    type: 'output_text',
+    text,
+    annotations: [],
+    logprobs: []
+  }]
+} as OpenAIResponse['output'][number]);
+
 describe('OpenAI request contracts', () => {
   beforeEach(() => {
     cancelBackgroundResponseMock.mockReset();
@@ -704,8 +722,8 @@ describe('generateResponse terminal output', () => {
     );
 
     expect(onTextDelta.mock.calls).toEqual([
-      ['I cannot help '],
-      ['with that request.']
+      ['I cannot help ', 0, undefined],
+      ['with that request.', 0, undefined]
     ]);
     expect(result).toMatchObject({
       content: refusal,
@@ -818,6 +836,84 @@ describe('generateResponse terminal output', () => {
       content: 'Visible partial output.',
       status: 'incomplete',
       incompleteReason: 'content_filter'
+    });
+  });
+});
+
+describe('generateResponse assistant phases', () => {
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it('preserves multiple terminal output messages and streams their phases', async () => {
+    const commentaryOutput = createPhasedMessageOutput(
+      'msg-commentary',
+      'I will check the data.',
+      'commentary'
+    );
+    const finalOutput = createPhasedMessageOutput(
+      'msg-final',
+      'The data is valid.',
+      'final_answer'
+    );
+    const completedResponse = createCompletedResponse([
+      commentaryOutput,
+      finalOutput
+    ]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.output_item.added',
+      output_index: 0,
+      sequence_number: 1,
+      item: commentaryOutput
+    }, {
+      type: 'response.output_text.delta',
+      item_id: 'msg-commentary',
+      output_index: 0,
+      content_index: 0,
+      sequence_number: 2,
+      delta: 'I will check the data.',
+      logprobs: []
+    }, {
+      type: 'response.output_item.added',
+      output_index: 1,
+      sequence_number: 3,
+      item: finalOutput
+    }, {
+      type: 'response.output_text.delta',
+      item_id: 'msg-final',
+      output_index: 1,
+      content_index: 0,
+      sequence_number: 4,
+      delta: 'The data is valid.',
+      logprobs: []
+    }, {
+      type: 'response.completed',
+      sequence_number: 5,
+      response: completedResponse
+    }]));
+    const onTextDelta = vi.fn();
+
+    const result = await generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'phase-key',
+      undefined,
+      { onTextDelta }
+    );
+
+    expect(onTextDelta.mock.calls).toEqual([
+      ['I will check the data.', 0, 'commentary'],
+      ['The data is valid.', 1, 'final_answer']
+    ]);
+    expect(result).toMatchObject({
+      content: 'I will check the data.\n\nThe data is valid.',
+      outputMessages: [{
+        content: 'I will check the data.',
+        phase: 'commentary'
+      }, {
+        content: 'The data is valid.',
+        phase: 'final_answer'
+      }]
     });
   });
 });
@@ -1029,7 +1125,14 @@ describe('generateResponse conversation history', () => {
       {
         id: 'assistant-1',
         role: 'assistant',
-        content: 'The earlier answer.',
+        content: 'Working on it.\n\nThe earlier answer.',
+        outputMessages: [{
+          content: 'Working on it.',
+          phase: 'commentary'
+        }, {
+          content: 'The earlier answer.',
+          phase: 'final_answer'
+        }],
         status: 'complete',
         openaiResponseId: 'resp-expired',
         timestamp: 2
@@ -1053,8 +1156,49 @@ describe('generateResponse conversation history', () => {
     expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
     expect(createResponseMock.mock.calls[1][0].input).toEqual([
       { role: 'user', content: 'Solve this problem.' },
-      { role: 'assistant', content: 'The earlier answer.' },
+      { role: 'assistant', content: 'Working on it.', phase: 'commentary' },
+      { role: 'assistant', content: 'The earlier answer.', phase: 'final_answer' },
       { role: 'user', content: 'Build on that answer.' }
+    ]);
+  });
+
+  it('round-trips phased assistant messages in ordinary manual history', async () => {
+    const completedResponse = createCompletedResponse([messageOutput]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: completedResponse
+    }]));
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Inspecting.\n\nFirst answer.',
+        outputMessages: [{
+          content: 'Inspecting.',
+          phase: 'commentary'
+        }, {
+          content: 'First answer.',
+          phase: 'final_answer'
+        }],
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'Continue.',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'assistant', content: 'Inspecting.', phase: 'commentary' },
+      { role: 'assistant', content: 'First answer.', phase: 'final_answer' },
+      { role: 'user', content: 'Continue.' }
     ]);
   });
 

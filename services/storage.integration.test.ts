@@ -442,6 +442,36 @@ describe('storage public contracts', () => {
       .toEqual({ cache_write_tokens: 1_234, cached_tokens: 567 });
   });
 
+  it('persists ordered assistant output phases', async () => {
+    const session = createSession('Assistant phases');
+    session.messages.push({
+      id: 'message-phases-assistant',
+      role: 'assistant',
+      content: 'Checking.\n\nComplete.',
+      outputMessages: [{
+        content: 'Checking.',
+        phase: 'commentary'
+      }, {
+        content: 'Complete.',
+        phase: 'final_answer'
+      }],
+      status: 'complete',
+      timestamp: 2,
+      modelName: 'GPT-5.6 Sol'
+    });
+
+    await storage.writeSessions(handle, [session]);
+
+    const storedSessions = await storage.readSessions(handle);
+    expect(storedSessions[0].messages[1].outputMessages).toEqual([{
+      content: 'Checking.',
+      phase: 'commentary'
+    }, {
+      content: 'Complete.',
+      phase: 'final_answer'
+    }]);
+  });
+
   it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
     await seedWorkspace([createSession('Reusable')]);
     for (let index = 0; index < 8; index += 1) {

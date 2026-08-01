@@ -15,6 +15,8 @@ import {
   normalizeChatConfig
 } from '../constants';
 import {
+  AssistantOutputMessage,
+  AssistantPhase,
   ChatConfig,
   FileAttachment,
   GeneratedFile,
@@ -55,6 +57,7 @@ type OpenAIResponseContainerFileCitationCandidate =
 
 interface GenerateResponseResult {
   content: string;
+  outputMessages?: AssistantOutputMessage[];
   thinking?: string;
   refusal?: string;
   status: 'complete' | 'incomplete';
@@ -69,7 +72,11 @@ interface GenerateResponseResult {
 interface GenerateResponseOptions {
   signal?: AbortSignal;
   onReasoningSummaryDelta?: (delta: string) => void;
-  onTextDelta?: (delta: string) => void;
+  onTextDelta?: (
+    delta: string,
+    outputIndex: number,
+    phase?: AssistantPhase
+  ) => void;
   resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
 }
 
@@ -432,13 +439,15 @@ const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
   return mappedSources;
 };
 
-const extractMarkdownLinkCitations = (content: string): {
+const extractMarkdownLinkCitations = (
+  content: string,
+  extractedSources: Source[] = [],
+  sourceIndexByUrl: Map<string, number> = new Map<string, number>()
+): {
   content: string;
   sources: Source[];
 } => {
   const linkRegex = /(^|[^!])\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
-  const extractedSources: Source[] = [];
-  const sourceIndexByUrl = new Map<string, number>();
 
   const updatedContent = content.replace(linkRegex, (match, prefix, title, url) => {
     const extractedSource = createSourceRecord(
@@ -740,7 +749,15 @@ const appendMarkdownSection = (content: string, section: string): string => {
   return `${content.trimEnd()}\n\n${trimmedSection}`;
 };
 
-const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
+const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput[] => {
+  if (message.role === 'assistant' && message.outputMessages?.length) {
+    return message.outputMessages.map(output => ({
+      role: 'assistant',
+      content: output.content,
+      ...(output.phase ? { phase: output.phase } : {})
+    }));
+  }
+
   const images = message.attachments?.filter(attachment => (
     getAttachmentFormat(attachment.name, attachment.type).kind === 'image' &&
     attachment.content
@@ -752,10 +769,10 @@ const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
   const filenameFallbackAttachments = otherAttachments.filter(a => !a.content);
 
   if (images.length === 0 && fileAttachments.length === 0) {
-    return {
+    return [{
       role: message.role,
       content: message.content + (filenameFallbackAttachments.length > 0 ? `\n\n[Attached Files: ${filenameFallbackAttachments.map(a => a.name).join(', ')}]` : '')
-    };
+    }];
   }
 
   const contentParts: OpenAIResponsesContentPart[] = [];
@@ -787,10 +804,10 @@ const mapMessageToResponseInput = (message: Message): OpenAIResponsesInput => {
     });
   }
 
-  return {
+  return [{
     role: message.role,
     content: contentParts
-  };
+  }];
 };
 
 const resolveMessageAttachmentContent = async (
@@ -887,6 +904,7 @@ const parseGenerateResponse = (
   let thinking = '';
   let content = '';
   let refusal = '';
+  const outputMessages: AssistantOutputMessage[] = [];
   const rawSources: OpenAIResponseSource[] = [];
   const citationRegistry: CitationRegistry = {
     sources: [],
@@ -906,11 +924,19 @@ const parseGenerateResponse = (
           content,
           messageContent.content
         );
+        outputMessages.push({
+          content: messageContent.content,
+          ...(item.phase ? { phase: item.phase } : {})
+        });
         refusal = appendMarkdownSection(refusal, messageContent.refusal);
       } else if (isReasoningResponseItem(item)) {
         thinking = appendMarkdownSection(thinking, getReasoningSummaryText(item));
       } else if (isCodeInterpreterResponseItem(item)) {
-        content = appendMarkdownSection(content, formatCodeInterpreterCall(item));
+        const codeInterpreterContent = formatCodeInterpreterCall(item);
+        content = appendMarkdownSection(content, codeInterpreterContent);
+        if (codeInterpreterContent) {
+          outputMessages.push({ content: codeInterpreterContent });
+        }
       } else if (isWebSearchResponseItem(item)) {
         rawSources.push(...getWebSearchActionSources(item.action));
       }
@@ -942,13 +968,31 @@ const parseGenerateResponse = (
   }
 
   if (sources.length === 0 && !normalizedConfig.tools.webSearch) {
-    const markdownCitations = extractMarkdownLinkCitations(content);
-    content = markdownCitations.content;
-    sources = markdownCitations.sources;
+    if (outputMessages.length > 0) {
+      const extractedSources: Source[] = [];
+      const sourceIndexByUrl = new Map<string, number>();
+      outputMessages.forEach(output => {
+        output.content = extractMarkdownLinkCitations(
+          output.content,
+          extractedSources,
+          sourceIndexByUrl
+        ).content;
+      });
+      content = outputMessages.reduce(
+        (combined, output) => appendMarkdownSection(combined, output.content),
+        ''
+      );
+      sources = extractedSources;
+    } else {
+      const markdownCitations = extractMarkdownLinkCitations(content);
+      content = markdownCitations.content;
+      sources = markdownCitations.sources;
+    }
   }
 
   return {
     content,
+    outputMessages: outputMessages.length > 0 ? outputMessages : undefined,
     thinking: thinking || streamState.thinking,
     refusal: refusal || undefined,
     status: streamState.terminalStatus,
@@ -1167,7 +1211,7 @@ export const generateResponse = async (
   ): Promise<OpenAIResponsesInput[]> => {
     validateMessageAttachments(inputMessages);
     const resolvedMessages = await Promise.all(inputMessages.map(getResolvedMessage));
-    return resolvedMessages.map(mapMessageToResponseInput);
+    return resolvedMessages.flatMap(mapMessageToResponseInput);
   };
   const apiInput = await buildApiInput(
     previousResponseId ? [latestMessage] : replayableMessages
@@ -1294,6 +1338,7 @@ export const generateResponse = async (
     let streamedRefusal = '';
     let terminalStatus: GenerateResponseStreamState['terminalStatus'] | undefined;
     let activeReasoningSummaryPart: string | undefined;
+    const outputPhases = new Map<number, AssistantPhase | undefined>();
     let timeToFirstToken = 0;
 
     for await (const event of stream) {
@@ -1301,7 +1346,12 @@ export const generateResponse = async (
         throw createAbortError();
       }
 
-      if (event.type === 'response.reasoning_summary_text.delta') {
+      if (
+        event.type === 'response.output_item.added' &&
+        event.item.type === 'message'
+      ) {
+        outputPhases.set(event.output_index, event.item.phase || undefined);
+      } else if (event.type === 'response.reasoning_summary_text.delta') {
         const summaryPart = `${event.output_index}:${event.summary_index}`;
         const separator = streamedThinking && activeReasoningSummaryPart !== summaryPart
           ? '\n\n'
@@ -1316,14 +1366,22 @@ export const generateResponse = async (
           timeToFirstToken = getMonotonicTime() - startTime;
         }
         streamedContent += event.delta;
-        options.onTextDelta?.(event.delta);
+        options.onTextDelta?.(
+          event.delta,
+          event.output_index,
+          outputPhases.get(event.output_index)
+        );
       } else if (event.type === 'response.refusal.delta') {
         if (timeToFirstToken === 0 && event.delta.length > 0) {
           timeToFirstToken = getMonotonicTime() - startTime;
         }
         streamedContent += event.delta;
         streamedRefusal += event.delta;
-        options.onTextDelta?.(event.delta);
+        options.onTextDelta?.(
+          event.delta,
+          event.output_index,
+          outputPhases.get(event.output_index)
+        );
       } else if (event.type === 'response.completed') {
         completedResponse = event.response;
         terminalStatus = 'complete';

@@ -233,6 +233,16 @@ response is inaccessible, generation may retry once without that ID using full
 local history. This recovery is never repeated for the same request and is not
 used for ambiguous validation errors.
 
+Assistant output messages retain their API order and optional `phase` value.
+Manual-history requests, including inaccessible-`previous_response_id`
+recovery, replay each retained assistant output separately with `commentary` or
+`final_answer` unchanged. Unphased output remains valid for older responses and
+non-message rendered output. The UI presents commentary in a collapsible
+Progress section and treats final-answer and unphased output as the primary
+result. Markdown conversation exports label phased output, and portable
+archives preserve the same records. This is intrinsic response metadata, not a
+user configuration option.
+
 Changing response storage policy requires a corresponding redesign of
 continuation behavior and an update to the public privacy guidance in
 `README.md`.
@@ -263,7 +273,11 @@ redundant adjacent labels without corrupting surrounding prose.
 The persisted workspace owns `Session[]`, `AppSettings`, and
 `SystemInstruction[]`. Sessions own messages, chat configuration, timestamps,
 and optional `pendingRequest` records. Persisted assistant messages carry the
-static model name used for historical labels.
+static model name used for historical labels and may carry an ordered
+`outputMessages` list containing content plus an optional `commentary` or
+`final_answer` phase. The legacy aggregate `content` remains required so older
+workspaces and partial/error handling stay compatible; `outputMessages` is an
+additive schema-version-1 field.
 
 Attachments and cached generated files use `LocalBlobReference` records with a
 lowercase SHA-256 digest, byte size, and optional MIME type. Runtime-only object

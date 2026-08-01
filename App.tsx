@@ -6,6 +6,8 @@ import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
 import { TitleBar } from './components/TitleBar';
 import {
+  AssistantOutputMessage,
+  AssistantPhase,
   Session,
   ChatConfig,
   FileAttachment,
@@ -220,10 +222,25 @@ interface ActiveChatRequest {
   operationId: string;
   assistantMessageId: string;
   getPartialContent?: () => string;
+  getPartialOutputMessages?: () => AssistantOutputMessage[];
   getPartialThinking?: () => string;
   checkpointPartialContent?: () => string;
+  checkpointPartialOutputMessages?: () => AssistantOutputMessage[];
   checkpointPartialThinking?: () => string;
 }
+
+const assistantOutputMessagesEqual = (
+  left?: AssistantOutputMessage[],
+  right?: AssistantOutputMessage[]
+): boolean => (
+  left === right || (
+    left?.length === right?.length &&
+    Boolean(left?.every((output, index) => (
+      output.content === right?.[index].content &&
+      output.phase === right[index].phase
+    )))
+  )
+);
 
 const isAbortError = (error: unknown): boolean => {
   if (!(error instanceof Error)) return false;
@@ -984,9 +1001,15 @@ function App() {
         const activeRequest = activeRequestsRef.current.get(session.id);
         const partialContent = activeRequest?.checkpointPartialContent?.() ||
           activeRequest?.getPartialContent?.();
+        const partialOutputMessages =
+          activeRequest?.checkpointPartialOutputMessages?.() ||
+          activeRequest?.getPartialOutputMessages?.();
         const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
           activeRequest?.getPartialThinking?.();
-        if (!activeRequest || (!partialContent && !partialThinking)) return session;
+        if (
+          !activeRequest ||
+          (!partialContent && !partialThinking && !partialOutputMessages?.length)
+        ) return session;
 
         let didUpdateMessage = false;
         const messages = session.messages.map(message => {
@@ -994,6 +1017,10 @@ function App() {
             message.id !== activeRequest.assistantMessageId ||
             (
               message.content === partialContent &&
+              assistantOutputMessagesEqual(
+                message.outputMessages,
+                partialOutputMessages
+              ) &&
               (message.thinking || '') === (partialThinking || '')
             )
           ) {
@@ -1004,6 +1031,9 @@ function App() {
           return {
             ...message,
             content: partialContent || message.content,
+            outputMessages: partialOutputMessages?.length
+              ? partialOutputMessages
+              : message.outputMessages,
             thinking: partialThinking || message.thinking,
             status: 'streaming' as const
           };
@@ -1236,7 +1266,8 @@ function App() {
     sessionId: string,
     assistantMessageId: string,
     partialContent?: string,
-    partialThinking?: string
+    partialThinking?: string,
+    partialOutputMessages?: AssistantOutputMessage[]
   ) => {
     updateAssistantMessage(
       sessionId,
@@ -1244,6 +1275,9 @@ function App() {
       message => ({
         ...message,
         content: partialContent || message.content || 'Stopped.',
+        outputMessages: partialOutputMessages?.length
+          ? partialOutputMessages
+          : message.outputMessages,
         thinking: partialThinking || message.thinking,
         status: 'stopped',
         timestamp: Date.now()
@@ -1295,14 +1329,33 @@ function App() {
     // Streamed deltas flush once per animation frame while visible and on a
     // short timer while hidden, where animation frames may be suspended.
     let streamedContent = '';
+    const streamedOutputMessages = new Map<number, AssistantOutputMessage>();
     let streamedThinking = '';
     let pendingDelta = '';
+    const pendingOutputDeltas: Array<{
+      delta: string;
+      outputIndex: number;
+      phase?: AssistantPhase;
+    }> = [];
     let pendingThinkingDelta = '';
     let deltaFlushHandle: number | null = null;
     let deltaFlushUsesTimeout = false;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
     if (matchesActiveRequest(activeRequest)) {
       activeRequest.getPartialContent = () => streamedContent + pendingDelta;
+      activeRequest.getPartialOutputMessages = () => {
+        const partialOutputs = new Map(streamedOutputMessages);
+        pendingOutputDeltas.forEach(({ delta, outputIndex, phase }) => {
+          const current = partialOutputs.get(outputIndex);
+          partialOutputs.set(outputIndex, {
+            content: `${current?.content || ''}${delta}`,
+            ...(phase || current?.phase ? { phase: phase || current?.phase } : {})
+          });
+        });
+        return [...partialOutputs.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, output]) => output);
+      };
       activeRequest.getPartialThinking = () => streamedThinking + pendingThinkingDelta;
     }
 
@@ -1318,8 +1371,16 @@ function App() {
     const checkpointPendingDeltas = () => {
       cancelScheduledDeltaFlush();
       streamedContent += pendingDelta;
+      pendingOutputDeltas.forEach(({ delta, outputIndex, phase }) => {
+        const current = streamedOutputMessages.get(outputIndex);
+        streamedOutputMessages.set(outputIndex, {
+          content: `${current?.content || ''}${delta}`,
+          ...(phase || current?.phase ? { phase: phase || current?.phase } : {})
+        });
+      });
       streamedThinking += pendingThinkingDelta;
       pendingDelta = '';
+      pendingOutputDeltas.length = 0;
       pendingThinkingDelta = '';
     };
 
@@ -1331,6 +1392,9 @@ function App() {
       checkpointPendingDeltas();
       const content = streamedContent;
       const thinking = streamedThinking;
+      const outputMessages = [...streamedOutputMessages.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, output]) => output);
 
       updateAssistantMessage(
         targetSessionId,
@@ -1338,6 +1402,7 @@ function App() {
         message => ({
           ...message,
           content: hasContentDelta ? content : message.content,
+          outputMessages: hasContentDelta ? outputMessages : message.outputMessages,
           thinking: hasThinkingDelta ? thinking : message.thinking,
           status: 'streaming'
         })
@@ -1348,6 +1413,12 @@ function App() {
       activeRequest.checkpointPartialContent = () => {
         checkpointPendingDeltas();
         return streamedContent;
+      };
+      activeRequest.checkpointPartialOutputMessages = () => {
+        checkpointPendingDeltas();
+        return [...streamedOutputMessages.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, output]) => output);
       };
       activeRequest.checkpointPartialThinking = () => {
         checkpointPendingDeltas();
@@ -1391,6 +1462,7 @@ function App() {
 
       const {
         content: responseText,
+        outputMessages,
         thinking,
         refusal,
         status: responseStatus,
@@ -1420,7 +1492,7 @@ function App() {
             pendingThinkingDelta += delta;
             scheduleDeltaFlush();
           },
-          onTextDelta: (delta) => {
+          onTextDelta: (delta, outputIndex, phase) => {
             const activeRequest = activeRequestsRef.current.get(targetSessionId);
 
             if (
@@ -1431,6 +1503,7 @@ function App() {
             }
 
             pendingDelta += delta;
+            pendingOutputDeltas.push({ delta, outputIndex, phase });
             scheduleDeltaFlush();
           },
           resolveAttachmentContent: async attachment => {
@@ -1465,6 +1538,7 @@ function App() {
         requestId,
         role: 'assistant',
         content: responseText,
+        outputMessages,
         status: responseStatus,
         openaiResponseId: responseId,
         thinking,
@@ -1959,6 +2033,9 @@ function App() {
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
     const partialContent = activeRequest?.checkpointPartialContent?.() ||
       activeRequest?.getPartialContent?.();
+    const partialOutputMessages =
+      activeRequest?.checkpointPartialOutputMessages?.() ||
+      activeRequest?.getPartialOutputMessages?.();
     const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
       activeRequest?.getPartialThinking?.();
     const responseOperations = operationRegistryRef.current.getSessionOperations(
@@ -1977,7 +2054,8 @@ function App() {
         targetSessionId,
         activeRequest.assistantMessageId,
         partialContent,
-        partialThinking
+        partialThinking,
+        partialOutputMessages
       );
     }
   };
@@ -2006,6 +2084,13 @@ function App() {
         const stoppedSessions = sessionsRef.current.map(session => {
           const activeRequest = activeRequests.get(session.id);
           if (!activeRequest) return session;
+          const partialContent = activeRequest.checkpointPartialContent?.() ||
+            activeRequest.getPartialContent?.();
+          const partialOutputMessages =
+            activeRequest.checkpointPartialOutputMessages?.() ||
+            activeRequest.getPartialOutputMessages?.();
+          const partialThinking = activeRequest.checkpointPartialThinking?.() ||
+            activeRequest.getPartialThinking?.();
 
           return {
             ...session,
@@ -2013,12 +2098,13 @@ function App() {
               message.id === activeRequest.assistantMessageId
                 ? {
                     ...message,
-                    content: activeRequest.checkpointPartialContent?.() ||
-                      activeRequest.getPartialContent?.() ||
+                    content: partialContent ||
                       message.content ||
                       'Stopped.',
-                    thinking: activeRequest.checkpointPartialThinking?.() ||
-                      activeRequest.getPartialThinking?.() ||
+                    outputMessages: partialOutputMessages?.length
+                      ? partialOutputMessages
+                      : message.outputMessages,
+                    thinking: partialThinking ||
                       message.thinking,
                     status: 'stopped' as const,
                     timestamp: now

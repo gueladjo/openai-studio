@@ -50,6 +50,13 @@ const sessions: Session[] = [{
       id: 'message-2',
       role: 'assistant',
       content: 'Done.',
+      outputMessages: [{
+        content: 'Reading the notes.',
+        phase: 'commentary'
+      }, {
+        content: 'Done.',
+        phase: 'final_answer'
+      }],
       timestamp: 11,
       modelName: 'GPT-5.6 Sol',
       generatedFiles: [{
@@ -170,6 +177,10 @@ describe('portable workspace archive', () => {
       theme: 'dark',
       lastActiveSessionId: 'session-1'
     });
+    expect(inspected.replacement.sessions[0].messages[1].outputMessages).toEqual([
+      { content: 'Reading the notes.', phase: 'commentary' },
+      { content: 'Done.', phase: 'final_answer' }
+    ]);
     expect(inspected.replacement.blobs.get(attachmentHash)).toBeDefined();
     expect(await inspected.replacement.blobs.get(attachmentHash)!.text())
       .toBe('verified attachment');

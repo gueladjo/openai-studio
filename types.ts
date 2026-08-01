@@ -8,6 +8,7 @@ import type {
   ResponseInputImage,
   ResponseInputItem,
   ResponseInputText,
+  ResponseOutputMessage,
   ResponseStreamEvent,
   ResponseUsage,
   Tool,
@@ -94,10 +95,18 @@ export type MessageStatus =
   | 'error'
   | 'stopped';
 
+export type AssistantPhase = NonNullable<ResponseOutputMessage['phase']>;
+
+export interface AssistantOutputMessage {
+  content: string;
+  phase?: AssistantPhase;
+}
+
 export interface Message {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
+  outputMessages?: AssistantOutputMessage[];
   status?: MessageStatus;
   requestId?: string;
   openaiResponseId?: string;

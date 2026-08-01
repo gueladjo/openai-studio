@@ -21,6 +21,7 @@ const MAX_INSTRUCTION_CONTENT_LENGTH = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_CONTENT_LENGTH = 256 * 1024 * 1024;
 const MAX_SESSIONS = 10_000;
 const MAX_MESSAGES_PER_SESSION = 100_000;
+const MAX_OUTPUT_MESSAGES_PER_MESSAGE = 1_000;
 const MAX_ATTACHMENTS_PER_MESSAGE = 100;
 const MAX_SOURCES_PER_MESSAGE = 1_000;
 const MAX_GENERATED_FILES_PER_MESSAGE = 1_000;
@@ -40,6 +41,7 @@ const MESSAGE_STATUSES = new Set([
   'stopped'
 ]);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
+const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -377,6 +379,7 @@ const parseMessage = (
       'id',
       'role',
       'content',
+      'outputMessages',
       'status',
       'requestId',
       'openaiResponseId',
@@ -402,6 +405,30 @@ const parseMessage = (
     fail(`${path}.role`, 'must be "user" or "assistant"');
   }
   assertString(message.content, `${path}.content`, MAX_MESSAGE_CONTENT_LENGTH);
+  if (message.outputMessages !== undefined) {
+    if (message.role !== 'assistant') {
+      fail(`${path}.outputMessages`, 'is only supported for assistant messages');
+    }
+    assertArray(
+      message.outputMessages,
+      `${path}.outputMessages`,
+      MAX_OUTPUT_MESSAGES_PER_MESSAGE
+    ).forEach((value, index) => {
+      const outputPath = `${path}.outputMessages[${index}]`;
+      const output = assertRecord(value, outputPath);
+      assertOnlyKeys(output, ['content', 'phase'], outputPath);
+      assertString(output.content, `${outputPath}.content`, MAX_MESSAGE_CONTENT_LENGTH);
+      if (
+        output.phase !== undefined &&
+        (
+          typeof output.phase !== 'string' ||
+          !ASSISTANT_PHASES.has(output.phase)
+        )
+      ) {
+        fail(`${outputPath}.phase`, 'has an unsupported value');
+      }
+    });
+  }
   if (
     message.status !== undefined &&
     (

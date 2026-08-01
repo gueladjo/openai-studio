@@ -258,6 +258,69 @@ describe('ChatArea incomplete-response status', () => {
   });
 });
 
+describe('ChatArea assistant phases', () => {
+  it('renders final output as primary content and commentary as collapsible progress', async () => {
+    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+      configurable: true,
+      value: true
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const message: Message = {
+      id: 'assistant-phases',
+      role: 'assistant',
+      content: 'Checking sources.\n\nFinal result.',
+      outputMessages: [{
+        content: 'Checking sources.',
+        phase: 'commentary'
+      }, {
+        content: 'Final result.',
+        phase: 'final_answer'
+      }],
+      status: 'complete',
+      timestamp: 1
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <MessageRow
+            message={message}
+            canRetry={false}
+            canRegenerate={false}
+            apiKey=""
+            onRetryFailedMessage={() => undefined}
+            onRegenerateResponse={() => undefined}
+          />
+        );
+      });
+
+      expect(container.querySelector('.message-content')?.textContent).toBe(
+        'Final result.'
+      );
+      expect(container.textContent).not.toContain('Checking sources.');
+      const progressButton = Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Progress'));
+      expect(progressButton?.getAttribute('aria-expanded')).toBe('false');
+
+      await act(async () => {
+        progressButton?.click();
+      });
+
+      expect(progressButton?.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain('Checking sources.');
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT;
+    }
+  });
+});
+
 describe('ChatArea failed attachment controls', () => {
   it('lets a failed user turn remove or replace its attachments', () => {
     const message: Message = {

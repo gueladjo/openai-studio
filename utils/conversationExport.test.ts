@@ -59,4 +59,21 @@ describe('conversation Markdown export', () => {
       'conversation-2026-07-24.md'
     );
   });
+
+  it('exports assistant progress and final answers as distinct messages', () => {
+    const session = createSession();
+    session.messages[1].content = 'Checking.\n\nSummary.';
+    session.messages[1].outputMessages = [{
+      content: 'Checking.',
+      phase: 'commentary'
+    }, {
+      content: 'Summary.',
+      phase: 'final_answer'
+    }];
+
+    expect(formatConversationMarkdown(session)).toContain(
+      '## Assistant (Progress)\n\nChecking.\n\n'
+      + '## Assistant (Final Answer)\n\nSummary.\n'
+    );
+  });
 });

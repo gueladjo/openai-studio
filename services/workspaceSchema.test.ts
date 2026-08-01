@@ -26,6 +26,13 @@ const createSession = (): Session => ({
       id: 'message-assistant',
       role: 'assistant' as const,
       content: 'Answer',
+      outputMessages: [{
+        content: 'Checking the details.',
+        phase: 'commentary' as const
+      }, {
+        content: 'Answer',
+        phase: 'final_answer' as const
+      }],
       requestId: 'request-1',
       status: 'complete' as const,
       timestamp: 2,
@@ -204,6 +211,32 @@ describe('workspace runtime schema', () => {
     assistantMessage.status = 'complete';
     expect(() => parseWorkspaceBackup(backup)).toThrow(
       'incompleteReason requires an incomplete message status'
+    );
+  });
+
+  it('validates assistant output phases without requiring them on legacy messages', () => {
+    const backup = createBackup();
+    expect(parseWorkspaceBackup(backup).sessions[0].messages[1].outputMessages)
+      .toEqual([{
+        content: 'Checking the details.',
+        phase: 'commentary'
+      }, {
+        content: 'Answer',
+        phase: 'final_answer'
+      }]);
+
+    const invalidPhase = createBackup();
+    invalidPhase.sessions[0].messages[1].outputMessages![0].phase = 'analysis' as any;
+    expect(() => parseWorkspaceBackup(invalidPhase)).toThrow(
+      'outputMessages[0].phase has an unsupported value'
+    );
+
+    const userOutputs = createBackup();
+    userOutputs.sessions[0].messages[0].outputMessages = [{
+      content: 'Not allowed.'
+    }];
+    expect(() => parseWorkspaceBackup(userOutputs)).toThrow(
+      'messages[0].outputMessages is only supported for assistant messages'
     );
   });
 

@@ -13,6 +13,8 @@ import {
 } from 'vitest';
 import {
   DEFAULT_CONFIG,
+  type AssistantOutputMessage,
+  type AssistantPhase,
   type GeneratedFile,
   type Message,
   type Session,
@@ -45,12 +47,17 @@ interface CapturedSidebarProps {
 
 interface GenerateOptions {
   signal?: AbortSignal;
-  onTextDelta?: (delta: string) => void;
+  onTextDelta?: (
+    delta: string,
+    outputIndex?: number,
+    phase?: AssistantPhase
+  ) => void;
   onReasoningSummaryDelta?: (delta: string) => void;
 }
 
 interface GenerateResult {
   content: string;
+  outputMessages?: AssistantOutputMessage[];
   thinking: string;
   status: 'complete' | 'incomplete';
   sources: [];
@@ -651,7 +658,16 @@ describe('App workspace and request lifecycle', () => {
       getSidebarProps().onSelectSession('session-b');
     });
     await act(async () => {
-      response.resolve(completedResult('Answer for A.'));
+      response.resolve({
+        ...completedResult('Progress update.\n\nAnswer for A.'),
+        outputMessages: [{
+          content: 'Progress update.',
+          phase: 'commentary'
+        }, {
+          content: 'Answer for A.',
+          phase: 'final_answer'
+        }]
+      });
       await response.promise;
     });
     await flushMicrotasks();
@@ -669,7 +685,14 @@ describe('App workspace and request lifecycle', () => {
       }),
       expect.objectContaining({
         role: 'assistant',
-        content: 'Answer for A.',
+        content: 'Progress update.\n\nAnswer for A.',
+        outputMessages: [{
+          content: 'Progress update.',
+          phase: 'commentary'
+        }, {
+          content: 'Answer for A.',
+          phase: 'final_answer'
+        }],
         status: 'complete',
         openaiResponseId: 'resp-complete',
         modelName: 'GPT-5.6 Sol'

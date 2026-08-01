@@ -19,6 +19,7 @@ rules, task routing, and verification commands.
 - Optional Web Search and Code Interpreter tools.
 - Multiple image and file attachments, including files pasted from the clipboard.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
+- Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
 - Local chat-title search with light and dark themes.
 - Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
@@ -194,7 +195,7 @@ Compatible Chromium browsers and Electron can opt into automatic backups by choo
 
 Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.
 
-The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
+The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text, labeling assistant progress and final-answer phases when available. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 
 Chat deletion asks for confirmation and has no in-app undo. Export the workspace before destructive cleanup.
 

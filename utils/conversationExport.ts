@@ -12,6 +12,18 @@ export const formatConversationMarkdown = (session: Session): string => {
 
   session.messages.forEach((message) => {
     const roleLabel = message.role === 'user' ? 'User' : 'Assistant';
+    if (message.role === 'assistant' && message.outputMessages?.length) {
+      message.outputMessages.forEach(output => {
+        const phaseLabel = output.phase === 'commentary'
+          ? ' (Progress)'
+          : output.phase === 'final_answer'
+            ? ' (Final Answer)'
+            : '';
+        sections.push(`## Assistant${phaseLabel}`);
+        sections.push(output.content);
+      });
+      return;
+    }
     const body = hasVisibleMessageContent(message.content)
       ? message.content
       : message.attachments && message.attachments.length > 0

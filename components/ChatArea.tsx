@@ -299,6 +299,72 @@ const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number
     );
 };
 
+export const getAssistantContentPresentation = (message: Message): {
+  commentary: string;
+  primary: string;
+} => {
+  if (message.role !== 'assistant' || !message.outputMessages?.length) {
+    return { commentary: '', primary: message.content };
+  }
+
+  const joinOutputs = (phase: 'commentary' | 'primary') => (
+    message.outputMessages
+      ?.filter(output => (
+        phase === 'commentary'
+          ? output.phase === 'commentary'
+          : output.phase !== 'commentary'
+      ))
+      .map(output => output.content.trim())
+      .filter(Boolean)
+      .join('\n\n') || ''
+  );
+
+  return {
+    commentary: joinOutputs('commentary'),
+    primary: joinOutputs('primary')
+  };
+};
+
+const CommentaryBlock = ({
+  text,
+  isStreaming
+}: {
+  text: string;
+  isStreaming: boolean;
+}) => {
+  const [isOpen, setIsOpen] = useState(isStreaming);
+
+  useEffect(() => {
+    if (!isStreaming) setIsOpen(false);
+  }, [isStreaming]);
+
+  if (!text) return null;
+
+  return (
+    <div className="mb-2 min-w-0 max-w-full">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        aria-expanded={isOpen}
+        className="flex min-w-0 max-w-full items-center gap-1 text-sm text-blue-600 transition-colors hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+      >
+        <span>Progress</span>
+        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {isOpen && (
+        <div className="markdown-content mt-2 min-w-0 max-w-full border-l-2 border-blue-200 pl-3 text-sm leading-relaxed text-gray-600 dark:border-blue-900 dark:text-gray-400">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={markdownComponents}
+          >
+            {text}
+          </ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     const [isOpen, setIsOpen] = useState(false);
     const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
@@ -342,7 +408,9 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     const hasTokenUsage = Boolean(message.usage);
     const cacheWriteTokens = message.usage?.input_tokens_details.cache_write_tokens;
     const hasCacheWriteTokens = typeof cacheWriteTokens === 'number';
-    const canCopyResponse = message.content.length > 0;
+    const { primary } = getAssistantContentPresentation(message);
+    const copyContent = primary || message.content;
+    const canCopyResponse = copyContent.length > 0;
 
     const setCopyFeedback = (state: 'copied' | 'error') => {
         setCopyState(state);
@@ -361,7 +429,7 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
         if (!canCopyResponse) return;
 
         try {
-            await copyTextToClipboard(message.content);
+            await copyTextToClipboard(copyContent);
             setCopyFeedback('copied');
         } catch (error) {
             console.error('Failed to copy response.', error);
@@ -807,6 +875,7 @@ export const MessageRow = React.memo(({
   onRegenerateResponse
 }: MessageRowProps) => {
   const isAssistantStreaming = message.status === 'streaming';
+  const assistantContent = getAssistantContentPresentation(message);
   const replacementInputRef = useRef<HTMLInputElement>(null);
   const [attachmentEditError, setAttachmentEditError] = useState<string | null>(null);
 
@@ -940,6 +1009,13 @@ export const MessageRow = React.memo(({
                 <ThinkingBlock text={message.thinking} durationMs={message.thinkingDuration} />
             )}
 
+            {message.role === 'assistant' && assistantContent.commentary && (
+                <CommentaryBlock
+                  text={assistantContent.commentary}
+                  isStreaming={isAssistantStreaming}
+                />
+            )}
+
             {/* Main Content */}
             <div
                 className={`message-content min-w-0 max-w-full rounded-2xl px-5 py-3.5 text-sm leading-relaxed shadow-sm ${
@@ -950,7 +1026,7 @@ export const MessageRow = React.memo(({
             >
                 {message.role === 'assistant' ? (
                 <div className="markdown-content w-full max-w-full">
-                    {isAssistantStreaming && !message.content ? (
+                    {isAssistantStreaming && !assistantContent.primary ? (
                         <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
                             <Loader2 size={14} className="animate-spin" />
                             <span>Thinking...</span>
@@ -960,7 +1036,7 @@ export const MessageRow = React.memo(({
                         remarkPlugins={[remarkGfm]}
                         components={markdownComponents}
                     >
-                        {message.content}
+                        {assistantContent.primary}
                     </ReactMarkdown>
                     )}
                 </div>
