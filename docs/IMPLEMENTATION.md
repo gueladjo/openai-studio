@@ -214,7 +214,9 @@ queue.
 
 `services/openaiService.ts` constructs the OpenAI client in the renderer with
 `dangerouslyAllowBrowser: true`. A key supplied in Settings takes precedence
-over `process.env.OPENAI_API_KEY`.
+over `process.env.OPENAI_API_KEY`. The project uses OpenAI JavaScript SDK v7,
+whose development and build tooling requires Node.js 22 or newer; Responses API
+request, response, usage, and stream-event types remain direct SDK aliases.
 
 Streamed generation and cancellation set SDK `maxRetries: 0` to avoid ambiguous
 duplicate requests. Title generation and generated-file retrieval retain SDK
@@ -249,7 +251,10 @@ The streamed lifecycle is:
 `thinkingDuration` is the time to the first streamed user-visible text token,
 not total request time, reasoning time, or chain-of-thought duration. Stopping
 attempts `responses.cancel(responseId)` when an ID is available, then aborts the
-local stream and retains partial content.
+local stream and retains partial content. The local abort is authoritative for
+the foreground streaming requests used here; the API cancellation endpoint only
+cancels responses created with `background: true`, so a rejected remote cancel
+does not prevent the local stop.
 
 Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes

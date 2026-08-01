@@ -30,6 +30,7 @@ const createSessionWithUsage = (
     usage: {
       input_tokens: inputTokens,
       input_tokens_details: {
+        cache_write_tokens: 0,
         cached_tokens: 0
       },
       output_tokens: outputTokens,

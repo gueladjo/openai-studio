@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ResponseOutputText } from 'openai/resources/responses/responses';
 import {
   applyCitationAnnotations,
   isCitationMarkerSpan,
@@ -20,7 +21,7 @@ const createAnnotation = (
   span: string,
   url = FIRST_URL,
   title = 'Example source'
-) => {
+): ResponseOutputText.URLCitation => {
   const startIndex = text.indexOf(span);
 
   if (startIndex === -1) {

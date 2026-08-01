@@ -7,7 +7,7 @@
   "description": "A professional chat interface for OpenAI GPT-5 models.",
   "type": "module",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "clean": "node scripts/clean.js",
@@ -25,7 +25,7 @@
     "@noble/hashes": "^2.2.0",
     "@zip.js/zip.js": "^2.8.34",
     "lucide-react": "^0.344.0",
-    "openai": "^6.26.0",
+    "openai": "^7.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
