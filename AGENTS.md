@@ -1,25 +1,25 @@
 # Repository Guidelines
 
-This file is the canonical mutable contract for coding agents working in this
-repository. Keep user and operator instructions in `README.md`; keep
-tool-specific files such as `CLAUDE.md` limited to compatibility notes and
-links back here rather than duplicating architecture, invariants, or commands.
+This file is the canonical working contract for coding agents in this
+repository. Read [README.md](README.md) for the project overview, setup, basic
+usage, deployment, and user-facing safety guidance. Read the relevant section
+of [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) before changing code; it is
+canonical for intended behavior, architecture, interfaces, invariants, failure
+handling, and acceptance criteria.
+
+Update `docs/IMPLEMENTATION.md` whenever a change alters intended behavior,
+architecture, a public or persisted interface, an invariant, or failure and
+recovery semantics. Update `README.md` when setup, operation, deployment,
+privacy, backup warnings, or another user-visible workflow changes. Keep
+tool-specific files such as `CLAUDE.md` limited to compatibility notes and links
+to these canonical documents.
 
 ## Project Overview
 
-OpenAI Studio is a React 18 and TypeScript client for the OpenAI Responses API. Vite produces either a web/PWA bundle or an Electron renderer bundle. The OpenAI SDK runs directly in the renderer; there is no application server.
-
-`index.tsx` mounts the application. `App.tsx` is the top-level controller and owns workspace loading, sessions, configuration, persistence, and active request state. State flows to functional components through props; the project has no router, React context, Redux-style store, or external state library.
-
-The primary flow is:
-
-```text
-ChatArea user input -> App request/session state -> openaiService streaming API
-                              |
-                              +-> storage persistence
-```
-
-One request may run per session, while different sessions may stream concurrently.
+OpenAI Studio is a React 18 and TypeScript client for the OpenAI Responses API.
+Vite produces web/PWA or Electron renderer bundles, and the SDK runs directly in
+the renderer. Start work at the narrowest boundary in the map below; use the
+implementation specification for the behavior those boundaries must preserve.
 
 ## Task And Ownership Map
 
@@ -144,108 +144,37 @@ that effect:
 - Add brief comments only for logic whose intent is not apparent from the code.
 - Keep Responses API request, input, tool, usage, and stream-event types as aliases to the installed OpenAI SDK exports in `types.ts`. Do not introduce parallel hand-written API schemas.
 
-## Responses API Invariants
+## Implementation Contracts
 
-- `services/openaiService.ts` creates the SDK client in the renderer with `dangerouslyAllowBrowser: true`. The UI-supplied key takes precedence over `process.env.OPENAI_API_KEY`.
-- Preserve the streamed lifecycle: create an assistant placeholder, record the ID from `response.created`, append `response.output_text.delta`, and parse `response.completed` for the authoritative final content and metadata.
-- Snapshot `message.modelName` from the active model config when the assistant placeholder is created, and preserve it through completion, stop, failure, and interrupted-request recovery. Historical answer labels must render this stored name without consulting the current model catalog.
-- Automatic SDK retries are disabled for streamed generation and cancellation to avoid duplicate calls. Title generation and generated-file retrieval still use SDK defaults; coordinate any retry-policy changes with persisted request IDs and UI state.
-- Stop generation attempts `responses.cancel(responseId)` when available, aborts the local stream, and retains partial content with `stopped` status.
-- Persisted `pendingRequest` records are marked failed and retryable on the next startup. Preserve this recovery behavior when changing message state.
-- Use `previous_response_id` only when the immediately preceding assistant message has an OpenAI response ID. In that case only the newest user turn is sent; otherwise send the local transcript.
-- Requests intentionally use `store: true`, which supports response threading. A change to storage policy must also redesign continuation behavior and update user documentation.
-- System prompts belong in top-level `instructions`. Images map to `input_image`; other readable attachments map to base64/data-URL `input_file` parts.
-- Web Search currently sends a medium search context and a hard-coded approximate New York, US location. Code Interpreter uses an automatic container.
-- Generated files are cached into the shared local blob store after a response when possible. Cached downloads work without a key; uncached download controls require the in-app key plus both container and file IDs. Cache failure must retain the remote metadata.
-- New-chat titles are a separate non-streaming GPT-5 Nano request.
-- `thinkingDuration` is time to the first streamed text token, not total reasoning time or chain-of-thought duration.
-- Citation post-processing helpers in `services/openaiService.ts` are pure and covered by `services/openaiService.test.ts`. Keep marker recognition, annotation replacement, source deduplication, and adjacent-label cleanup cases current when changing that pipeline.
-- Model capability rules plus the identity and knowledge-cutoff metadata used to build the automatic instruction preamble live in `constants.ts`. Verify cutoff changes against the official model reference, keep the preamble ahead of user-selected custom instructions, and normalize saved configs when model options change so older workspaces remain loadable.
+Do not duplicate detailed implementation constraints here. Read and preserve the
+applicable contracts in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md):
 
-## Storage And Data Integrity
+- Responses request construction, streaming, history, cancellation, titles,
+  tools, attachments, citations, and generated files:
+  [Responses API Contract](docs/IMPLEMENTATION.md#responses-api-contract).
+- Persisted types, runtime validation, backend selection, immutable generations,
+  migration, saves, and cross-tab ownership:
+  [Persisted Data And Runtime Validation](docs/IMPLEMENTATION.md#persisted-data-and-runtime-validation),
+  [Local Storage And Recovery](docs/IMPLEMENTATION.md#local-storage-and-recovery),
+  and [Coordination And Save Invariants](docs/IMPLEMENTATION.md#coordination-and-save-invariants).
+- Portable ZIP limits, merge semantics, recovery, undo, scheduling, retention,
+  and Electron managed-file publication:
+  [Portable Archive Contract](docs/IMPLEMENTATION.md#portable-archive-contract)
+  and [Automatic Backup Contract](docs/IMPLEMENTATION.md#automatic-backup-contract).
+- Web/PWA base policy, responsive behavior, Electron isolation/navigation, key
+  handling, and privacy:
+  [Web, PWA, Mobile, And Electron Constraints](docs/IMPLEMENTATION.md#web-pwa-mobile-and-electron-constraints)
+  and [Security And Privacy Constraints](docs/IMPLEMENTATION.md#security-and-privacy-constraints).
 
-- Storage must load successfully before any writes are enabled. Do not allow initialization defaults to overwrite an unread workspace.
-- Prefer OPFS. Browsers may fall back to IndexedDB, but Electron intentionally fails instead of silently opening an empty fallback store when OPFS is unavailable.
-- Local storage schema v3 uses `workspace_manifest_a.json` and
-  `workspace_manifest_b.json`. Manifests reference immutable SHA-256 JSON
-  objects in `objects/` and attachment/cached-generated-file bytes in
-  `blobs/`. A candidate is usable only when the manifest, every object, every
-  blob, and all runtime schema/reference checks validate as one unit.
-- Publish the alternate manifest slot only after every new object/blob reads
-  back with the declared byte size and hash. Startup selects the highest
-  complete revision; fallback is whole-generation and must never mix files
-  from different revisions.
-- A pinned `readWorkspaceSnapshot()` protects its generation while a portable
-  archive is prepared. Garbage collection retains both valid manifests and
-  pinned content; remove orphans only after a newer manifest verifies.
-- Previous `sessions.json`, `settings.json`, `system_instructions.json`,
-  `.bak`, snapshot, and `attachments/` records are migration inputs only.
-  Keep them until v3 has read back successfully, and never replace failed
-  migration with defaults.
-- Session writes use a 1-second trailing delay, a 5-second streaming checkpoint, and immediate request-boundary saves; settings and instructions use a 500 ms trailing delay. Writes are serialized and flushed on page suspension and through the Electron close handshake.
-- Persisted attachments and cached generated files use `LocalBlobReference`
-  records with byte size and SHA-256. Legacy IDs/data URLs migrate on load.
-- `services/workspaceSchema.ts` is the canonical strict runtime boundary for
-  persisted session/settings/instruction values. It rejects unknown keys and
-  unsupported values, enforces sizes and counts, and validates IDs,
-  local-blob metadata, and cross-references. `services/workspaceArchive.ts`
-  owns the strict portable ZIP boundary. Do not treat TypeScript types as
-  sufficient validation.
-- For a persisted-field change, update `types.ts` and
-  `constants.ts`/configuration normalization when relevant, every affected
-  runtime parser, and the deliberate backward-compatibility or
-  `schemaVersion` policy. Re-check ID/reference validation and extend
-  `services/workspaceSchema.test.ts`; add
-  `services/storage.integration.test.ts` coverage when storage or recovery
-  changes; extend `services/workspaceArchive.test.ts` for portable-format
-  changes.
-- Portable archives are standard ZIPs with a strict `manifest.json`, separate
-  workspace JSON entries, and raw `blobs/<sha256>` entries. Enforce the 2 GiB
-  compressed/uncompressed ceiling, 100,000-entry ceiling, per-attachment
-  limit, canonical paths, case-insensitive uniqueness, exact declared-entry
-  set, CRC/read completion, and SHA-256/byte-length checks.
-- Portable export excludes `settings.apiKey`, destination handles/paths,
-  permissions, and scheduler history. Restore preserves the current key.
-  Merge preserves all current settings and chats, imports only whole accepted
-  chats and their referenced instructions/blobs, remaps local-ID collisions,
-  and orders chats newest-first with current chats first on ties. Both restore
-  and merge require a verified action-specific recovery archive, publish one
-  generation, and expose single-use undo for the latest successful mutation.
-  Legacy JSON exports receive a specific unsupported-format error.
-- Automatic backups are opt-in, changed-revision-only, writer-tab-only, and at
-  most once per local day. Re-evaluate after startup/resume/writer acquisition
-  and saves; postpone for responses, file caching, and destructive work.
-  Verify destination read-back before rotation and retain three valid managed
-  archives without touching unrelated files.
-- Chat deletion requires confirmation and has no undo. Preserve that risk in user-facing documentation unless the workflow changes.
-- Browser persistence is origin-scoped. A different scheme, host, or port is a different workspace even if the path is the same.
+For a persisted-field change, update the TypeScript type, configuration
+normalization when relevant, every affected runtime parser, and the deliberate
+compatibility or schema-version policy. Re-check IDs and cross-references and
+extend schema, storage integration, and archive contracts as applicable.
 
-## Web, PWA, And Electron Constraints
-
-- Electron mode uses relative asset paths and disables the PWA plugin. Every non-Electron Vite mode currently uses the hard-coded `/openai-studio/` base.
-- Generated PWA `scope` and `start_url` derive from `base`. For another hosting path, update `base`.
-- `vite.config.ts` is authoritative for the generated PWA manifest and service worker.
-- The PWA caches the built shell and selected assets, including the compiled Tailwind CSS, but model requests require connectivity. Google Fonts remain external and are runtime-cached by Workbox.
-- `__APP_VERSION__` is read from `package.json` at build time.
-- Electron uses a frameless single-instance window. `nodeIntegration` is off and `contextIsolation` is on; the preload bridge exposes window controls, clipboard writes, and validated managed-backup operations. Absolute destination paths remain main-process-only.
-- Electron backup writes use a unique managed partial, sequential backpressured
-  chunks, SHA-256/size verification, `fsync`, atomic rename, and final
-  read-back. Validate managed filenames in the main process and reject
-  traversal. Close flushes saves and awaits a due backup; failure offers Retry
-  or Close Without Backup.
-- Compatible web/PWA builds use a separately persisted File System Access
-  directory handle and require explicit Reconnect when permission is
-  `prompt`. Unsupported browsers use portable Share/Save plus file-picker
-  restore; do not use browser-private storage as an automatic-transfer folder.
-- Keep external navigation in the system browser and keep renderer IPC narrow. Electron's Chromium sandbox is currently disabled, which makes bridge and navigation discipline especially important.
-
-## Security And Configuration
-
-- Never commit API keys, real user data, or workspace exports. Local `.env*` files are ignored; `.env.example` is explicitly allowed but is not currently present.
-- Development and Electron modes may inline `OPENAI_API_KEY` from Vite environment files into renderer JavaScript. Never package or distribute a developer key. Production web mode excludes the environment key.
-- The Settings key is stored locally without application-level encryption but is excluded from portable archives and ignored on restore. Archives themselves are unencrypted and can contain sensitive prompts, responses, attachments, and cached generated files.
-- This direct-client architecture is intended for user-owned keys. Do not add a shared deployment key without moving API calls behind an authenticated server.
-- Prompts and attachments are sent to OpenAI, and requests use server-side response storage. Keep privacy claims and backup warnings accurate when behavior changes.
+Never commit API keys, real user data, or workspace exports. Local `.env*` files
+are ignored; `.env.example` is explicitly allowed but is not currently present.
+Never package or distribute a development key that Vite has inlined into the
+renderer.
 
 ## Verification
 
@@ -295,6 +224,20 @@ Then smoke-test the affected workflow. Use this risk-based matrix:
 
 When explicitly authorized, use a personal test key for live API smoke tests
 and report which API-dependent paths were or were not exercised.
+
+## Definition Of Done
+
+A change is ready for handoff when:
+
+- it starts at the narrowest existing boundary and avoids unrelated refactors;
+- affected focused contracts pass, followed by the proportionate full suite and
+  builds, with pre-existing failures reported separately;
+- runtime behavior that tests cannot cover has been smoke-tested when practical;
+- `docs/IMPLEMENTATION.md` and `README.md` have been updated when their contracts
+  or user guidance changed, and links and referenced paths still resolve;
+- no generated output, API keys, real user data, workspace exports, or unrelated
+  worktree changes are included;
+- the handoff reports verification, limitations, and any paths not exercised.
 
 ## Commits And Pull Requests
 

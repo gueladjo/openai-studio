@@ -4,6 +4,11 @@ OpenAI Studio is a React and TypeScript client for the [OpenAI Responses API](ht
 
 This project has no application server. The OpenAI SDK runs in the browser or Electron renderer with the API key supplied by the user.
 
+See the [implementation specification](docs/IMPLEMENTATION.md) for canonical
+architecture, intended behavior, invariants, and acceptance criteria. Contributors
+and coding agents should start with [AGENTS.md](AGENTS.md) for repository working
+rules, task routing, and verification commands.
+
 ## Features
 
 - Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
@@ -148,7 +153,8 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 
 ## Persistence And Backups
 
-`services/storage.ts` selects the storage backend at startup:
+Workspace changes save automatically after the workspace loads successfully.
+Storage behavior depends on the runtime:
 
 | Runtime | Backend behavior |
 | --- | --- |
@@ -156,23 +162,26 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 | Browser without OPFS | Uses the `openai-studio-storage` IndexedDB database. |
 | Electron | Requires OPFS; it does not switch to an empty IndexedDB workspace if OPFS fails. |
 
-Local persistence uses immutable, content-addressed generations:
+Browser workspaces are origin-scoped: changing the scheme, host, or port opens a
+different workspace even when the path is unchanged. If storage cannot be loaded
+or safely selected, the app reports the problem instead of opening an empty
+fallback workspace.
 
-- Two alternating `workspace_manifest_a.json` / `workspace_manifest_b.json` records point to complete generations.
-- Each session, settings object, and instruction list is stored under its SHA-256 hash in `objects/`.
-- Attachment and cached generated-file bytes share `blobs/<sha256>`.
-- Startup validates each manifest, every referenced object, every referenced blob, and all schema/cross-reference rules. It selects the highest complete revision or falls back to the previous complete manifest as a unit.
-- Saves write and verify new objects first, publish the other manifest slot last, reuse unchanged objects, and garbage-collect content not retained by the two valid manifests or an active pinned backup read.
+The Settings workspace actions are:
 
-The first load migrates the previous `sessions.json`, `settings.json`, `system_instructions.json`, and `attachments/` layout only after the new generation reads back successfully. The legacy records are retained during that verification, so a failed migration cannot open an empty workspace.
+- **Backup** creates an integrity-checked ZIP containing conversations, custom
+  instructions, attachments, and locally cached generated files. It excludes
+  the API key and device-local backup preferences.
+- **Restore** validates the selected ZIP and shows a preview before replacing
+  the workspace. The current device's API key is preserved.
+- **Merge** starts after file selection without a separate preview or
+  confirmation. It preserves current settings and chats, skips identical chats,
+  and keeps conflicting archived chats as remapped copies.
+- **Undo last restore** or **Undo last merge** reverses only the latest
+  successful workspace mutation and is single-use.
 
-Session writes keep the one-second trailing delay and five-second streaming checkpoint; request boundaries save immediately. Settings and instructions use a 500 ms delay. Writes remain serialized and are flushed on suspension and through the Electron close handshake.
-
-Portable backups are standard `.zip` archives containing a strict `manifest.json`, separate JSON entries, and raw content-addressed blobs. Every entry declares its byte length and SHA-256 digest. Restore and Merge reject extra, missing, duplicate, case-colliding, traversal, oversized, truncated, or digest-mismatched entries before changing the workspace. Restore shows a verified-backup preview; Merge starts immediately after file selection and imports whole chats without a preview or confirmation. Legacy JSON exports are deliberately unsupported.
-
-Merge preserves the current theme, API key, active-chat selection, chats, and custom instructions. Identical chats are skipped. A differing archived chat with the same ID is kept as a separate copy with remapped local session, message, request, pending-request, and attachment IDs; external OpenAI response and generated-file IDs are retained. Referenced custom instructions are reused when identical and remapped when their IDs conflict. Unreferenced archived instructions and blobs belonging only to skipped chats are not imported. The resulting Recent list remains newest-first, with current-workspace chats before archived chats when timestamps tie.
-
-Before replacement or merge publication, the app creates and reads back a verified internal recovery archive. The operation aborts without publishing a generation if validation, recovery, limits, blob staging, or commit fails. Settings exposes action-aware **Undo last restore** or **Undo last merge** for the latest successful workspace mutation. Undo is single-use. Restore preserves the current API key; Merge preserves all current settings.
+Legacy JSON exports are deliberately unsupported. Archives are unencrypted and
+can contain sensitive prompts, responses, instructions, and file data.
 
 Compatible Chromium browsers and Electron can opt into automatic backups by choosing a folder. Automatic backups:
 
@@ -189,33 +198,14 @@ The chat header's Share button does not publish a link; it downloads a local Mar
 
 Chat deletion asks for confirmation and has no in-app undo. Export the workspace before destructive cleanup.
 
-## Architecture
+## Contributing
 
-```text
-ChatArea user input -> App request/session state -> openaiService streaming API
-                              |
-                              +-> storage persistence
-```
+The [implementation specification](docs/IMPLEMENTATION.md) describes the
+current architecture, intended behavior, failure contracts, and acceptance-test
+traceability. [AGENTS.md](AGENTS.md) provides the task-to-module map, command
+safety rules, focused test selection, and definition of done.
 
-`App.tsx` owns application state and orchestrates save, workspace-coordination,
-and operation state. `components/ChatArea.tsx` owns per-session composer drafts
-through `utils/chatDrafts.ts`.
-`services/storage.ts` is the OPFS/IndexedDB persistence facade.
-`services/workspaceGenerationStore.ts` owns immutable generation publication,
-whole-generation validation, pinning, and garbage collection.
-`services/workspaceArchive.ts`, `services/workspaceMerge.ts`,
-`services/workspaceRestore.ts`,
-`services/backupDestination.ts`, and `services/backupScheduler.ts` own portable
-ZIP integrity, chat merge/collision handling, recovery/undo, folder
-capabilities, retention, and scheduling.
-`services/openaiService.ts` constructs Responses API requests, streams text,
-and handles response metadata and generated files. See
-[AGENTS.md](AGENTS.md) for the canonical contributor task-to-module and
-focused-test map.
-
-## Development Verification
-
-Before submitting a change, run the unit suite and the mode-specific builds the change affects. For shared TypeScript or React changes, run all three:
+For shared TypeScript or React changes, the ordinary finite checks are:
 
 ```bash
 npm test
@@ -223,42 +213,7 @@ npm run build
 npm run build:web
 ```
 
-Use targeted Vitest files while iterating:
-
-```bash
-npm test -- services/workspaceSchema.test.ts
-npm test -- services/openaiService.generate.test.ts
-npm test -- App.integration.test.tsx
-```
-
-Then run the complete suite and affected builds before handoff. The default
-environment is Node; `App.integration.test.tsx` opts into
-`happy-dom`, mocks its child components and I/O boundaries, and uses fake
-timers. `services/storage.integration.test.ts` uses an in-memory OPFS plus
-`fake-indexeddb`. Keep those tests isolated from real user storage and never put
-a real API key or workspace export into a fixture. Record and report
+Run the focused contracts named in `AGENTS.md` while iterating, then the complete
+suite and affected builds before handoff. Keep tests isolated from live API
+quota, real browser storage, real user data, and workspace exports. Record
 pre-existing failures separately.
-
-When changing a protected boundary, update its contract suite:
-
-- `App.integration.test.tsx`: startup write protection, pending-request
-  recovery, cross-session routing, stop/failure behavior, destructive races,
-  and Electron close persistence.
-- `services/openaiService.generate.test.ts`: SDK payloads, model capabilities,
-  attachment parts, streaming events, cancellation, titles, and generated
-  files.
-- `services/storage.integration.test.ts`: v1 migration, immutable revisions,
-  whole-generation fallback, pinned content, recovery/undo, attachment/key
-  handling, backend migration, and rollback.
-- `services/workspaceArchive.test.ts` and `services/backupScheduler.test.ts`:
-  ZIP integrity/path policy, binary round trips, legacy rejection, daily
-  scheduling, close failures, corruption handling, and three-file retention.
-- `electron/backupFiles.test.js`: managed filename validation, streamed writes,
-  fsync/read-back verification, atomic rename, and stale-partial cleanup.
-- `electron/main.test.js` and `buildPolicy.test.ts`: renderer/navigation/close
-  policy and production build secret/base-path policy.
-- `services/openaiService.test.ts`: citation markers, annotation replacement,
-  source ordering and deduplication, adjacent-label cleanup, and malformed
-  annotations.
-
-Smoke-test the web UI at desktop and mobile widths. Changes to Electron, persistence, PWA behavior, streaming, cancellation, attachments, or import/export should also be exercised in the corresponding runtime.
