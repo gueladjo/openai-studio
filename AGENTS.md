@@ -242,5 +242,10 @@ A change is ready for handoff when:
 ## Commits And Pull Requests
 
 - Use short, imperative, descriptive commit subjects consistent with project history.
+- Add a commit body for non-trivial changes. Explain the motivation, important
+  behavioral changes, non-obvious decisions and tradeoffs, relevant constraints
+  or rejected alternatives, and the validation performed. Do not merely restate
+  changes that are already obvious from the diff.
+- Subject-only commits are acceptable for trivial, self-explanatory changes.
 - Keep commits scoped and avoid generated output or unrelated formatting churn.
 - Pull requests should include a concise summary, verification notes, and screenshots or recordings for visible UI changes. Link related issues when applicable.
