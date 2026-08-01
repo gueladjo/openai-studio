@@ -27,7 +27,21 @@ const generatedHash = await sha256Blob(generatedBlob);
 const sessions: Session[] = [{
   id: 'session-1',
   title: 'Archive test',
-  config: { ...DEFAULT_CONFIG, tools: { ...DEFAULT_CONFIG.tools } },
+  config: {
+    ...DEFAULT_CONFIG,
+    tools: {
+      ...DEFAULT_CONFIG.tools,
+      webSearchOptions: {
+        searchContextSize: 'high',
+        userLocation: {
+          type: 'approximate',
+          city: 'London',
+          region: 'England',
+          country: 'GB'
+        }
+      }
+    }
+  },
   lastModified: 10,
   messages: [
     {
@@ -177,6 +191,16 @@ describe('portable workspace archive', () => {
       theme: 'dark',
       lastActiveSessionId: 'session-1'
     });
+    expect(inspected.replacement.sessions[0].config.tools.webSearchOptions)
+      .toEqual({
+        searchContextSize: 'high',
+        userLocation: {
+          type: 'approximate',
+          city: 'London',
+          region: 'England',
+          country: 'GB'
+        }
+      });
     expect(inspected.replacement.sessions[0].messages[1].outputMessages).toEqual([
       { content: 'Reading the notes.', phase: 'commentary' },
       { content: 'Done.', phase: 'final_answer' }

@@ -757,6 +757,16 @@ function App() {
         session.config?.reasoningEffort === config.reasoningEffort &&
         session.config?.textVerbosity === config.textVerbosity &&
         session.config?.tools?.webSearch === config.tools.webSearch &&
+        session.config?.tools?.webSearchOptions?.searchContextSize ===
+          config.tools.webSearchOptions.searchContextSize &&
+        session.config?.tools?.webSearchOptions?.userLocation?.type ===
+          config.tools.webSearchOptions.userLocation?.type &&
+        session.config?.tools?.webSearchOptions?.userLocation?.city ===
+          config.tools.webSearchOptions.userLocation?.city &&
+        session.config?.tools?.webSearchOptions?.userLocation?.region ===
+          config.tools.webSearchOptions.userLocation?.region &&
+        session.config?.tools?.webSearchOptions?.userLocation?.country ===
+          config.tools.webSearchOptions.userLocation?.country &&
         session.config?.tools?.codeInterpreter === config.tools.codeInterpreter
       );
 
@@ -1105,7 +1115,19 @@ function App() {
       return;
     }
 
-    const configToUse = currentSession ? { ...currentSession.config } : { ...DEFAULT_CONFIG };
+    const sourceConfig = currentSession?.config || DEFAULT_CONFIG;
+    const configToUse: ChatConfig = {
+      ...sourceConfig,
+      tools: {
+        ...sourceConfig.tools,
+        webSearchOptions: {
+          ...sourceConfig.tools.webSearchOptions,
+          userLocation: sourceConfig.tools.webSearchOptions.userLocation
+            ? { ...sourceConfig.tools.webSearchOptions.userLocation }
+            : null
+        }
+      }
+    };
     
     const newSession: Session = {
       id: uuidv4(),

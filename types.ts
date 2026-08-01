@@ -12,6 +12,7 @@ import type {
   ResponseStreamEvent,
   ResponseUsage,
   Tool,
+  WebSearchPreviewTool,
   WebSearchTool
 } from 'openai/resources/responses/responses';
 
@@ -52,12 +53,36 @@ export interface SystemInstruction {
   content: string;
 }
 
+export type WebSearchContextSize = NonNullable<
+  WebSearchTool['search_context_size']
+>;
+
+type SdkWebSearchUserLocation = NonNullable<
+  WebSearchTool['user_location']
+>;
+type SdkWebSearchLocationType = NonNullable<
+  WebSearchPreviewTool['user_location']
+>['type'];
+
+export type WebSearchUserLocation = {
+  type: SdkWebSearchLocationType;
+} & Partial<{
+  [Key in 'city' | 'region' | 'country']:
+    NonNullable<SdkWebSearchUserLocation[Key]>;
+}>;
+
+export interface WebSearchOptions {
+  searchContextSize: WebSearchContextSize;
+  userLocation: WebSearchUserLocation | null;
+}
+
 export interface ChatConfig {
   model: ModelId;
   reasoningEffort: string; // Union of all types, handled by logic
   textVerbosity: TextVerbosity;
   tools: {
     webSearch: boolean;
+    webSearchOptions: WebSearchOptions;
     codeInterpreter: boolean;
   };
   systemInstructionId?: string;
@@ -171,6 +196,15 @@ export const DEFAULT_CONFIG: ChatConfig = {
   textVerbosity: 'medium',
   tools: {
     webSearch: true,
+    webSearchOptions: {
+      searchContextSize: 'medium',
+      userLocation: {
+        type: 'approximate',
+        city: 'New York',
+        region: 'NY',
+        country: 'US'
+      }
+    },
     codeInterpreter: false,
   },
   systemInstructionId: undefined

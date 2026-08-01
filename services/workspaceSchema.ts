@@ -43,6 +43,7 @@ const MESSAGE_STATUSES = new Set([
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
+const WEB_SEARCH_CONTEXT_SIZES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -575,7 +576,11 @@ const parseConfig = (value: unknown, path: string): void => {
   }
   if (config.tools !== undefined) {
     const tools = assertRecord(config.tools, `${path}.tools`);
-    assertOnlyKeys(tools, ['webSearch', 'codeInterpreter'], `${path}.tools`);
+    assertOnlyKeys(
+      tools,
+      ['webSearch', 'webSearchOptions', 'codeInterpreter'],
+      `${path}.tools`
+    );
     if (tools.webSearch !== undefined && typeof tools.webSearch !== 'boolean') {
       fail(`${path}.tools.webSearch`, 'must be a boolean');
     }
@@ -584,6 +589,64 @@ const parseConfig = (value: unknown, path: string): void => {
       typeof tools.codeInterpreter !== 'boolean'
     ) {
       fail(`${path}.tools.codeInterpreter`, 'must be a boolean');
+    }
+    if (tools.webSearchOptions !== undefined) {
+      const options = assertRecord(
+        tools.webSearchOptions,
+        `${path}.tools.webSearchOptions`
+      );
+      assertOnlyKeys(
+        options,
+        ['searchContextSize', 'userLocation'],
+        `${path}.tools.webSearchOptions`
+      );
+      if (
+        typeof options.searchContextSize !== 'string' ||
+        !WEB_SEARCH_CONTEXT_SIZES.has(options.searchContextSize)
+      ) {
+        fail(
+          `${path}.tools.webSearchOptions.searchContextSize`,
+          'has an unsupported value'
+        );
+      }
+      if (options.userLocation !== null) {
+        const location = assertRecord(
+          options.userLocation,
+          `${path}.tools.webSearchOptions.userLocation`
+        );
+        assertOnlyKeys(
+          location,
+          ['type', 'city', 'region', 'country'],
+          `${path}.tools.webSearchOptions.userLocation`
+        );
+        if (location.type !== 'approximate') {
+          fail(
+            `${path}.tools.webSearchOptions.userLocation.type`,
+            'must equal "approximate"'
+          );
+        }
+        assertOptionalString(
+          location.city,
+          `${path}.tools.webSearchOptions.userLocation.city`,
+          MAX_IDENTIFIER_LENGTH
+        );
+        assertOptionalString(
+          location.region,
+          `${path}.tools.webSearchOptions.userLocation.region`,
+          MAX_IDENTIFIER_LENGTH
+        );
+        const country = assertOptionalString(
+          location.country,
+          `${path}.tools.webSearchOptions.userLocation.country`,
+          2
+        );
+        if (country !== undefined && !/^[A-Za-z]{0,2}$/.test(country)) {
+          fail(
+            `${path}.tools.webSearchOptions.userLocation.country`,
+            'must contain only letters'
+          );
+        }
+      }
     }
   }
   assertOptionalLocalId(

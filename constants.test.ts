@@ -22,8 +22,66 @@ describe('normalizeChatConfig', () => {
 
     expect(normalized.tools).toEqual({
       webSearch: false,
+      webSearchOptions: DEFAULT_CONFIG.tools.webSearchOptions,
       codeInterpreter: DEFAULT_CONFIG.tools.codeInterpreter
     });
+  });
+
+  it('normalizes supported Web Search options and API-bound location text', () => {
+    const normalized = normalizeChatConfig({
+      tools: {
+        webSearchOptions: {
+          searchContextSize: 'high',
+          userLocation: {
+            type: 'approximate',
+            city: '  London  ',
+            region: '  England ',
+            country: ' gb '
+          }
+        }
+      }
+    });
+
+    expect(normalized.tools.webSearchOptions).toEqual({
+      searchContextSize: 'high',
+      userLocation: {
+        type: 'approximate',
+        city: 'London',
+        region: 'England',
+        country: 'GB'
+      }
+    });
+  });
+
+  it('preserves explicit no-location Web Search options', () => {
+    const normalized = normalizeChatConfig({
+      tools: {
+        webSearchOptions: {
+          searchContextSize: 'low',
+          userLocation: null
+        }
+      }
+    });
+
+    expect(normalized.tools.webSearchOptions).toEqual({
+      searchContextSize: 'low',
+      userLocation: null
+    });
+  });
+
+  it('falls back from malformed Web Search options', () => {
+    const normalized = normalizeChatConfig({
+      tools: {
+        webSearchOptions: {
+          searchContextSize: 'extreme',
+          userLocation: { type: 'precise' }
+        }
+      }
+    });
+
+    expect(normalized.tools.webSearchOptions).toEqual(
+      DEFAULT_CONFIG.tools.webSearchOptions
+    );
   });
 
   it('falls back from unknown models and unsupported saved options', () => {

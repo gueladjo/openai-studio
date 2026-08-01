@@ -9,11 +9,16 @@ import {
   ReasoningEffortGPT56,
   ReasoningEffortNano,
   ReasoningEffortO3,
-  TextVerbosity
+  TextVerbosity,
+  WebSearchContextSize,
+  WebSearchOptions,
+  WebSearchUserLocation
 } from './types';
 
 type ChatConfigInput = Partial<Omit<ChatConfig, 'tools'>> & {
-  tools?: Partial<ChatConfig['tools']>;
+  tools?: Omit<Partial<ChatConfig['tools']>, 'webSearchOptions'> & {
+    webSearchOptions?: unknown;
+  };
 };
 
 export const APP_VERSION = __APP_VERSION__;
@@ -89,6 +94,71 @@ export const MODELS = [
 ];
 
 export const TEXT_VERBOSITY: TextVerbosity[] = ['low', 'medium', 'high'];
+export const WEB_SEARCH_CONTEXT_SIZES: WebSearchContextSize[] = [
+  'low',
+  'medium',
+  'high'
+];
+export const WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH = 256;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const normalizeLocationText = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().slice(0, WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH);
+  return normalized || undefined;
+};
+
+const cloneDefaultWebSearchLocation = (): WebSearchUserLocation => ({
+  type: 'approximate',
+  city: 'New York',
+  region: 'NY',
+  country: 'US'
+});
+
+const normalizeWebSearchLocation = (
+  value: unknown
+): WebSearchUserLocation | null => {
+  if (value === undefined) return cloneDefaultWebSearchLocation();
+  if (value === null) return null;
+  if (!isRecord(value) || value.type !== 'approximate') {
+    return cloneDefaultWebSearchLocation();
+  }
+
+  const city = normalizeLocationText(value.city);
+  const region = normalizeLocationText(value.region);
+  const rawCountry = normalizeLocationText(value.country)?.toUpperCase();
+  const country = rawCountry && /^[A-Z]{2}$/.test(rawCountry)
+    ? rawCountry
+    : undefined;
+
+  if (!city && !region && !country) return null;
+  return {
+    type: 'approximate',
+    ...(city ? { city } : {}),
+    ...(region ? { region } : {}),
+    ...(country ? { country } : {})
+  };
+};
+
+export const normalizeWebSearchOptions = (value: unknown): WebSearchOptions => {
+  const options = isRecord(value) ? value : {};
+  const searchContextSize = (
+    typeof options.searchContextSize === 'string' &&
+    WEB_SEARCH_CONTEXT_SIZES.includes(
+      options.searchContextSize as WebSearchContextSize
+    )
+  )
+    ? options.searchContextSize as WebSearchContextSize
+    : DEFAULT_CONFIG.tools.webSearchOptions.searchContextSize;
+
+  return {
+    searchContextSize,
+    userLocation: normalizeWebSearchLocation(options.userLocation)
+  };
+};
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
   return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_6_SOL];
@@ -136,6 +206,9 @@ export const normalizeChatConfig = (
       webSearch: typeof source.tools?.webSearch === 'boolean'
         ? source.tools.webSearch
         : DEFAULT_CONFIG.tools.webSearch,
+      webSearchOptions: normalizeWebSearchOptions(
+        source.tools?.webSearchOptions
+      ),
       codeInterpreter: typeof source.tools?.codeInterpreter === 'boolean'
         ? source.tools.codeInterpreter
         : DEFAULT_CONFIG.tools.codeInterpreter

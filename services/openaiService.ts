@@ -1220,15 +1220,12 @@ export const generateResponse = async (
   const tools: NonNullable<OpenAIResponsesConfig['tools']> = [];
 
   if (normalizedConfig.tools.webSearch) {
+    const { searchContextSize, userLocation } =
+      normalizedConfig.tools.webSearchOptions;
     tools.push({
       type: 'web_search',
-      user_location: {
-        type: 'approximate',
-        country: 'US',
-        region: 'NY',
-        city: 'New York'
-      },
-      search_context_size: 'medium'
+      ...(userLocation ? { user_location: userLocation } : {}),
+      search_context_size: searchContextSize
     });
   }
 

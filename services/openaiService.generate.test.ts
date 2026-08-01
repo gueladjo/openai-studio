@@ -137,6 +137,7 @@ describe('OpenAI request contracts', () => {
         reasoningEffort: 'max',
         textVerbosity: 'high',
         tools: {
+          ...DEFAULT_CONFIG.tools,
           webSearch: true,
           codeInterpreter: true
         }
@@ -192,6 +193,72 @@ describe('OpenAI request contracts', () => {
     });
   });
 
+  it('normalizes custom Web Search options and omits blank location fields', async () => {
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: createCompletedResponse([messageOutput])
+    }]));
+
+    await generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        tools: {
+          ...DEFAULT_CONFIG.tools,
+          webSearchOptions: {
+            searchContextSize: 'high',
+            userLocation: {
+              type: 'approximate',
+              city: '   ',
+              region: ' England  ',
+              country: 'gb'
+            }
+          }
+        }
+      },
+      'custom-search-key'
+    );
+
+    expect(createResponseMock.mock.calls[0][0].tools[0]).toEqual({
+      type: 'web_search',
+      search_context_size: 'high',
+      user_location: {
+        type: 'approximate',
+        region: 'England',
+        country: 'GB'
+      }
+    });
+  });
+
+  it('omits Web Search user location when it is cleared', async () => {
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: createCompletedResponse([messageOutput])
+    }]));
+
+    await generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        tools: {
+          ...DEFAULT_CONFIG.tools,
+          webSearchOptions: {
+            searchContextSize: 'low',
+            userLocation: null
+          }
+        }
+      },
+      'no-location-key'
+    );
+
+    expect(createResponseMock.mock.calls[0][0].tools[0]).toEqual({
+      type: 'web_search',
+      search_context_size: 'low'
+    });
+  });
+
   it('normalizes unsupported options and omits verbosity for o3', async () => {
     const completedResponse = createCompletedResponse([messageOutput]);
     createResponseMock.mockResolvedValue(createStream([{
@@ -208,6 +275,7 @@ describe('OpenAI request contracts', () => {
         reasoningEffort: 'none',
         textVerbosity: 'high',
         tools: {
+          ...DEFAULT_CONFIG.tools,
           webSearch: false,
           codeInterpreter: false
         }
@@ -340,6 +408,7 @@ describe('OpenAI request contracts', () => {
       {
         ...DEFAULT_CONFIG,
         tools: {
+          ...DEFAULT_CONFIG.tools,
           webSearch: false,
           codeInterpreter: true
         }

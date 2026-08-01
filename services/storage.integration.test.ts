@@ -472,6 +472,22 @@ describe('storage public contracts', () => {
     }]);
   });
 
+  it('persists Web Search options exactly', async () => {
+    const session = createSession('Web Search options');
+    session.config.tools.webSearchOptions = {
+      searchContextSize: 'low',
+      userLocation: null
+    };
+
+    await storage.writeSessions(handle, [session]);
+
+    const storedSessions = await storage.readSessions(handle);
+    expect(storedSessions[0].config.tools.webSearchOptions).toEqual({
+      searchContextSize: 'low',
+      userLocation: null
+    });
+  });
+
   it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
     await seedWorkspace([createSession('Reusable')]);
     for (let index = 0; index < 8; index += 1) {

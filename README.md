@@ -16,7 +16,9 @@ rules, task routing, and verification commands.
 - Configured model picker for GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.5, GPT-5 Nano, and o3. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
 - Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
-- Optional Web Search and Code Interpreter tools.
+- Optional Web Search and Code Interpreter tools, with per-chat Web Search
+  context size and approximate location controls (default: Medium and New York,
+  NY, US).
 - Multiple image and file attachments, including files pasted from the clipboard.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
 - Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.

@@ -83,9 +83,14 @@ Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
 older workspaces remain loadable.
 
-Web Search and Code Interpreter can be enabled per chat. Web Search currently
-uses medium search context and an approximate New York, US location. Code
-Interpreter requests an automatic container.
+Web Search and Code Interpreter can be enabled per chat. The Web Search card is
+an accessible disclosure that starts collapsed; its local disclosure state is
+not persisted and is independent from the persisted enable switch. Expanded
+options remain editable while the tool is disabled. Search context supports
+Low, Medium, and High. Approximate location supports bounded City and Region
+text plus a two-letter Country code, with an explicit clear action. New and
+legacy chats default to Medium and New York, NY, US. A cleared location is
+persisted as `null`. Code Interpreter requests an automatic container.
 
 Supported attachments are validated and normalized by
 `utils/attachmentValidation.ts`, including the 50 MiB per-attachment limit.
@@ -268,6 +273,14 @@ Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes
 redundant adjacent labels without corrupting surrounding prose.
 
+Enabled Web Search requests use the normalized per-chat options for
+`search_context_size` and `user_location`. API-facing option types derive from
+the installed SDK. Location values are trimmed, blank fields are omitted, and
+country codes are uppercased before request construction. When all location
+fields are blank or the user clears the location, the request omits
+`user_location` entirely. Source inclusion remains
+`web_search_call.action.sources`.
+
 ## Persisted Data And Runtime Validation
 
 The persisted workspace owns `Session[]`, `AppSettings`, and
@@ -294,6 +307,13 @@ configuration normalization when relevant, every affected runtime parser, and
 the compatibility or schema-version policy. It must re-check IDs and
 cross-references and update schema, storage integration, and portable archive
 contracts as applicable.
+
+`ChatConfig.tools.webSearchOptions` is an additive schema-version-1 field.
+Missing options in legacy chats normalize to Medium with the approximate New
+York, NY, US location. An explicit `userLocation: null` remains distinct and
+means no geographic hint. Runtime validation accepts only Low, Medium, or High,
+the `approximate` location discriminator, bounded City and Region strings, and
+an at-most-two-letter Country value; unknown nested keys are rejected.
 
 ## Local Storage And Recovery
 
@@ -353,6 +373,10 @@ Archives are unencrypted and may contain sensitive prompts, responses,
 instructions, attachments, and cached generated files. A missing cached remote
 file is reported in archive metadata without invalidating an otherwise complete
 archive.
+
+Per-chat Web Search options are part of the session JSON and round-trip exactly,
+including an explicit cleared location, without changing portable archive
+version 2 or workspace schema version 1.
 
 Legacy JSON exports receive a specific unsupported-format error. Unknown archive
 versions or non-OpenAI-Studio ZIPs are rejected before a restore or merge source

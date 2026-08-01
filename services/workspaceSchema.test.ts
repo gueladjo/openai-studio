@@ -12,7 +12,18 @@ import {
 const createSession = (): Session => ({
   id: 'session-1',
   title: 'Test',
-  config: DEFAULT_CONFIG,
+  config: {
+    ...DEFAULT_CONFIG,
+    tools: {
+      ...DEFAULT_CONFIG.tools,
+      webSearchOptions: {
+        ...DEFAULT_CONFIG.tools.webSearchOptions,
+        userLocation: DEFAULT_CONFIG.tools.webSearchOptions.userLocation
+          ? { ...DEFAULT_CONFIG.tools.webSearchOptions.userLocation }
+          : null
+      }
+    }
+  },
   lastModified: 1,
   messages: [
     {
@@ -172,6 +183,48 @@ describe('workspace runtime schema', () => {
     sessions[0].messages[1].sources = [{} as any];
     expect(() => parseStoredSessions(sessions)).toThrow(
       'sources[0].title must be a string'
+    );
+  });
+
+  it('accepts additive Web Search options and legacy configs without them', () => {
+    const backup = createBackup();
+    backup.sessions[0].config.tools.webSearchOptions = {
+      searchContextSize: 'high',
+      userLocation: null
+    };
+    expect(parseWorkspaceBackup(backup).sessions[0].config.tools.webSearchOptions)
+      .toEqual({ searchContextSize: 'high', userLocation: null });
+
+    const legacyBackup = createBackup();
+    delete (legacyBackup.sessions[0].config.tools as Partial<
+      typeof legacyBackup.sessions[0]['config']['tools']
+    >).webSearchOptions;
+    expect(() => parseWorkspaceBackup(legacyBackup)).not.toThrow();
+  });
+
+  it('rejects malformed Web Search options', () => {
+    const invalidContext = createBackup();
+    invalidContext.sessions[0].config.tools.webSearchOptions.searchContextSize =
+      'extreme' as any;
+    expect(() => parseWorkspaceBackup(invalidContext)).toThrow(
+      'webSearchOptions.searchContextSize has an unsupported value'
+    );
+
+    const invalidLocationType = createBackup();
+    invalidLocationType.sessions[0].config.tools.webSearchOptions.userLocation = {
+      type: 'precise'
+    } as any;
+    expect(() => parseWorkspaceBackup(invalidLocationType)).toThrow(
+      'webSearchOptions.userLocation.type must equal "approximate"'
+    );
+
+    const invalidCountry = createBackup();
+    invalidCountry.sessions[0].config.tools.webSearchOptions.userLocation = {
+      type: 'approximate',
+      country: 'USA'
+    };
+    expect(() => parseWorkspaceBackup(invalidCountry)).toThrow(
+      'webSearchOptions.userLocation.country must contain at most 2 characters'
     );
   });
 

@@ -1,7 +1,14 @@
 
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { ChatConfig, ModelId, SystemInstruction } from '../types';
-import { MODELS, TEXT_VERBOSITY, getModelConfig, getNormalizedReasoningEffort } from '../constants';
+import {
+  MODELS,
+  TEXT_VERBOSITY,
+  WEB_SEARCH_CONTEXT_SIZES,
+  WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH,
+  getModelConfig,
+  getNormalizedReasoningEffort
+} from '../constants';
 import { Sliders, Globe, Terminal, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ConfigPanelProps {
@@ -26,6 +33,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   readOnly = false
 }) => {
   const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(true);
+  const [isWebSearchOptionsOpen, setIsWebSearchOptionsOpen] = useState(false);
+  const webSearchOptionsId = useId();
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newModel = e.target.value as ModelId;
@@ -43,6 +52,37 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const availableReasoningOptions = modelConfig.reasoningOptions;
   const selectedReasoningEffort = getNormalizedReasoningEffort(config.model, config.reasoningEffort);
   const supportsVerbosity = modelConfig.supportsVerbosity;
+  const webSearchOptions = config.tools.webSearchOptions;
+  const webSearchLocation = webSearchOptions.userLocation;
+
+  const updateWebSearchOptions = (
+    options: ChatConfig['tools']['webSearchOptions']
+  ) => {
+    onChange({
+      ...config,
+      tools: {
+        ...config.tools,
+        webSearchOptions: options
+      }
+    });
+  };
+
+  const updateWebSearchLocation = (
+    field: 'city' | 'region' | 'country',
+    rawValue: string
+  ) => {
+    const value = field === 'country'
+      ? rawValue.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2)
+      : rawValue.slice(0, WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH);
+    updateWebSearchOptions({
+      ...webSearchOptions,
+      userLocation: {
+        type: 'approximate',
+        ...(webSearchLocation || {}),
+        [field]: value
+      }
+    });
+  };
 
   return (
     <div className={`${isMobile ? 'w-full' : 'w-80 border-l border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full overflow-y-auto transition-colors duration-200`}>
@@ -200,26 +240,157 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
         <div className="space-y-4">
           <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Tools</label>
           
-          <div 
-            onClick={() => onChange({...config, tools: {...config.tools, webSearch: !config.tools.webSearch}})}
-            className={`flex items-center justify-between p-3 rounded-md border cursor-pointer transition-all ${
+          <div
+            className={`rounded-md border transition-all ${
                 config.tools.webSearch 
                 ? 'bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-500/50' 
                 : 'bg-white dark:bg-[#161b22] border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'
             }`}
           >
-             <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 p-3">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
                 <div className={`p-1.5 rounded ${config.tools.webSearch ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}>
                     <Globe size={16} />
                 </div>
-                <div>
+                <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Web Search</div>
                     <div className="text-xs text-gray-500">Access real-time data</div>
                 </div>
-             </div>
-             <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${config.tools.webSearch ? 'border-blue-500 bg-blue-500' : 'border-gray-400 dark:border-gray-600'}`}>
-                {config.tools.webSearch && <div className="w-1.5 h-1.5 bg-white rounded-full" />}
-             </div>
+              </div>
+              <button
+                type="button"
+                disabled={readOnly}
+                role="switch"
+                aria-checked={config.tools.webSearch}
+                aria-label="Enable Web Search"
+                onClick={() => onChange({
+                  ...config,
+                  tools: {
+                    ...config.tools,
+                    webSearch: !config.tools.webSearch
+                  }
+                })}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                  config.tools.webSearch
+                    ? 'bg-blue-500'
+                    : 'bg-gray-300 dark:bg-gray-700'
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                    config.tools.webSearch ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+              <button
+                type="button"
+                disabled={readOnly}
+                aria-expanded={isWebSearchOptionsOpen}
+                aria-controls={webSearchOptionsId}
+                aria-label={isWebSearchOptionsOpen
+                  ? 'Collapse Web Search options'
+                  : 'Expand Web Search options'}
+                onClick={() => setIsWebSearchOptionsOpen(open => !open)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-400 transition-colors hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-200"
+              >
+                {isWebSearchOptionsOpen
+                  ? <ChevronUp size={16} />
+                  : <ChevronDown size={16} />}
+              </button>
+            </div>
+
+            {isWebSearchOptionsOpen && (
+              <div
+                id={webSearchOptionsId}
+                className="space-y-4 border-t border-blue-100 p-3 dark:border-blue-500/20"
+              >
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                    Search context size
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 rounded-md bg-gray-200 p-1 dark:bg-[#161b22]">
+                    {WEB_SEARCH_CONTEXT_SIZES.map(size => (
+                      <button
+                        key={size}
+                        type="button"
+                        disabled={readOnly}
+                        aria-pressed={webSearchOptions.searchContextSize === size}
+                        onClick={() => updateWebSearchOptions({
+                          ...webSearchOptions,
+                          searchContextSize: size
+                        })}
+                        className={`rounded px-2 py-1.5 text-xs capitalize transition-colors ${
+                          webSearchOptions.searchContextSize === size
+                            ? 'bg-white font-medium text-blue-600 shadow-sm dark:bg-blue-600 dark:text-white'
+                            : 'text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
+                        }`}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                      Approximate location
+                    </div>
+                    <button
+                      type="button"
+                      disabled={readOnly || webSearchLocation === null}
+                      onClick={() => updateWebSearchOptions({
+                        ...webSearchOptions,
+                        userLocation: null
+                      })}
+                      className="text-xs text-gray-500 transition-colors hover:text-red-500 disabled:cursor-default disabled:opacity-50"
+                    >
+                      Clear location
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="col-span-2 space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      <span>City</span>
+                      <input
+                        type="text"
+                        disabled={readOnly}
+                        value={webSearchLocation?.city || ''}
+                        maxLength={WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH}
+                        onChange={event => updateWebSearchLocation('city', event.target.value)}
+                        placeholder="New York"
+                        className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200"
+                      />
+                    </label>
+                    <label className="space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      <span>Region</span>
+                      <input
+                        type="text"
+                        disabled={readOnly}
+                        value={webSearchLocation?.region || ''}
+                        maxLength={WEB_SEARCH_LOCATION_TEXT_MAX_LENGTH}
+                        onChange={event => updateWebSearchLocation('region', event.target.value)}
+                        placeholder="NY"
+                        className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200"
+                      />
+                    </label>
+                    <label className="space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      <span>Country</span>
+                      <input
+                        type="text"
+                        disabled={readOnly}
+                        value={webSearchLocation?.country || ''}
+                        maxLength={2}
+                        autoCapitalize="characters"
+                        onChange={event => updateWebSearchLocation('country', event.target.value)}
+                        placeholder="US"
+                        className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-2 text-sm uppercase text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div 
