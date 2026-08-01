@@ -36,7 +36,7 @@ const createSession = (): Session => ({
         input_tokens_details: {
           cached_tokens: 2,
           cache_write_tokens: 1
-        } as any,
+        },
         output_tokens: 5,
         output_tokens_details: { reasoning_tokens: 1 },
         total_tokens: 15
@@ -63,9 +63,12 @@ const createBackup = () => ({
 
 describe('workspace runtime schema', () => {
   it('accepts a complete versioned backup and migrates a legacy version marker', () => {
-    expect(parseWorkspaceBackup(createBackup())).toMatchObject({
+    const parsedBackup = parseWorkspaceBackup(createBackup());
+    expect(parsedBackup).toMatchObject({
       schemaVersion: WORKSPACE_SCHEMA_VERSION
     });
+    expect(parsedBackup.sessions[0].messages[1].usage?.input_tokens_details)
+      .toEqual({ cached_tokens: 2, cache_write_tokens: 1 });
 
     const legacyBackup = createBackup();
     delete (legacyBackup as Partial<typeof legacyBackup>).schemaVersion;

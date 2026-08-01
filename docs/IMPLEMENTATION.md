@@ -94,7 +94,8 @@ base64/data-URL `input_file` parts. Clipboard file paste follows the same
 validation path.
 
 Responses can render Markdown, citations, refusal or incomplete output,
-reasoning summaries, usage details, and generated Code Interpreter files.
+reasoning summaries, usage details including cache-read and cache-write token
+counts when reported, and generated Code Interpreter files.
 Generated files are cached into the shared local blob store when possible.
 Cached files remain downloadable without an API key. An uncached download
 requires the in-app key plus both remote container and file IDs. Cache failure

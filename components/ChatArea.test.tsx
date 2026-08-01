@@ -1,4 +1,7 @@
-import React from 'react';
+// @vitest-environment happy-dom
+
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ReactMarkdown from 'react-markdown';
@@ -89,6 +92,66 @@ describe('response model labels', () => {
       modelName: 'Historical Model',
       reasoningEffort: 'high'
     })).toBe('Historical Model high');
+  });
+});
+
+describe('response token usage details', () => {
+  it('displays cache writes when reported by the API', async () => {
+    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+      configurable: true,
+      value: true
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const message: Message = {
+      id: 'assistant-cache-write',
+      role: 'assistant',
+      content: 'Response',
+      status: 'complete',
+      timestamp: 1,
+      usage: {
+        input_tokens: 5_000,
+        input_tokens_details: {
+          cache_write_tokens: 1_234,
+          cached_tokens: 567
+        },
+        output_tokens: 89,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 5_089
+      }
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <MessageRow
+            message={message}
+            canRetry={false}
+            canRegenerate={false}
+            apiKey=""
+            onRetryFailedMessage={() => undefined}
+            onRegenerateResponse={() => undefined}
+          />
+        );
+      });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(
+          '[aria-label="Show response details"]'
+        )?.click();
+      });
+
+      const cacheWriteLabel = Array.from(container.querySelectorAll('span'))
+        .find(element => element.textContent === 'Cache write');
+      expect(cacheWriteLabel?.parentElement?.textContent).toBe('Cache write1,234');
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT;
+    }
   });
 });
 

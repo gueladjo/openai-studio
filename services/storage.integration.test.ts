@@ -414,6 +414,34 @@ describe('storage public contracts', () => {
     expect(storage.getWorkspaceRevision()).toBe(2);
   });
 
+  it('persists cache-write token usage on assistant messages', async () => {
+    const session = createSession('Cache usage');
+    session.messages.push({
+      id: 'message-cache-usage-assistant',
+      role: 'assistant',
+      content: 'Cached response.',
+      status: 'complete',
+      timestamp: 2,
+      modelName: 'GPT-5.6 Sol',
+      usage: {
+        input_tokens: 5_000,
+        input_tokens_details: {
+          cache_write_tokens: 1_234,
+          cached_tokens: 567
+        },
+        output_tokens: 89,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 5_089
+      }
+    });
+
+    await storage.writeSessions(handle, [session]);
+
+    const storedSessions = await storage.readSessions(handle);
+    expect(storedSessions[0].messages[1].usage?.input_tokens_details)
+      .toEqual({ cache_write_tokens: 1_234, cached_tokens: 567 });
+  });
+
   it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
     await seedWorkspace([createSession('Reusable')]);
     for (let index = 0; index < 8; index += 1) {

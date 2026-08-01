@@ -340,6 +340,8 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     const modelLabel = getResponseModelLabel(message);
     const hasThinkingDuration = typeof message.thinkingDuration === 'number' && message.thinkingDuration > 0;
     const hasTokenUsage = Boolean(message.usage);
+    const cacheWriteTokens = message.usage?.input_tokens_details.cache_write_tokens;
+    const hasCacheWriteTokens = typeof cacheWriteTokens === 'number';
     const canCopyResponse = message.content.length > 0;
 
     const setCopyFeedback = (state: 'copied' | 'error') => {
@@ -416,6 +418,12 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                                             <span className="text-gray-500 dark:text-gray-400">Input</span>
                                             <span>{formatTokenCount(message.usage!.input_tokens)}</span>
                                         </div>
+                                        {hasCacheWriteTokens && (
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="text-gray-500 dark:text-gray-400">Cache write</span>
+                                                <span>{formatTokenCount(cacheWriteTokens)}</span>
+                                            </div>
+                                        )}
                                         <div className="flex items-center justify-between gap-3">
                                             <span className="text-gray-500 dark:text-gray-400">Cached input</span>
                                             <span>{formatTokenCount(message.usage!.input_tokens_details.cached_tokens)}</span>
