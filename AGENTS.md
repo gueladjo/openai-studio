@@ -138,6 +138,8 @@ that effect:
 - Use PascalCase for component files and components; use camelCase for functions and utilities.
 - Keep state in `App.tsx` unless a component-local concern is genuinely isolated. Follow the current prop-driven data flow before adding a new state abstraction.
 - Prefer the existing component, service, and utility boundaries. Avoid unrelated refactors.
+- Prefer the simplest current design. Preserve backward compatibility only when removing it would break supported behavior, user data, or a viable upgrade path; do not retain legacy code or assumptions by default.
+- When compatibility would add meaningful complexity, discuss the tradeoff and a migration toward the simpler end state with the user before implementation.
 - Tailwind utilities are written inline and compiled at build time (Tailwind v4 through its dedicated PostCSS adapter; compatibility theme config in `tailwind.config.js`). Class names must appear as complete literal strings so automatic source detection can find them. Reserve `index.css` for global and complex reusable rules.
 - Use `lucide-react` for UI icons and preserve accessible names/tooltips on icon-only controls.
 - Keep fixed controls and responsive layouts stable at desktop and mobile widths. The mobile breakpoint in `App.tsx` is 768px.
