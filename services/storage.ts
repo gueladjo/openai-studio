@@ -1,6 +1,8 @@
 import {
   FileAttachment,
   LocalBlobReference,
+  Project,
+  ProjectRemoteState,
   Session,
   SystemInstruction
 } from '../types';
@@ -24,6 +26,8 @@ import {
   WorkspaceBackup,
   parseAppSettings,
   parseJsonText,
+  parseProjectRemoteState,
+  parseProjects,
   parseStoredSessions,
   parseSystemInstructions,
   parseWorkspaceBackup,
@@ -35,9 +39,11 @@ import {
   WorkspaceGenerationStore
 } from './workspaceGenerationStore';
 import {
-  encodeUtf8
+  encodeUtf8,
+  sha256Text
 } from './contentAddressing';
 import {
+  LOCAL_WORKSPACE_SCHEMA_VERSION,
   WORKSPACE_MANIFEST_SLOTS
 } from './workspaceGeneration';
 
@@ -61,6 +67,8 @@ export const STORAGE_FILES = {
   SESSIONS: 'sessions.json',
   SETTINGS: 'settings.json',
   INSTRUCTIONS: 'system_instructions.json',
+  PROJECTS: 'projects.json',
+  PROJECT_REMOTE_STATE: 'project_remote_state.json',
   MANIFEST: 'workspace_manifest.json',
   REVISION: 'workspace_revision.json'
 } as const;
@@ -70,6 +78,7 @@ let storageBackend: StorageBackend | null = null;
 let idbDatabase: IDBDatabase | null = null;
 let workspaceRevision: number | null = null;
 let workspaceGenerationCache: ValidWorkspaceGeneration | null = null;
+let workspaceStorageReadOnly = false;
 
 const IDB_NAME = 'openai-studio-storage';
 const IDB_STORE = 'files';
@@ -90,11 +99,17 @@ interface LegacyWorkspaceRevisionRecord {
   revision: number;
 }
 
-type WorkspaceDataKey = 'sessions' | 'settings' | 'instructions';
+type LegacyWorkspaceDataKey = 'sessions' | 'settings' | 'instructions';
+type WorkspaceDataKey =
+  | LegacyWorkspaceDataKey
+  | 'projects'
+  | 'projectRemoteState';
 type WorkspaceDataFilename = (
   typeof STORAGE_FILES.SESSIONS |
   typeof STORAGE_FILES.SETTINGS |
-  typeof STORAGE_FILES.INSTRUCTIONS
+  typeof STORAGE_FILES.INSTRUCTIONS |
+  typeof STORAGE_FILES.PROJECTS |
+  typeof STORAGE_FILES.PROJECT_REMOTE_STATE
 );
 
 // The manifest is the single active-snapshot pointer. Workspaces created before
@@ -102,7 +117,7 @@ type WorkspaceDataFilename = (
 interface WorkspaceManifest {
   schemaVersion: typeof WORKSPACE_SCHEMA_VERSION;
   revision: number;
-  files: Record<WorkspaceDataKey, string>;
+  files: Record<LegacyWorkspaceDataKey, string>;
 }
 
 interface WorkspaceManifestState {
@@ -110,7 +125,7 @@ interface WorkspaceManifestState {
   backup: WorkspaceManifest | null;
 }
 
-const DEFAULT_WORKSPACE_FILES: Record<WorkspaceDataKey, WorkspaceDataFilename> = {
+const DEFAULT_WORKSPACE_FILES: Record<LegacyWorkspaceDataKey, string> = {
   sessions: STORAGE_FILES.SESSIONS,
   settings: STORAGE_FILES.SETTINGS,
   instructions: STORAGE_FILES.INSTRUCTIONS
@@ -119,7 +134,9 @@ const DEFAULT_WORKSPACE_FILES: Record<WorkspaceDataKey, WorkspaceDataFilename> =
 const WORKSPACE_DATA_KEY_BY_FILENAME: Record<WorkspaceDataFilename, WorkspaceDataKey> = {
   [STORAGE_FILES.SESSIONS]: 'sessions',
   [STORAGE_FILES.SETTINGS]: 'settings',
-  [STORAGE_FILES.INSTRUCTIONS]: 'instructions'
+  [STORAGE_FILES.INSTRUCTIONS]: 'instructions',
+  [STORAGE_FILES.PROJECTS]: 'projects',
+  [STORAGE_FILES.PROJECT_REMOTE_STATE]: 'projectRemoteState'
 };
 
 const SNAPSHOT_FILE_PREFIX = 'workspace_snapshot_';
@@ -1050,6 +1067,7 @@ async function initializeStorageBackend(
   }
 
   storageBackend = selectedBackend;
+  workspaceStorageReadOnly = Boolean(options.readOnly);
   workspaceRevision = null;
   workspaceGenerationCache = null;
 
@@ -1064,7 +1082,7 @@ async function initializeStorageBackend(
 }
 
 const isWorkspaceDataPhysicalFilename = (
-  key: WorkspaceDataKey,
+  key: LegacyWorkspaceDataKey,
   filename: unknown
 ): filename is string => {
   if (filename === DEFAULT_WORKSPACE_FILES[key]) return true;
@@ -1370,7 +1388,13 @@ const readLegacyWorkspaceData = async (
       );
       return {
         revision: manifest.revision,
-        data: { sessions, settings, instructions }
+        data: {
+          sessions,
+          settings,
+          instructions,
+          projects: [],
+          projectRemoteState: { indexes: {}, cleanupTombstones: [] }
+        }
       };
     } catch (error) {
       firstError ||= error;
@@ -1417,7 +1441,13 @@ const readLegacyWorkspaceData = async (
     );
     return {
       revision: Math.max(0, state.active.revision - 1),
-      data: { sessions, settings, instructions }
+      data: {
+        sessions,
+        settings,
+        instructions,
+        projects: [],
+        projectRemoteState: { indexes: {}, cleanupTombstones: [] }
+      }
     };
   } catch {
     throw firstError || new Error('The legacy workspace could not be validated.');
@@ -1542,6 +1572,28 @@ const ensureWorkspaceGeneration = async (
   const store = createWorkspaceGenerationStore(dirHandle);
   const current = await store.readCurrent();
   if (current) {
+    if (
+      !workspaceStorageReadOnly &&
+      current.manifest.schemaVersion < LOCAL_WORKSPACE_SCHEMA_VERSION
+    ) {
+      const migrated = await store.commit(current.manifest.revision, {
+        sessions: current.sessions,
+        settings: current.settings,
+        instructions: current.instructions,
+        projects: current.projects,
+        projectRemoteState: current.projectRemoteState
+      });
+      const verified = await store.readCurrent();
+      if (
+        !verified ||
+        verified.manifest.revision !== migrated.manifest.revision ||
+        verified.manifest.schemaVersion !== LOCAL_WORKSPACE_SCHEMA_VERSION
+      ) {
+        throw new Error('The local workspace schema migration failed read-back verification.');
+      }
+      workspaceGenerationCache = verified;
+      return verified;
+    }
     workspaceGenerationCache = current;
     return current;
   }
@@ -1586,7 +1638,12 @@ const ensureWorkspaceGeneration = async (
 };
 
 // File Operations - automatically uses correct backend
-type WorkspaceDataValue = Session[] | AppSettings | SystemInstruction[];
+type WorkspaceDataValue =
+  | Session[]
+  | AppSettings
+  | SystemInstruction[]
+  | Project[]
+  | ProjectRemoteState;
 
 const getWorkspaceDataParser = (
   filename: WorkspaceDataFilename
@@ -1595,7 +1652,9 @@ const getWorkspaceDataParser = (
   if (filename === STORAGE_FILES.SETTINGS) {
     return value => parseAppSettings(value) as AppSettings;
   }
-  return parseSystemInstructions;
+  if (filename === STORAGE_FILES.INSTRUCTIONS) return parseSystemInstructions;
+  if (filename === STORAGE_FILES.PROJECTS) return parseProjects;
+  return parseProjectRemoteState;
 };
 
 const getWorkspaceDataKey = (filename: string): WorkspaceDataKey => {
@@ -1637,7 +1696,13 @@ export const writeJsonFile = async (
       : current.settings,
     instructions: key === 'instructions'
       ? parsedData as SystemInstruction[]
-      : current.instructions
+      : current.instructions,
+    projects: key === 'projects'
+      ? parsedData as Project[]
+      : current.projects,
+    projectRemoteState: key === 'projectRemoteState'
+      ? parseProjectRemoteState(parsedData, current.projects)
+      : current.projectRemoteState
   });
 
   const committed = await createWorkspaceGenerationStore(dirHandle).commit(
@@ -1661,15 +1726,25 @@ export function readJsonFile(
   dirHandle: FileSystemDirectoryHandle,
   filename: typeof STORAGE_FILES.INSTRUCTIONS
 ): Promise<SystemInstruction[] | null>;
+export function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: typeof STORAGE_FILES.PROJECTS
+): Promise<Project[] | null>;
+export function readJsonFile(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: typeof STORAGE_FILES.PROJECT_REMOTE_STATE
+): Promise<ProjectRemoteState | null>;
 export async function readJsonFile(
   dirHandle: FileSystemDirectoryHandle,
   filename: WorkspaceDataFilename
-): Promise<Session[] | AppSettings | SystemInstruction[] | null> {
+): Promise<WorkspaceDataValue | null> {
   const key = getWorkspaceDataKey(filename);
   const generation = await ensureWorkspaceGeneration(dirHandle);
   if (key === 'sessions') return generation.sessions;
   if (key === 'settings') return generation.settings;
-  return generation.instructions;
+  if (key === 'instructions') return generation.instructions;
+  if (key === 'projects') return generation.projects;
+  return generation.projectRemoteState;
 }
 
 const settledMap = async <T, R>(
@@ -1857,6 +1932,77 @@ export const writeSessions = async (
   return writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
 };
 
+export const writeProjects = async (
+  dirHandle: FileSystemDirectoryHandle,
+  projects: Project[]
+): Promise<number> => writeJsonFile(dirHandle, STORAGE_FILES.PROJECTS, projects);
+
+export const writeProjectRemoteState = async (
+  dirHandle: FileSystemDirectoryHandle,
+  state: ProjectRemoteState
+): Promise<number> => writeJsonFile(
+  dirHandle,
+  STORAGE_FILES.PROJECT_REMOTE_STATE,
+  state
+);
+
+export const writeWorkspaceState = async (
+  dirHandle: FileSystemDirectoryHandle,
+  changes: Partial<Pick<
+    WorkspaceGenerationData,
+    'sessions' | 'settings' | 'instructions' | 'projects' | 'projectRemoteState'
+  >>,
+  options: { publishTwice?: boolean } = {}
+): Promise<number> => {
+  if (workspaceRevision === null) {
+    throw new Error('Workspace revision has not been initialized.');
+  }
+  const current = await ensureWorkspaceGeneration(dirHandle, true);
+  if (current.manifest.revision !== workspaceRevision) {
+    throw new WorkspaceRevisionConflictError(
+      workspaceRevision,
+      current.manifest.revision
+    );
+  }
+  const projects = changes.projects === undefined
+    ? current.projects
+    : parseProjects(changes.projects);
+  const sessions = changes.sessions === undefined
+    ? current.sessions
+    : await migrateSessionsToContentBlobs(
+        dirHandle,
+        parseStoredSessions(toStoredSessions(changes.sessions))
+      );
+  const projectRemoteState = changes.projectRemoteState === undefined
+    ? current.projectRemoteState
+    : parseProjectRemoteState(changes.projectRemoteState, projects);
+  const data: WorkspaceGenerationData = normalizeWorkspaceGenerationReferences({
+    sessions: toStoredSessions(sessions),
+    settings: changes.settings === undefined
+      ? current.settings
+      : parseAppSettings(changes.settings) as AppSettings,
+    instructions: changes.instructions === undefined
+      ? current.instructions
+      : parseSystemInstructions(changes.instructions),
+    projects,
+    projectRemoteState
+  });
+  validateWorkspaceReferences(data);
+  let committed = await createWorkspaceGenerationStore(dirHandle).commit(
+    workspaceRevision,
+    data
+  );
+  if (options.publishTwice) {
+    committed = await createWorkspaceGenerationStore(dirHandle).commit(
+      committed.manifest.revision,
+      data
+    );
+  }
+  workspaceGenerationCache = committed;
+  workspaceRevision = committed.manifest.revision;
+  return committed.manifest.revision;
+};
+
 export const readSessions = async (
   dirHandle: FileSystemDirectoryHandle,
   options: { readOnly?: boolean } = {}
@@ -1872,6 +2018,8 @@ export interface WorkspaceSnapshot {
   sessions: Session[];
   settings: AppSettings;
   instructions: SystemInstruction[];
+  projects?: Project[];
+  projectRemoteState?: ProjectRemoteState;
   readBlob: (reference: LocalBlobReference) => Promise<Blob>;
   release?: () => void;
 }
@@ -1880,6 +2028,8 @@ export interface WorkspaceReplacement {
   sessions: Session[];
   settings?: BackupSettings | null;
   instructions: SystemInstruction[];
+  projects?: Project[];
+  projectRemoteState?: ProjectRemoteState;
   blobs: ReadonlyMap<string, Blob>;
 }
 
@@ -1895,6 +2045,8 @@ export const readWorkspaceSnapshot = async (
     sessions: generation.sessions,
     settings: generation.settings,
     instructions: generation.instructions,
+    projects: generation.projects,
+    projectRemoteState: generation.projectRemoteState,
     release,
     readBlob: async reference => {
       const blob = await store.readBlob(reference);
@@ -1962,6 +2114,42 @@ export const clearInternalRecoveryArchive = async (
   }
 };
 
+const createPortableReplacementRemoteState = (
+  current: ProjectRemoteState,
+  revision: number
+): ProjectRemoteState => {
+  const cleanupTombstones = current.cleanupTombstones.map(tombstone => ({
+    ...tombstone,
+    openaiFileIds: [...tombstone.openaiFileIds]
+  }));
+  const usedIds = new Set(cleanupTombstones.map(tombstone => tombstone.id));
+  Object.values(current.indexes).forEach(index => {
+    const openaiFileIds = [...new Set(
+      Object.values(index.files).flatMap(file => (
+        file.openaiFileId ? [file.openaiFileId] : []
+      ))
+    )];
+    if (openaiFileIds.length === 0 && !index.vectorStoreId) return;
+    const baseId = `cleanup-restore-${sha256Text(`${revision}:${index.projectId}`)}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}-${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(id);
+    cleanupTombstones.push({
+      id,
+      projectId: index.projectId,
+      apiKeyFingerprint: index.apiKeyFingerprint,
+      openaiFileIds,
+      ...(index.vectorStoreId ? { vectorStoreId: index.vectorStoreId } : {}),
+      createdAt: Date.now()
+    });
+  });
+  return { indexes: {}, cleanupTombstones };
+};
+
 export const replaceWorkspaceSnapshot = async (
   dirHandle: FileSystemDirectoryHandle,
   replacement: WorkspaceReplacement
@@ -2004,13 +2192,22 @@ export const replaceWorkspaceSnapshot = async (
   validateWorkspaceReferences({
     sessions,
     settings: restoredSettings,
-    instructions: replacement.instructions
+    instructions: replacement.instructions,
+    projects: replacement.projects || []
   });
 
   const committed = await store.commit(workspaceRevision, {
     sessions: toStoredSessions(sessions),
     settings: restoredSettings,
-    instructions: replacement.instructions
+    instructions: replacement.instructions,
+    projects: replacement.projects || [],
+    // Portable replacements never import remote IDs. Existing device resources
+    // become durable cleanup work so restore/undo cannot silently orphan them.
+    projectRemoteState: replacement.projectRemoteState ||
+      createPortableReplacementRemoteState(
+        current.projectRemoteState,
+        current.manifest.revision
+      )
   });
   workspaceGenerationCache = committed;
   workspaceRevision = committed.manifest.revision;

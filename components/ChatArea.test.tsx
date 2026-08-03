@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ReactMarkdown from 'react-markdown';
 import {
+  ChatArea,
   ContextWindowUsage,
   getResponseModelLabel,
   markdownComponents,
@@ -211,6 +212,39 @@ describe('ChatArea responsive message layout', () => {
     expect(html.match(/flex w-full min-w-0 gap-4 max-w-4xl/g)).toHaveLength(2);
     expect(html.match(/flex min-w-0 max-w-\[85%\] flex-col/g)).toHaveLength(2);
     expect(html.match(/class="message-content min-w-0 max-w-full/g)).toHaveLength(2);
+  });
+});
+
+describe('ChatArea conversation header', () => {
+  const renderChat = (project?: { name: string; icon: 'health' }): string => (
+    renderToStaticMarkup(
+      <ChatArea
+        session={createSessionWithUsage(ModelId.GPT_5_NANO)}
+        availableSessionIds={['session-gpt-5-nano']}
+        onSendMessage={async () => true}
+        onStopGenerating={() => undefined}
+        onRetryFailedMessage={() => undefined}
+        onRemoveFailedAttachment={() => undefined}
+        onReplaceFailedAttachments={async () => undefined}
+        onRegenerateResponse={() => undefined}
+        onShareConversation={() => undefined}
+        apiKey=""
+        isLoading={false}
+        project={project}
+      />
+    )
+  );
+
+  it('shows a project icon and breadcrumb while leaving standalone titles unchanged', () => {
+    const projectHtml = renderChat({ name: 'Health', icon: 'health' });
+    expect(projectHtml).toContain('lucide-stethoscope');
+    expect(projectHtml).toContain('>Health</span>');
+    expect(projectHtml).toContain('>Context window test</h2>');
+
+    const standaloneHtml = renderChat();
+    expect(standaloneHtml).not.toContain('lucide-stethoscope');
+    expect(standaloneHtml).not.toContain('>Health</span>');
+    expect(standaloneHtml).toContain('>Context window test</h2>');
   });
 });
 

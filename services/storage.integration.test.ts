@@ -3,6 +3,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import {
   DEFAULT_CONFIG,
   type FileAttachment,
+  type Project,
   type Session,
   type SystemInstruction
 } from '../types';
@@ -414,6 +415,70 @@ describe('storage public contracts', () => {
     expect(storage.getWorkspaceRevision()).toBe(2);
   });
 
+  it('migrates schema-v4 project objects into the strict schema-v5 format', async () => {
+    await seedWorkspace();
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const projectsText = JSON.stringify([{
+      id: 'project-schema-v4',
+      name: 'Migrated project',
+      icon: 'folder',
+      color: 'blue',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: 1,
+      updatedAt: 1
+    }]);
+    const projectsReference = {
+      sha256: sha256Text(projectsText),
+      byteLength: encodeUtf8(projectsText).byteLength
+    };
+    await fileSystem.writeText(
+      `data/objects/${projectsReference.sha256}.json`,
+      projectsText
+    );
+
+    let latestRevision = -1;
+    for (const slot of ['a', 'b']) {
+      const path = `data/workspace_manifest_${slot}.json`;
+      const manifest = JSON.parse(await fileSystem.readText(path) || '');
+      manifest.schemaVersion = 4;
+      manifest.projects = projectsReference;
+      latestRevision = Math.max(latestRevision, manifest.revision);
+      await fileSystem.writeText(path, JSON.stringify(manifest));
+    }
+
+    vi.resetModules();
+    storage = await import('./storage');
+    handle = await storage.getStorageHandle();
+    await expect(storage.synchronizeWorkspaceRevision(handle))
+      .resolves.toBe(latestRevision + 1);
+
+    const projects = await storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.PROJECTS
+    );
+    expect(projects).toEqual([{
+      id: 'project-schema-v4',
+      name: 'Migrated project',
+      icon: 'folder',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: 1,
+      updatedAt: 1
+    }]);
+
+    const manifests = await Promise.all(['a', 'b'].map(async slot => JSON.parse(
+      await fileSystem.readText(`data/workspace_manifest_${slot}.json`) || ''
+    )));
+    const current = manifests.sort((left, right) => right.revision - left.revision)[0];
+    expect(current.schemaVersion).toBe(5);
+    expect(JSON.parse(
+      await fileSystem.readText(`data/objects/${current.projects.sha256}.json`) || ''
+    )[0]).not.toHaveProperty('color');
+  });
+
   it('persists cache-write token usage on assistant messages', async () => {
     const session = createSession('Cache usage');
     session.messages.push({
@@ -488,6 +553,168 @@ describe('storage public contracts', () => {
     });
   });
 
+  it('persists project sources in the exact verified blob union', async () => {
+    const bytes = new Blob(['project source'], { type: 'text/plain' });
+    const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-storage',
+      name: 'Storage project',
+      icon: 'folder',
+      instructions: 'Use the source.',
+      defaultConfig,
+      sources: [{
+        id: 'source-storage',
+        name: 'source.txt',
+        mimeType: 'text/plain',
+        byteSize: bytes.size,
+        localBlob,
+        capability: 'file_search',
+        addedAt: 1
+      }],
+      createdAt: 1,
+      updatedAt: 1
+    };
+
+    await storage.writeProjects(handle, [project]);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.PROJECTS
+    )).resolves.toEqual([project]);
+    await expect(storage.readLocalBlob(handle, localBlob)).resolves.toMatchObject({
+      size: bytes.size
+    });
+
+    const currentRevision = storage.getWorkspaceRevision();
+    await expect(storage.writeProjects(handle, [{
+      ...project,
+      sources: [{
+        ...project.sources[0],
+        localBlob: {
+          ...project.sources[0].localBlob,
+          sha256: 'f'.repeat(64)
+        }
+      }]
+    }])).rejects.toThrow('is missing');
+    expect(storage.getWorkspaceRevision()).toBe(currentRevision);
+  });
+
+  it('publishes permanent project deletion through both manifest slots', async () => {
+    const bytes = new Blob(['delete me'], { type: 'text/plain' });
+    const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-delete',
+      name: 'Delete project',
+      icon: 'folder',
+      instructions: 'Temporary.',
+      defaultConfig,
+      sources: [{
+        id: 'source-delete',
+        name: 'delete.txt',
+        mimeType: 'text/plain',
+        byteSize: bytes.size,
+        localBlob,
+        capability: 'file_search',
+        addedAt: 1
+      }],
+      createdAt: 1,
+      updatedAt: 1
+    };
+    const session = {
+      ...createSession('Project member'),
+      projectId: project.id
+    };
+    await storage.writeWorkspaceState(handle, {
+      sessions: [session],
+      projects: [project]
+    });
+
+    await storage.writeWorkspaceState(handle, {
+      sessions: [],
+      projects: []
+    }, { publishTwice: true });
+
+    for (const slot of ['a', 'b']) {
+      const manifest = JSON.parse(
+        await fileSystem.readText(`data/workspace_manifest_${slot}.json`) || ''
+      );
+      expect(manifest.schemaVersion).toBe(5);
+      expect(manifest.sessions).toEqual([]);
+      expect(JSON.parse(
+        await fileSystem.readText(`data/objects/${manifest.projects.sha256}.json`) || ''
+      )).toEqual([]);
+    }
+    await expect(storage.readLocalBlob(handle, localBlob)).resolves.toBeNull();
+  });
+
+  it('turns replaced remote indexes into nonportable cleanup tombstones', async () => {
+    const bytes = new Blob(['remote source'], { type: 'text/plain' });
+    const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-restore-cleanup',
+      name: 'Remote project',
+      icon: 'folder',
+      instructions: '',
+      defaultConfig,
+      sources: [{
+        id: 'source-restore-cleanup',
+        name: 'remote.txt',
+        mimeType: 'text/plain',
+        byteSize: bytes.size,
+        localBlob,
+        capability: 'file_search',
+        addedAt: 1
+      }],
+      createdAt: 1,
+      updatedAt: 1
+    };
+    await storage.writeWorkspaceState(handle, {
+      projects: [project],
+      projectRemoteState: {
+        indexes: {
+          [project.id]: {
+            projectId: project.id,
+            apiKeyFingerprint: 'e'.repeat(64),
+            vectorStoreId: 'vector-restore-cleanup',
+            status: 'ready',
+            usageBytes: 10,
+            files: {
+              [project.sources[0].id]: {
+                projectSourceId: project.sources[0].id,
+                openaiFileId: 'file-restore-cleanup',
+                status: 'ready'
+              }
+            }
+          }
+        },
+        cleanupTombstones: []
+      }
+    });
+
+    await storage.replaceWorkspaceSnapshot(handle, {
+      sessions: [],
+      settings: { theme: 'dark' },
+      instructions: [],
+      projects: [],
+      blobs: new Map()
+    });
+
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.PROJECT_REMOTE_STATE
+    )).resolves.toMatchObject({
+      indexes: {},
+      cleanupTombstones: [{
+        projectId: project.id,
+        apiKeyFingerprint: 'e'.repeat(64),
+        openaiFileIds: ['file-restore-cleanup'],
+        vectorStoreId: 'vector-restore-cleanup'
+      }]
+    });
+  });
+
   it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
     await seedWorkspace([createSession('Reusable')]);
     for (let index = 0; index < 8; index += 1) {
@@ -509,7 +736,7 @@ describe('storage public contracts', () => {
     );
     expect(manifestA.sessions[0].sha256).toBe(manifestB.sessions[0].sha256);
     const objects = await fileSystem.getDirectory('data/objects');
-    expect(objects.names().length).toBeLessThanOrEqual(4);
+    expect(objects.names().length).toBeLessThanOrEqual(6);
   });
 
   it('rejects a stale writer before overwriting workspace data', async () => {
@@ -661,6 +888,34 @@ describe('storage public contracts', () => {
     expect(image.previewUrl).toMatch(/^blob:/);
     expect(document.size).toBe(documentBlob.byteSize);
     expect(document.previewUrl).toBeUndefined();
+  });
+
+  it('strips runtime attachment previews before an atomic workspace write', async () => {
+    const imageBlob = await storage.storeAttachmentBlob(
+      handle,
+      new File(['image bytes'], 'image.png', { type: 'image/png' })
+    );
+    await seedWorkspace([createSession('Runtime preview', [{
+      name: 'image.png',
+      type: 'image/png',
+      size: imageBlob.byteSize,
+      localBlob: imageBlob
+    }])]);
+
+    const sessionsWithRuntimeMetadata = await storage.readSessions(handle);
+    expect(sessionsWithRuntimeMetadata[0].messages[0].attachments?.[0].previewUrl)
+      .toMatch(/^blob:/);
+
+    await expect(storage.writeWorkspaceState(handle, {
+      sessions: sessionsWithRuntimeMetadata
+    }, { publishTwice: true })).resolves.toBeTypeOf('number');
+
+    const storedSessions = await storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SESSIONS
+    );
+    expect(storedSessions?.[0].messages[0].attachments?.[0].previewUrl)
+      .toBeUndefined();
   });
 
   it('keeps blob reference metadata and warns when an image preview is unreadable', async () => {
@@ -1227,7 +1482,7 @@ describe('legacy workspace migration contracts', () => {
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
     )).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 5,
       revision: 6
     });
     expect(warn).not.toHaveBeenCalledWith(
@@ -1436,7 +1691,7 @@ describe('storage backend migration contracts', () => {
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
     )).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 5,
       revision: 7
     });
     await expect(storage.readJsonFile(
@@ -1519,7 +1774,7 @@ describe('storage backend migration contracts', () => {
     const handle = await storage.getStorageHandle();
 
     expect(storage.getActiveStorageBackend()).toBe('opfs');
-    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(7);
+    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(8);
     await expect(storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SESSIONS
@@ -1528,8 +1783,8 @@ describe('storage backend migration contracts', () => {
       'migrated attachment'
     );
     expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest_a.json') || ''
-    )).toMatchObject({ schemaVersion: 3, revision: 7 });
+      await fileSystem.readText('data/workspace_manifest_b.json') || ''
+    )).toMatchObject({ schemaVersion: 5, revision: 8 });
     expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
       .toMatchObject({ data: JSON.stringify(manifest) });
   });

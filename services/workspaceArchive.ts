@@ -8,11 +8,12 @@ import {
   type Entry
 } from '@zip.js/zip.js';
 import { APP_VERSION } from '../constants';
-import { LocalBlobReference, Session, SystemInstruction } from '../types';
+import { LocalBlobReference, Project, Session, SystemInstruction } from '../types';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 import {
   BackupSettings,
   parseAppSettings,
+  parseProjects,
   parseStoredSessions,
   parseSystemInstructions,
   validateWorkspaceReferences
@@ -30,7 +31,8 @@ import {
 } from './storage';
 
 export const BACKUP_ARCHIVE_FORMAT = 'openai-studio-backup';
-export const BACKUP_ARCHIVE_VERSION = 2;
+export const BACKUP_ARCHIVE_VERSION = 3;
+export const PREVIOUS_BACKUP_ARCHIVE_VERSION = 2;
 export const MAX_BACKUP_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_BACKUP_ARCHIVE_ENTRIES = 100_000;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
@@ -50,11 +52,15 @@ export interface BackupArchiveCounts {
   attachments: number;
   generatedFiles: number;
   cachedGeneratedFiles: number;
+  projects?: number;
+  projectSources?: number;
 }
 
 export interface BackupArchiveManifestV2 {
   format: typeof BACKUP_ARCHIVE_FORMAT;
-  version: typeof BACKUP_ARCHIVE_VERSION;
+  version:
+    | typeof BACKUP_ARCHIVE_VERSION
+    | typeof PREVIOUS_BACKUP_ARCHIVE_VERSION;
   backupId: string;
   reason: BackupReason;
   appVersion: string;
@@ -133,11 +139,23 @@ const parseInteger = (value: unknown, path: string, maximum = Number.MAX_SAFE_IN
   return value as number;
 };
 
-const parseCounts = (value: unknown): BackupArchiveCounts => {
+const parseCounts = (
+  value: unknown,
+  archiveVersion: number
+): BackupArchiveCounts => {
   if (!isRecord(value)) throw new BackupArchiveError('manifest.counts must be an object.');
   assertOnlyKeys(
     value,
-    ['sessions', 'messages', 'attachments', 'generatedFiles', 'cachedGeneratedFiles'],
+    [
+      'sessions',
+      'messages',
+      'attachments',
+      'generatedFiles',
+      'cachedGeneratedFiles',
+      ...(archiveVersion === BACKUP_ARCHIVE_VERSION
+        ? ['projects', 'projectSources']
+        : [])
+    ],
     'manifest.counts'
   );
   return {
@@ -148,7 +166,18 @@ const parseCounts = (value: unknown): BackupArchiveCounts => {
     cachedGeneratedFiles: parseInteger(
       value.cachedGeneratedFiles,
       'manifest.counts.cachedGeneratedFiles'
-    )
+    ),
+    ...(value.projects === undefined
+      ? {}
+      : { projects: parseInteger(value.projects, 'manifest.counts.projects') }),
+    ...(value.projectSources === undefined
+      ? {}
+      : {
+          projectSources: parseInteger(
+            value.projectSources,
+            'manifest.counts.projectSources'
+          )
+        })
   };
 };
 
@@ -188,7 +217,10 @@ export const parseBackupArchiveManifest = (
   if (value.format !== BACKUP_ARCHIVE_FORMAT) {
     throw new BackupArchiveError('This ZIP is not an OpenAI Studio backup.');
   }
-  if (value.version !== BACKUP_ARCHIVE_VERSION) {
+  if (
+    value.version !== BACKUP_ARCHIVE_VERSION &&
+    value.version !== PREVIOUS_BACKUP_ARCHIVE_VERSION
+  ) {
     throw new BackupArchiveError(
       `Backup format version ${String(value.version)} is unsupported.`
     );
@@ -261,7 +293,7 @@ export const parseBackupArchiveManifest = (
 
   return {
     format: BACKUP_ARCHIVE_FORMAT,
-    version: BACKUP_ARCHIVE_VERSION,
+    version: value.version,
     backupId: value.backupId,
     reason: value.reason,
     appVersion: value.appVersion,
@@ -270,7 +302,7 @@ export const parseBackupArchiveManifest = (
       value.workspaceRevision,
       'manifest.workspaceRevision'
     ),
-    counts: parseCounts(value.counts),
+    counts: parseCounts(value.counts, value.version),
     uncachedGeneratedFileCount: parseInteger(
       value.uncachedGeneratedFileCount,
       'manifest.uncachedGeneratedFileCount'
@@ -288,7 +320,7 @@ const createBackupId = (): string => {
   ).join('');
 };
 
-const getCounts = (sessions: Session[]): {
+const getCounts = (sessions: Session[], projects: Project[] = []): {
   counts: BackupArchiveCounts;
   uncachedGeneratedFileCount: number;
 } => {
@@ -297,7 +329,9 @@ const getCounts = (sessions: Session[]): {
     messages: 0,
     attachments: 0,
     generatedFiles: 0,
-    cachedGeneratedFiles: 0
+    cachedGeneratedFiles: 0,
+    projects: projects.length,
+    projectSources: projects.reduce((sum, project) => sum + project.sources.length, 0)
   };
   let uncachedGeneratedFileCount = 0;
 
@@ -316,7 +350,8 @@ const getCounts = (sessions: Session[]): {
 };
 
 const getBlobReferences = (
-  sessions: Session[]
+  sessions: Session[],
+  projects: Project[] = []
 ): Map<string, LocalBlobReference> => {
   const references = new Map<string, LocalBlobReference>();
   sessions.forEach(session => {
@@ -329,6 +364,11 @@ const getBlobReferences = (
       message.generatedFiles?.forEach(file => {
         if (file.localBlob) references.set(file.localBlob.sha256, file.localBlob);
       });
+    });
+  });
+  projects.forEach(project => {
+    project.sources.forEach(source => {
+      references.set(source.localBlob.sha256, source.localBlob);
     });
   });
   return references;
@@ -377,7 +417,9 @@ const createWorkspaceArchiveFromSnapshot = async (
     'workspace/system_instructions.json',
     snapshot.instructions
   );
-  const blobReferences = getBlobReferences(snapshot.sessions);
+  const projects = snapshot.projects || [];
+  const projectsEntry = createJsonEntry('workspace/projects.json', projects);
+  const blobReferences = getBlobReferences(snapshot.sessions, projects);
   const blobEntries = [...blobReferences.values()]
     .sort((left, right) => left.sha256.localeCompare(right.sha256))
     .map(reference => ({
@@ -391,6 +433,7 @@ const createWorkspaceArchiveFromSnapshot = async (
   const entries = [
     settingsEntry.descriptor,
     instructionsEntry.descriptor,
+    projectsEntry.descriptor,
     ...sessionEntries.map(entry => entry.descriptor),
     ...blobEntries.map(entry => entry.descriptor)
   ];
@@ -401,7 +444,10 @@ const createWorkspaceArchiveFromSnapshot = async (
   if (totalBytes > MAX_BACKUP_ARCHIVE_BYTES) {
     throw new BackupArchiveError('The workspace exceeds the backup size limit.');
   }
-  const { counts, uncachedGeneratedFileCount } = getCounts(snapshot.sessions);
+  const { counts, uncachedGeneratedFileCount } = getCounts(
+    snapshot.sessions,
+    projects
+  );
   const manifest: BackupArchiveManifestV2 = {
     format: BACKUP_ARCHIVE_FORMAT,
     version: BACKUP_ARCHIVE_VERSION,
@@ -455,6 +501,11 @@ const createWorkspaceArchiveFromSnapshot = async (
       instructionsEntry.descriptor.path,
       instructionsEntry.text,
       instructionsEntry.descriptor.byteLength
+    );
+    await addText(
+      projectsEntry.descriptor.path,
+      projectsEntry.text,
+      projectsEntry.descriptor.byteLength
     );
     for (const entry of sessionEntries) {
       await addText(entry.descriptor.path, entry.text, entry.descriptor.byteLength);
@@ -534,13 +585,23 @@ const verifyEntryBlob = async (
 
 const verifyCounts = (
   manifest: BackupArchiveManifestV2,
-  sessions: Session[]
+  sessions: Session[],
+  projects: Project[]
 ): void => {
-  const actual = getCounts(sessions);
+  const actual = getCounts(sessions, projects);
+  const countKeys: Array<keyof BackupArchiveCounts> = [
+    'sessions',
+    'messages',
+    'attachments',
+    'generatedFiles',
+    'cachedGeneratedFiles',
+    ...(manifest.version === BACKUP_ARCHIVE_VERSION
+      ? ['projects' as const, 'projectSources' as const]
+      : [])
+  ];
   if (
-    Object.keys(actual.counts).some(key => (
-      actual.counts[key as keyof BackupArchiveCounts] !==
-      manifest.counts[key as keyof BackupArchiveCounts]
+    countKeys.some(key => (
+      actual.counts[key] !== manifest.counts[key]
     )) ||
     actual.uncachedGeneratedFileCount !== manifest.uncachedGeneratedFileCount
   ) {
@@ -619,6 +680,9 @@ export const inspectWorkspaceArchive = async (
     const sessionValues: Session[] = [];
     let settings: BackupSettings | null = null;
     let instructions: SystemInstruction[] | null = null;
+    let projects: Project[] | null = manifest.version === PREVIOUS_BACKUP_ARCHIVE_VERSION
+      ? []
+      : null;
     const blobs = new Map<string, Blob>();
     const blobSizes = new Map<string, number>();
     let completedEntries = 0;
@@ -645,6 +709,11 @@ export const inspectWorkspaceArchive = async (
         }
       } else if (descriptor.path === 'workspace/system_instructions.json') {
         instructions = parseSystemInstructions(JSON.parse(await blob.text()));
+      } else if (descriptor.path === 'workspace/projects.json') {
+        if (manifest.version !== BACKUP_ARCHIVE_VERSION) {
+          throw new BackupArchiveError('Archive v2 cannot contain projects.');
+        }
+        projects = parseProjects(JSON.parse(await blob.text()));
       } else if (descriptor.path.startsWith('workspace/sessions/')) {
         const parsed = parseStoredSessions([JSON.parse(await blob.text())]);
         sessionValues.push(parsed[0]);
@@ -668,8 +737,8 @@ export const inspectWorkspaceArchive = async (
         totalBytes
       });
     }
-    if (!settings || !instructions) {
-      throw new BackupArchiveError('Workspace settings or instructions are missing.');
+    if (!settings || !instructions || !projects) {
+      throw new BackupArchiveError('Workspace settings, instructions, or projects are missing.');
     }
     const orderedSessions = manifest.entries
       .filter(entry => entry.path.startsWith('workspace/sessions/'))
@@ -690,7 +759,8 @@ export const inspectWorkspaceArchive = async (
     validateWorkspaceReferences({
       sessions: orderedSessions,
       settings,
-      instructions
+      instructions,
+      projects
     });
     orderedSessions.forEach(session => {
       session.messages.forEach(message => {
@@ -750,7 +820,21 @@ export const inspectWorkspaceArchive = async (
         });
       });
     });
-    const referencedBlobHashes = getBlobReferences(orderedSessions);
+    projects.forEach(project => {
+      project.sources.forEach(source => {
+        if (!blobSizes.has(source.localBlob.sha256)) {
+          throw new BackupArchiveError(
+            `Project source "${source.name}" is missing verified bytes.`
+          );
+        }
+        if (blobSizes.get(source.localBlob.sha256) !== source.localBlob.byteSize) {
+          throw new BackupArchiveError(
+            `Project source "${source.name}" byte metadata is inconsistent.`
+          );
+        }
+      });
+    });
+    const referencedBlobHashes = getBlobReferences(orderedSessions, projects);
     if (
       blobSizes.size !== referencedBlobHashes.size ||
       [...blobSizes.keys()].some(hash => !referencedBlobHashes.has(hash))
@@ -759,7 +843,7 @@ export const inspectWorkspaceArchive = async (
         'The backup contains blob entries that are not referenced by the workspace.'
       );
     }
-    verifyCounts(manifest, orderedSessions);
+    verifyCounts(manifest, orderedSessions, projects);
     const archiveHash = await sha256Blob(archive);
     return {
       manifest,
@@ -767,6 +851,7 @@ export const inspectWorkspaceArchive = async (
         sessions: orderedSessions,
         settings,
         instructions,
+        projects,
         blobs
       },
       preview: {

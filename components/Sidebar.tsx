@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { Session } from '../types';
+import React, { useEffect, useState, useRef } from 'react';
+import { Project, Session } from '../types';
 import { APP_VERSION } from '../constants';
 import {
   Plus,
@@ -22,17 +22,26 @@ import {
   Settings
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
+import { ProjectIconGlyph } from './ProjectIcon';
 
 interface SidebarProps {
   sessions: Session[];
+  projects?: Project[];
   currentSessionId: string | null;
+  selectedProjectId?: string | null;
   onSelectSession: (id: string) => void;
+  onSelectProject?: (id: string) => void;
+  onNewProject?: () => void;
   onNewSession: () => void;
   onDeleteSession: (e: React.MouseEvent, id: string) => void;
   isDarkMode: boolean;
   toggleTheme: () => void;
   apiKey: string;
   onApiKeyChange: (key: string) => void;
+  onApiKeySave?: (key: string) => void | Promise<void>;
+  pendingRemoteCleanupCount?: number;
+  remoteCleanupError?: string | null;
+  onRetryRemoteCleanup?: () => void;
   onExportData: () => void;
   onImportData: (file: File) => void;
   onMergeData: (file: File) => void;
@@ -55,14 +64,22 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
+  projects = [],
   currentSessionId,
+  selectedProjectId = null,
   onSelectSession,
+  onSelectProject,
+  onNewProject,
   onNewSession,
   onDeleteSession,
   isDarkMode,
   toggleTheme,
   apiKey,
   onApiKeyChange,
+  onApiKeySave,
+  pendingRemoteCleanupCount = 0,
+  remoteCleanupError,
+  onRetryRemoteCleanup,
   onExportData,
   onImportData,
   onMergeData,
@@ -85,8 +102,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [isAutomaticBackupOpen, setIsAutomaticBackupOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(
+    new Set(projects.map(project => project.id))
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mergeFileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => setApiKeyDraft(apiKey), [apiKey]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -102,14 +125,62 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (mergeFileInputRef.current) mergeFileInputRef.current.value = '';
   };
 
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredSessions = sessions
     .filter(session => (session.title || 'Untitled Chat').toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => b.lastModified - a.lastModified);
+  const standaloneSessions = filteredSessions.filter(session => !session.projectId);
+  const matchingProjects = projects.filter(project => (
+    !normalizedSearch ||
+    project.name.toLowerCase().includes(normalizedSearch) ||
+    sessions.some(session => (
+      session.projectId === project.id &&
+      (session.title || 'Untitled Chat').toLowerCase().includes(normalizedSearch)
+    ))
+  ));
+
+  const renderSession = (session: Session, projectName?: string) => (
+    <div
+      key={session.id}
+      onClick={() => onSelectSession(session.id)}
+      className={`group flex items-center justify-between rounded-md p-2 text-sm transition-colors cursor-pointer ${
+        currentSessionId === session.id
+          ? 'bg-gray-200 dark:bg-[#1f2937] text-gray-900 dark:text-white font-medium'
+          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#161b22] hover:text-gray-900 dark:hover:text-gray-200'
+      }`}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        {processingSessionIds?.has(session.id)
+          ? <Loader2 size={14} className="shrink-0 animate-spin text-blue-500" />
+          : <MessageSquare size={14} className="shrink-0 text-gray-400" />}
+        <span className="min-w-0 flex-1 truncate">
+          {session.title || 'Untitled Chat'}
+          {normalizedSearch && projectName && (
+            <span className="ml-1 text-[10px] font-normal text-gray-400">/ {projectName}</span>
+          )}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={(event) => onDeleteSession(event, session.id)}
+        disabled={readOnly}
+        className={`rounded p-1 text-gray-400 transition-all hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/50 dark:hover:text-red-400 ${
+          readOnly ? 'hidden' : isMobile || currentSessionId === session.id
+            ? 'opacity-100'
+            : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
+        }`}
+        aria-label={`Delete ${session.title || 'Untitled Chat'}`}
+        title="Delete chat"
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
+  );
 
   return (
     <div className={`${isMobile ? 'flex-1 min-h-0' : 'w-64 border-r border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full transition-colors duration-200`}>
       {/* Top section */}
-      <div className="p-4">
+      <div className="space-y-2 p-4">
         <button
           onClick={onNewSession}
           disabled={readOnly}
@@ -119,14 +190,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Plus size={16} />
           <span>New Chat</span>
         </button>
+        <button
+          onClick={onNewProject}
+          disabled={readOnly || !onNewProject}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200 dark:hover:bg-gray-800"
+        >
+          <FolderOpen size={16} />
+          <span>New Project</span>
+        </button>
       </div>
 
       <div className="px-4 pb-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
-          <input 
-            type="text" 
-            placeholder="Search chats..." 
+          <input
+            type="text"
+            placeholder="Search projects and chats..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-800 rounded-md py-1.5 pl-9 pr-3 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
@@ -135,48 +214,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1 py-2">
-        <h3 className="px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Recent</h3>
-        {sessions.length === 0 ? (
-          <div className="text-center text-gray-500 text-sm mt-10">No history yet</div>
-        ) : filteredSessions.length === 0 ? (
-          <div className="text-center text-gray-500 text-sm mt-10">No chats found</div>
-        ) : (
-          filteredSessions.map((session) => (
-            <div
-              key={session.id}
-              onClick={() => onSelectSession(session.id)}
-              className={`group flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors text-sm ${
-                currentSessionId === session.id
-                  ? 'bg-gray-200 dark:bg-[#1f2937] text-gray-900 dark:text-white font-medium'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#161b22] hover:text-gray-900 dark:hover:text-gray-200'
-              }`}
-            >
-              <div className="flex items-center gap-2 overflow-hidden flex-1">
-                {processingSessionIds?.has(session.id) ? (
-                  <Loader2 size={14} className="text-blue-500 animate-spin flex-shrink-0" />
-                ) : (
-                  <MessageSquare size={14} className={`flex-shrink-0 ${currentSessionId === session.id ? 'text-blue-500 dark:text-blue-400' : 'text-gray-400 dark:text-gray-600'}`} />
-                )}
-                <span className="truncate">{session.title || 'Untitled Chat'}</span>
+        <h3 className="mb-1 px-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Projects</h3>
+        {matchingProjects.map(project => {
+          const projectSessions = filteredSessions.filter(session => session.projectId === project.id);
+          const expanded = normalizedSearch || expandedProjectIds.has(project.id);
+          return (
+            <div key={project.id}>
+              <div className={`flex items-center rounded-md ${selectedProjectId === project.id ? 'bg-gray-200 dark:bg-[#1f2937]' : ''}`}>
+                <button type="button" onClick={() => setExpandedProjectIds(current => {
+                  const next = new Set(current);
+                  if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
+                  return next;
+                })} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`} className="p-2 text-gray-400">
+                  {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} className="rotate-90" />}
+                </button>
+                <button type="button" onClick={() => onSelectProject?.(project.id)} className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200">
+                  <ProjectIconGlyph icon={project.icon} size={14} className="shrink-0" />
+                  <span className="truncate">{project.name}</span>
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={(e) => onDeleteSession(e, session.id)}
-                disabled={readOnly}
-                className={`p-1 hover:bg-red-100 dark:hover:bg-red-900/50 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-all ${
-                  readOnly
-                    ? 'hidden'
-                    : isMobile || currentSessionId === session.id
-                    ? 'opacity-100'
-                    : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
-                }`}
-                aria-label={`Delete ${session.title || 'Untitled Chat'}`}
-                title="Delete chat"
-              >
-                <Trash2 size={12} />
-              </button>
+              {expanded && <div className="ml-5 space-y-1">{projectSessions.map(session => renderSession(session, project.name))}</div>}
             </div>
-          ))
+          );
+        })}
+        <h3 className="mb-1 mt-4 px-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Chats</h3>
+        {standaloneSessions.map(session => renderSession(session))}
+        {matchingProjects.length === 0 && standaloneSessions.length === 0 && (
+          <div className="mt-10 text-center text-sm text-gray-500">No projects or chats found</div>
         )}
       </div>
       
@@ -223,8 +287,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </label>
                     <input 
                         type="password" 
-                        value={apiKey}
-                        onChange={(e) => onApiKeyChange(e.target.value)}
+                        value={onApiKeySave ? apiKeyDraft : apiKey}
+                        onChange={(e) => {
+                          if (onApiKeySave) setApiKeyDraft(e.target.value);
+                          else onApiKeyChange(e.target.value);
+                        }}
                         disabled={readOnly}
                         placeholder="sk-..."
                         className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 focus:border-blue-500 focus:outline-none placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-60"
@@ -232,6 +299,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="text-[10px] text-gray-500 leading-tight">
                         Overrides .env key. Saved locally.
                     </div>
+                    {onApiKeySave && (
+                      <button
+                        type="button"
+                        onClick={() => onApiKeySave(apiKeyDraft)}
+                        disabled={readOnly || apiKeyDraft === apiKey}
+                        className="w-full rounded bg-blue-600 px-2 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                      >
+                        Save API key
+                      </button>
+                    )}
+                    {(pendingRemoteCleanupCount > 0 || remoteCleanupError) && (
+                      <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                        <div>
+                          {pendingRemoteCleanupCount > 0
+                            ? `Project deletion pending (${pendingRemoteCleanupCount})`
+                            : 'Project source issue'}
+                        </div>
+                        {remoteCleanupError && <div className="mt-1">{remoteCleanupError}</div>}
+                        {pendingRemoteCleanupCount > 0 && onRetryRemoteCleanup && (
+                          <button type="button" onClick={onRetryRemoteCleanup} className="mt-2 inline-flex items-center gap-1 rounded border border-amber-400 px-2 py-1">
+                            <RefreshCw size={10} /> Retry cleanup
+                          </button>
+                        )}
+                      </div>
+                    )}
                 </div>
 
                 <div className="h-px bg-gray-200 dark:bg-gray-800 my-2" />
@@ -267,13 +359,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <GitMerge size={12} />
                             Merge
                         </button>
-                        <input 
-                            type="file" 
+                        <input
+                            type="file"
                             accept=".zip,application/zip"
-                            ref={fileInputRef} 
-                            onChange={handleFileSelect} 
+                            ref={fileInputRef}
+                            onChange={handleFileSelect}
                             disabled={readOnly}
-                            className="hidden" 
+                            className="hidden"
                         />
                         <input
                             type="file"

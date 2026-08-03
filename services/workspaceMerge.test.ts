@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONFIG,
   type LocalBlobReference,
+  type Project,
   type Session,
   type SystemInstruction
 } from '../types';
@@ -68,6 +69,33 @@ const importedWorkspace = (
   instructions,
   blobs: new Map()
 });
+
+const createProject = (
+  id: string,
+  sourceId: string,
+  hash: string,
+  instructions = 'Use project context.'
+): Project => {
+  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+  return {
+    id,
+    name: 'Research',
+    icon: 'research',
+    instructions,
+    defaultConfig,
+    sources: [{
+      id: sourceId,
+      name: 'research.txt',
+      mimeType: 'text/plain',
+      byteSize: 5,
+      localBlob: { sha256: hash, byteSize: 5, mimeType: 'text/plain' },
+      capability: 'file_search',
+      addedAt: 1
+    }],
+    createdAt: 1,
+    updatedAt: 1
+  };
+};
 
 describe('workspace merge planning', () => {
   it('imports disjoint chats newest-first with stable current-before-archive ties', () => {
@@ -309,6 +337,80 @@ describe('workspace merge planning', () => {
     );
 
     expect([...plan.importedBlobHashes]).toEqual([acceptedBlob.sha256]);
+  });
+
+  it('remaps colliding projects, sources, memberships, and file citations', () => {
+    const localProject = createProject('project-shared', 'source-shared', 'a'.repeat(64));
+    const importedProject = createProject(
+      'project-shared',
+      'source-shared',
+      'b'.repeat(64),
+      'Imported project context.'
+    );
+    const importedSession = createSession('imported-project-chat', 2);
+    importedSession.projectId = importedProject.id;
+    importedSession.messages.push({
+      id: 'file-citation-message',
+      role: 'assistant',
+      content: 'From the source.',
+      modelName: 'GPT-5.6 Sol',
+      timestamp: 3,
+      sources: [{
+        kind: 'file',
+        filename: 'research.txt',
+        fileId: 'file-external',
+        projectSourceId: importedProject.sources[0].id
+      }]
+    });
+    const remoteState = {
+      indexes: {},
+      cleanupTombstones: []
+    };
+
+    const plan = createWorkspaceMergePlan({
+      ...currentWorkspace([]),
+      projects: [localProject],
+      projectRemoteState: remoteState
+    }, {
+      ...importedWorkspace([importedSession]),
+      projects: [importedProject]
+    });
+    const mergedProject = plan.replacement.projects?.[1];
+    const mergedSession = plan.replacement.sessions[0];
+
+    expect(mergedProject).toMatchObject({
+      id: 'project-shared-merged',
+      name: 'Research (merged)'
+    });
+    expect(mergedProject?.sources[0].id).toBe('source-shared-merged');
+    expect(mergedSession.projectId).toBe(mergedProject?.id);
+    expect(mergedSession.messages[1].sources?.[0]).toMatchObject({
+      kind: 'file',
+      projectSourceId: mergedProject?.sources[0].id
+    });
+    expect(plan.importedBlobHashes).toContain('b'.repeat(64));
+    expect(plan.replacement.projectRemoteState).toBe(remoteState);
+  });
+
+  it('retains local membership when an identical imported chat is skipped', () => {
+    const localProject = createProject('local-project', 'local-source', 'a'.repeat(64));
+    const importedProject = createProject('archive-project', 'archive-source', 'a'.repeat(64));
+    const localSession = createSession('same-chat', 1);
+    localSession.projectId = localProject.id;
+    const importedSession = structuredClone(localSession);
+    importedSession.projectId = importedProject.id;
+
+    const plan = createWorkspaceMergePlan({
+      ...currentWorkspace([localSession]),
+      projects: [localProject],
+      projectRemoteState: { indexes: {}, cleanupTombstones: [] }
+    }, {
+      ...importedWorkspace([importedSession]),
+      projects: [importedProject]
+    });
+
+    expect(plan.counts.skipped).toBe(1);
+    expect(plan.replacement.sessions[0].projectId).toBe(localProject.id);
   });
 
   it('rejects a merged workspace that exceeds the session limit', () => {

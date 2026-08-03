@@ -16,6 +16,9 @@ import {
   type AssistantPhase,
   type GeneratedFile,
   type Message,
+  type Project,
+  type ProjectRemoteState,
+  type ResolvedProjectContext,
   type Session,
   type SystemInstruction
 } from './types';
@@ -33,8 +36,12 @@ interface CapturedChatAreaProps {
 
 interface CapturedSidebarProps {
   sessions: Session[];
+  projects: Project[];
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  onSelectProject: (projectId: string) => void;
+  onNewProject: () => void;
+  onNewSession: () => void;
   onDeleteSession: (event: React.MouseEvent, sessionId: string) => void;
   onExportData: () => Promise<void>;
   onImportData: (file: File) => Promise<void>;
@@ -42,6 +49,14 @@ interface CapturedSidebarProps {
   mergeDisabled: boolean;
   undoWorkspaceAction: 'merge' | 'restore' | null;
   onUndoWorkspaceMutation: () => Promise<void>;
+}
+
+interface CapturedProjectHomeProps {
+  project: Project;
+  sessions: Session[];
+  onUpdate: (project: Project) => void;
+  onNewChat: () => void;
+  onDeleteProject: () => void;
 }
 
 interface GenerateOptions {
@@ -52,6 +67,7 @@ interface GenerateOptions {
     phase?: AssistantPhase
   ) => void;
   onReasoningSummaryDelta?: (delta: string) => void;
+  projectContext?: ResolvedProjectContext;
 }
 
 interface GenerateResult {
@@ -100,6 +116,11 @@ const mocks = vi.hoisted(() => ({
   getWorkspaceBackup: vi.fn(),
   inspectWorkspaceArchive: vi.fn(),
   loadedInstructions: [] as SystemInstruction[],
+  loadedProjects: [] as Project[],
+  loadedProjectRemoteState: {
+    indexes: {},
+    cleanupTombstones: []
+  } as ProjectRemoteState,
   loadedSessions: [] as Session[],
   mergeWorkspaceArchive: vi.fn(),
   parseWorkspaceBackup: vi.fn(),
@@ -110,6 +131,7 @@ const mocks = vi.hoisted(() => ({
   restoreWorkspaceBackup: vi.fn(),
   restoreWorkspaceArchive: vi.fn(),
   sidebarProps: null as CapturedSidebarProps | null,
+  projectHomeProps: null as CapturedProjectHomeProps | null,
   storeAttachment: vi.fn(),
   storeLocalBlob: vi.fn(),
   subscribeToStorageBackendChanges: vi.fn(),
@@ -118,7 +140,9 @@ const mocks = vi.hoisted(() => ({
   uuidCounter: 0,
   validateWorkspaceReferences: vi.fn(),
   writeJsonFile: vi.fn(),
-  writeSessions: vi.fn()
+  writeSessions: vi.fn(),
+  writeWorkspaceState: vi.fn(),
+  clearInternalRecoveryArchive: vi.fn()
 }));
 
 vi.mock('uuid', () => ({
@@ -143,6 +167,13 @@ vi.mock('./components/ConfigPanel', () => ({
   ConfigPanel: () => null
 }));
 
+vi.mock('./components/ProjectHome', () => ({
+  ProjectHome: (props: CapturedProjectHomeProps) => {
+    mocks.projectHomeProps = props;
+    return null;
+  }
+}));
+
 vi.mock('./components/TitleBar', () => ({
   TitleBar: () => null
 }));
@@ -164,7 +195,9 @@ vi.mock('./services/storage', () => ({
   STORAGE_FILES: {
     SESSIONS: 'sessions.json',
     SETTINGS: 'settings.json',
-    INSTRUCTIONS: 'system_instructions.json'
+    INSTRUCTIONS: 'system_instructions.json',
+    PROJECTS: 'projects.json',
+    PROJECT_REMOTE_STATE: 'project_remote_state.json'
   },
   WorkspaceRevisionConflictError: class WorkspaceRevisionConflictError extends Error {},
   getActiveStorageBackend: mocks.getActiveStorageBackend,
@@ -177,6 +210,7 @@ vi.mock('./services/storage', () => ({
   parseWorkspaceBackup: mocks.parseWorkspaceBackup,
   readJsonFile: mocks.readJsonFile,
   readSessions: mocks.readSessions,
+  clearInternalRecoveryArchive: mocks.clearInternalRecoveryArchive,
   restoreWorkspaceBackup: mocks.restoreWorkspaceBackup,
   storeAttachmentBlob: mocks.storeAttachment,
   storeLocalBlob: mocks.storeLocalBlob,
@@ -184,7 +218,8 @@ vi.mock('./services/storage', () => ({
   synchronizeWorkspaceRevision: mocks.synchronizeWorkspaceRevision,
   validateWorkspaceReferences: mocks.validateWorkspaceReferences,
   writeJsonFile: mocks.writeJsonFile,
-  writeSessions: mocks.writeSessions
+  writeSessions: mocks.writeSessions,
+  writeWorkspaceState: mocks.writeWorkspaceState
 }));
 
 vi.mock('./services/workspaceArchive', () => ({
@@ -224,6 +259,20 @@ const createSession = (
   lastModified: 1
 });
 
+const createProject = (id = 'project-1'): Project => {
+  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+  return {
+    id,
+    name: 'Research',
+    icon: 'research',
+    instructions: 'Use the current project instructions.',
+    defaultConfig,
+    sources: [],
+    createdAt: 1,
+    updatedAt: 1
+  };
+};
+
 const completedResult = (
   content = 'Completed response.'
 ): GenerateResult => ({
@@ -261,6 +310,7 @@ describe('App workspace and request lifecycle', () => {
     mocks.apiKey = 'workspace-key';
     mocks.chatAreaProps = null;
     mocks.sidebarProps = null;
+    mocks.projectHomeProps = null;
     mocks.uuidCounter = 0;
     mocks.currentRevision = 0;
     mocks.loadedSessions = [
@@ -268,6 +318,11 @@ describe('App workspace and request lifecycle', () => {
       createSession('session-b', 'Session B')
     ];
     mocks.loadedInstructions = [];
+    mocks.loadedProjects = [];
+    mocks.loadedProjectRemoteState = {
+      indexes: {},
+      cleanupTombstones: []
+    };
 
     mocks.confirmChatDeletion.mockReset().mockReturnValue(true);
     mocks.coordinator.canWrite = true;
@@ -329,6 +384,12 @@ describe('App workspace and request lifecycle', () => {
             lastActiveSessionId: mocks.loadedSessions[0]?.id
           };
         }
+        if (filename === 'projects.json') {
+          return structuredClone(mocks.loadedProjects);
+        }
+        if (filename === 'project_remote_state.json') {
+          return structuredClone(mocks.loadedProjectRemoteState);
+        }
         return structuredClone(mocks.loadedInstructions);
       }
     );
@@ -357,6 +418,10 @@ describe('App workspace and request lifecycle', () => {
     mocks.writeSessions.mockReset().mockImplementation(async () => (
       ++mocks.currentRevision
     ));
+    mocks.writeWorkspaceState.mockReset().mockImplementation(async () => (
+      ++mocks.currentRevision
+    ));
+    mocks.clearInternalRecoveryArchive.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.stubGlobal('alert', vi.fn());
@@ -417,6 +482,11 @@ describe('App workspace and request lifecycle', () => {
   const getSidebarProps = (): CapturedSidebarProps => {
     if (!mocks.sidebarProps) throw new Error('Sidebar props were not captured.');
     return mocks.sidebarProps;
+  };
+
+  const getProjectHomeProps = (): CapturedProjectHomeProps => {
+    if (!mocks.projectHomeProps) throw new Error('ProjectHome props were not captured.');
+    return mocks.projectHomeProps;
   };
 
   const getGenerateOptions = (): GenerateOptions => {
@@ -634,6 +704,194 @@ describe('App workspace and request lifecycle', () => {
     );
     expect(mocks.writeSessions).not.toHaveBeenCalled();
     expect(mocks.writeJsonFile).not.toHaveBeenCalled();
+  });
+
+  it('creates project chats from defaults without changing standalone defaults', async () => {
+    mocks.loadedInstructions = [{
+      id: 'instruction-1',
+      title: 'Global',
+      content: 'Use global instructions.'
+    }];
+    mocks.loadedSessions[0].config.systemInstructionId = 'instruction-1';
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      getSidebarProps().onNewProject();
+    });
+    await flushMicrotasks();
+    const createdProject = getProjectHomeProps().project;
+    const projectDefaults = {
+      ...createdProject.defaultConfig,
+      reasoningEffort: 'high'
+    };
+    await act(async () => {
+      getProjectHomeProps().onUpdate({
+        ...createdProject,
+        name: 'Client work',
+        defaultConfig: projectDefaults,
+        updatedAt: 2
+      });
+    });
+    await act(async () => {
+      getProjectHomeProps().onNewChat();
+    });
+    await flushMicrotasks();
+
+    const projectChat = getSidebarProps().sessions.find(
+      session => session.projectId === createdProject.id
+    );
+    expect(projectChat?.config).toMatchObject(projectDefaults);
+    expect(projectChat?.config.systemInstructionId).toBeUndefined();
+
+    await act(async () => {
+      getSidebarProps().onNewSession();
+    });
+    const standaloneChat = getSidebarProps().sessions.find(session => (
+      !session.projectId && !['session-a', 'session-b'].includes(session.id)
+    ));
+    expect(standaloneChat?.config.reasoningEffort)
+      .toBe(DEFAULT_CONFIG.reasoningEffort);
+  });
+
+  it('snapshots live project instructions for each future request', async () => {
+    const project = createProject();
+    const projectSession = createSession('session-project', 'Project chat');
+    projectSession.projectId = project.id;
+    mocks.loadedProjects = [project];
+    mocks.loadedSessions = [projectSession];
+    mocks.generateResponse.mockResolvedValue(completedResult());
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-project', 'First request.', []);
+    });
+    await flushMicrotasks();
+    const firstContext = mocks.generateResponse.mock.calls[0][4]
+      .projectContext as ResolvedProjectContext;
+    expect(firstContext.instructions).toBe('Use the current project instructions.');
+
+    await act(async () => {
+      getSidebarProps().onSelectProject(project.id);
+    });
+    await act(async () => {
+      getProjectHomeProps().onUpdate({
+        ...getProjectHomeProps().project,
+        instructions: 'Use the newly edited project instructions.',
+        updatedAt: 2
+      });
+      getSidebarProps().onSelectSession('session-project');
+    });
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-project', 'Second request.', []);
+    });
+    await flushMicrotasks();
+
+    expect(firstContext.instructions).toBe('Use the current project instructions.');
+    expect(
+      (mocks.generateResponse.mock.calls[1][4].projectContext as ResolvedProjectContext)
+        .instructions
+    ).toBe('Use the newly edited project instructions.');
+  });
+
+  it('blocks unavailable automatic sources unless explicitly overridden once', async () => {
+    const project = createProject();
+    project.sources = [{
+      id: 'source-pending',
+      name: 'pending.txt',
+      mimeType: 'text/plain',
+      byteSize: 5,
+      localBlob: {
+        sha256: 'a'.repeat(64),
+        byteSize: 5,
+        mimeType: 'text/plain'
+      },
+      capability: 'file_search',
+      addedAt: 1
+    }];
+    const projectSession = createSession('session-project', 'Project chat');
+    projectSession.projectId = project.id;
+    mocks.loadedProjects = [project];
+    mocks.loadedSessions = [projectSession];
+    mocks.generateResponse.mockResolvedValue(completedResult());
+    vi.mocked(window.confirm)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    let started = true;
+    await act(async () => {
+      started = await getChatAreaProps().onSendMessage(
+        'session-project',
+        'Do not send yet.',
+        []
+      );
+    });
+    expect(started).toBe(false);
+    expect(mocks.generateResponse).not.toHaveBeenCalled();
+
+    await act(async () => {
+      started = await getChatAreaProps().onSendMessage(
+        'session-project',
+        'Send without sources.',
+        []
+      );
+    });
+    expect(started).toBe(true);
+    expect(mocks.generateResponse.mock.calls[0][4].projectContext).toEqual({
+      projectId: project.id,
+      instructions: project.instructions,
+      analysisFileIds: []
+    });
+  });
+
+  it('permanently deletes a project and its chats through two generations', async () => {
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      getSidebarProps().onNewProject();
+    });
+    const projectHome = getProjectHomeProps();
+    await act(async () => {
+      projectHome.onNewChat();
+    });
+    await flushMicrotasks();
+    mocks.writeWorkspaceState.mockClear();
+
+    await act(async () => {
+      projectHome.onDeleteProject();
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+
+    expect(getSidebarProps().projects).toEqual([]);
+    expect(getSidebarProps().sessions.some(
+      session => session.projectId === projectHome.project.id
+    )).toBe(false);
+    expect(getSidebarProps().sessions.map(session => session.id)).toEqual([
+      'session-a',
+      'session-b'
+    ]);
+    expect(mocks.clearInternalRecoveryArchive).toHaveBeenCalledTimes(1);
+    expect(mocks.writeWorkspaceState).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        projects: [],
+        sessions: expect.not.arrayContaining([
+          expect.objectContaining({ projectId: projectHome.project.id })
+        ])
+      }),
+      { publishTwice: true }
+    );
   });
 
   it('routes a completion to its originating session after selection changes', async () => {

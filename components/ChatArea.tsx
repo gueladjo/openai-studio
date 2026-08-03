@@ -8,7 +8,7 @@ import React, {
   useReducer,
   useState
 } from 'react';
-import { GeneratedFile, Message, Session, Source } from '../types';
+import { GeneratedFile, Message, Project, ProjectSource, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,6 +23,7 @@ import {
   chatDraftsReducer,
   getChatDraft
 } from '../utils/chatDrafts';
+import { ProjectIconGlyph } from './ProjectIcon';
 
 interface ChatAreaProps {
   session: Session | null;
@@ -46,6 +47,9 @@ interface ChatAreaProps {
   isLoading: boolean;
   isMobile?: boolean;
   readOnly?: boolean;
+  projectSources?: ProjectSource[];
+  onLoadProjectSource?: (source: ProjectSource) => Promise<File>;
+  project?: Pick<Project, 'name' | 'icon'>;
 }
 
 const AUTO_SCROLL_THRESHOLD_PX = 120;
@@ -504,6 +508,20 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                                 </div>
                             </div>
                         )}
+
+                        {typeof message.fileSearchCallCount === 'number' && (
+                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
+                                <FileText size={17} className="mt-0.5 flex-shrink-0 text-gray-500 dark:text-gray-400" />
+                                <div>
+                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
+                                        File Search
+                                    </div>
+                                    <div className="text-sm font-medium">
+                                        {message.fileSearchCallCount} invocation{message.fileSearchCallCount === 1 ? '' : 's'}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     <div className="my-3 border-t border-gray-200 dark:border-gray-800" />
@@ -561,7 +579,9 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
                     const sourcePresentation = getSourcePresentation(source);
                     const chipContent = (
                         <>
-                            {sourcePresentation.hostname ? (
+                            {source.kind === 'file' ? (
+                                <FileText size={12} className="flex-shrink-0 text-gray-400 dark:text-gray-500" />
+                            ) : sourcePresentation.hostname ? (
                                 <img
                                     src={`https://www.google.com/s2/favicons?domain=${sourcePresentation.hostname}&sz=32`}
                                     alt=""
@@ -763,11 +783,13 @@ const GeneratedFilesBlock = ({
 
 const ConversationHeader = ({
   title,
+  project,
   isMobile,
   canShareConversation,
   onShareConversation
 }: {
   title: string;
+  project?: Pick<Project, 'name' | 'icon'>;
   isMobile: boolean;
   canShareConversation: boolean;
   onShareConversation: () => void;
@@ -778,10 +800,27 @@ const ConversationHeader = ({
 
   return (
     <div className={containerClassName}>
-      <div className="min-w-0 flex-1">
-        <h2 className="font-semibold text-gray-800 dark:text-gray-200 select-text truncate">
-          {title || 'Untitled Chat'}
-        </h2>
+      <div className="flex min-w-0 flex-1 items-center gap-2 select-text">
+        {project ? (
+          <>
+            <ProjectIconGlyph
+              icon={project.icon}
+              size={20}
+              className="shrink-0 text-gray-600 dark:text-gray-300"
+            />
+            <span className="max-w-[40%] truncate font-semibold text-gray-800 dark:text-gray-200">
+              {project.name}
+            </span>
+            <span className="shrink-0 text-gray-400 dark:text-gray-600">/</span>
+            <h2 className="min-w-0 flex-1 truncate font-normal text-gray-500 dark:text-gray-400">
+              {title || 'Untitled Chat'}
+            </h2>
+          </>
+        ) : (
+          <h2 className="truncate font-semibold text-gray-800 dark:text-gray-200">
+            {title || 'Untitled Chat'}
+          </h2>
+        )}
       </div>
       <button
         type="button"
@@ -1129,7 +1168,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   apiKey,
   isLoading,
   isMobile = false,
-  readOnly = false
+  readOnly = false,
+  projectSources = [],
+  onLoadProjectSource,
+  project
 }) => {
   const [drafts, dispatchDraft] = useReducer(chatDraftsReducer, {});
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -1395,6 +1437,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     <div className="flex-1 min-w-0 w-full flex flex-col overflow-hidden bg-white dark:bg-[#0d1117] h-full relative transition-colors duration-200">
       <ConversationHeader
         title={session.title}
+        project={project}
         isMobile={isMobile}
         canShareConversation={canShareConversation}
         onShareConversation={onShareConversation}
@@ -1511,6 +1554,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </div>
           )}
           <div className="relative bg-gray-50 dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg focus-within:ring-1 focus-within:ring-blue-500/50 focus-within:border-blue-500 transition-all">
+            {projectSources.length > 0 && onLoadProjectSource && (
+              <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2 dark:border-gray-700">
+                <FileText size={13} className="shrink-0 text-gray-400" />
+                <select
+                  value=""
+                  disabled={readOnly || isLoading}
+                  aria-label="Attach project source"
+                  onChange={event => {
+                    const source = projectSources.find(item => item.id === event.target.value);
+                    event.target.value = '';
+                    if (!source || !activeSessionId) return;
+                    void onLoadProjectSource(source)
+                      .then(file => addAttachments(activeSessionId, [file]))
+                      .catch(error => dispatchDraft({
+                        type: 'set-attachment-error',
+                        sessionId: activeSessionId,
+                        attachmentError: error instanceof Error
+                          ? error.message
+                          : 'Project source could not be attached.'
+                      }));
+                  }}
+                  className="min-w-0 flex-1 bg-transparent text-xs text-gray-500 outline-none dark:text-gray-400"
+                >
+                  <option value="">Attach from project library…</option>
+                  {projectSources.map(source => (
+                    <option key={source.id} value={source.id}>{source.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={inputValue}

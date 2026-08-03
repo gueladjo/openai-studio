@@ -28,8 +28,10 @@ import {
   OpenAIResponsesStreamEvent,
   OpenAIResponsesStreamingConfig,
   OpenAIResponsesUsage,
+  ResolvedProjectContext,
   ResponseIncompleteReason,
-  Source
+  Source,
+  WebCitationSource
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
 import {
@@ -67,6 +69,7 @@ interface GenerateResponseResult {
   thinkingDuration: number;
   responseId?: string;
   usage?: OpenAIResponsesUsage;
+  fileSearchCallCount?: number;
 }
 
 interface GenerateResponseOptions {
@@ -78,6 +81,7 @@ interface GenerateResponseOptions {
     phase?: AssistantPhase
   ) => void;
   resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string | undefined>;
+  projectContext?: ResolvedProjectContext;
 }
 
 interface OpenAIErrorDetails {
@@ -169,6 +173,21 @@ const isContainerFileCitationAnnotation = (
   value: unknown
 ): value is OpenAIResponseContainerFileCitationCandidate => (
   isRecord(value) && value.type === 'container_file_citation'
+);
+
+type OpenAIResponseFileCitationCandidate = {
+  type: 'file_citation';
+  file_id: string;
+  filename: string;
+};
+
+const isFileCitationAnnotation = (
+  value: unknown
+): value is OpenAIResponseFileCitationCandidate => (
+  isRecord(value) &&
+  value.type === 'file_citation' &&
+  typeof value.file_id === 'string' &&
+  typeof value.filename === 'string'
 );
 
 const isOpenAIResponseSource = (value: unknown): value is OpenAIResponseSource => (
@@ -481,7 +500,36 @@ const extractMarkdownLinkCitations = (
 export interface CitationRegistry {
   sources: Source[];
   sourceIndexByUrl: Map<string, number>;
+  projectSourceIdByFileId?: Readonly<Record<string, string>>;
 }
+
+const addFileCitationSources = (
+  annotations: unknown[] | undefined,
+  registry: CitationRegistry
+): void => {
+  if (!annotations) return;
+  const knownFileIds = new Set(
+    registry.sources.flatMap(source => (
+      source.kind === 'file' ? [source.fileId] : []
+    ))
+  );
+  annotations.forEach(annotation => {
+    if (!isFileCitationAnnotation(annotation) || knownFileIds.has(annotation.file_id)) {
+      return;
+    }
+    knownFileIds.add(annotation.file_id);
+    registry.sources.push({
+      kind: 'file',
+      filename: annotation.filename,
+      fileId: annotation.file_id,
+      ...(registry.projectSourceIdByFileId?.[annotation.file_id]
+        ? {
+            projectSourceId: registry.projectSourceIdByFileId[annotation.file_id]
+          }
+        : {})
+    });
+  });
+};
 
 interface CitationReplacement {
   startIndex: number;
@@ -495,7 +543,7 @@ const getOrAddCitationSource = (
   annotation: OpenAIResponseUrlCitationAnnotation
 ): {
   citationNumber: number;
-  source: Source;
+  source: WebCitationSource;
 } | null => {
   const source = createSourceRecord(
     annotation.title,
@@ -598,6 +646,7 @@ export const applyCitationAnnotations = (
   annotations: unknown[] | undefined,
   registry: CitationRegistry
 ): string => {
+  addFileCitationSources(annotations, registry);
   const replacements = buildCitationReplacements(text, annotations, registry);
 
   if (replacements.length === 0) {
@@ -899,7 +948,8 @@ const parseGenerateResponse = (
   response: OpenAIResponse,
   thinkingDuration: number,
   normalizedConfig: ChatConfig,
-  streamState: GenerateResponseStreamState
+  streamState: GenerateResponseStreamState,
+  projectContext?: ResolvedProjectContext
 ): GenerateResponseResult => {
   let thinking = '';
   let content = '';
@@ -908,10 +958,14 @@ const parseGenerateResponse = (
   const rawSources: OpenAIResponseSource[] = [];
   const citationRegistry: CitationRegistry = {
     sources: [],
-    sourceIndexByUrl: new Map<string, number>()
+    sourceIndexByUrl: new Map<string, number>(),
+    projectSourceIdByFileId: projectContext?.sourceIdByFileId
   };
   const responseOutput = Array.isArray(response.output) ? response.output : undefined;
   const generatedFiles = collectGeneratedFilesFromOutput(responseOutput);
+  const fileSearchCallCount = responseOutput?.filter(item => (
+    item.type === 'file_search_call'
+  )).length || 0;
 
   if (responseOutput) {
     for (const item of responseOutput) {
@@ -1003,7 +1057,8 @@ const parseGenerateResponse = (
     generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
     thinkingDuration,
     responseId: response.id,
-    usage: response.usage
+    usage: response.usage,
+    ...(fileSearchCallCount > 0 ? { fileSearchCallCount } : {})
   };
 };
 
@@ -1229,11 +1284,22 @@ export const generateResponse = async (
     });
   }
 
+  if (options.projectContext?.vectorStoreId) {
+    tools.push({
+      type: 'file_search',
+      vector_store_ids: [options.projectContext.vectorStoreId],
+      max_num_results: 20
+    });
+  }
+
   if (normalizedConfig.tools.codeInterpreter) {
     tools.push({
       type: 'code_interpreter',
       container: {
-        type: 'auto'
+        type: 'auto',
+        ...(options.projectContext?.analysisFileIds.length
+          ? { file_ids: options.projectContext.analysisFileIds }
+          : {})
       }
     });
   }
@@ -1250,6 +1316,7 @@ export const generateResponse = async (
     model: normalizedConfig.model,
     input: apiInput,
     tools: tools,
+    ...(tools.length > 0 ? { tool_choice: 'auto' } : {}),
     store: true,
     stream: true,
     include: [
@@ -1259,7 +1326,10 @@ export const generateResponse = async (
     text: textConfig
   };
 
-  payload.instructions = getModelInstructions(normalizedConfig.model, systemInstruction);
+  payload.instructions = getModelInstructions(
+    normalizedConfig.model,
+    options.projectContext?.instructions ?? systemInstruction
+  );
 
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;
@@ -1407,7 +1477,8 @@ export const generateResponse = async (
         content: streamedContent,
         refusal: streamedRefusal,
         terminalStatus
-      }
+      },
+      options.projectContext
     );
   } catch (error: unknown) {
     if (error instanceof Error && error.name === 'AbortError') {

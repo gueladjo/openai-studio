@@ -13,6 +13,8 @@ rules, task routing, and verification commands.
 
 - Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
+- Local projects with names, icons, live project instructions, per-project chat defaults, grouped chats, and reusable source libraries.
+- Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.
 - Configured model picker for GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.5, GPT-5 Nano, and o3. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
 - Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
@@ -23,7 +25,7 @@ rules, task routing, and verification commands.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
 - Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
-- Local chat-title search with light and dark themes.
+- Global project/chat search with membership paths, plus light and dark themes.
 - Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
 - Responsive mobile layout, installable PWA output, and Electron desktop packaging.
 
@@ -32,9 +34,11 @@ rules, task routing, and verification commands.
 OpenAI Studio is a direct client, not a local-only inference application:
 
 - Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
+- Adding a searchable or analysis project source uploads it to OpenAI immediately after its canonical local bytes are saved. OpenAI Files and vector stores persist until deleted; deleting a local source or project starts remote deletion and records failed cleanup for retry.
 - Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
 - The API key entered in Settings is stored in the local workspace settings object and is not encrypted by this project.
-- A portable ZIP includes conversations, system instructions, attachments, and locally cached generated files, but never the API key or device-local backup preferences. Restoring keeps the current device's key. Archives are not encrypted and can contain sensitive content.
+- A portable ZIP includes conversations, projects, project instructions, original project-source bytes, system instructions, attachments, and locally cached generated files, but never the API key, OpenAI File/vector-store IDs, key fingerprints, cleanup records, or device-local backup preferences. Restoring keeps the current device's key. Archives are not encrypted and can contain sensitive content.
+- OpenAI documents Files and vector stores as retained until deleted, with abuse-monitoring and post-deletion behavior governed by its current [API data-retention policy](https://developers.openai.com/api/docs/guides/your-data#storage-requirements-and-retention-controls-per-endpoint).
 - Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
 
 Do not put a shared or production API key into a publicly deployed build. Each user should enter their own key in Settings.
@@ -154,6 +158,59 @@ Electron Builder writes host-platform output to `release/`. This repository expl
 
 The version displayed in Settings is compiled from `package.json`. Advance it with `npm version patch`, `npm version minor`, or `npm version major` as appropriate before a release.
 
+## Projects And Sources
+
+Use **New Project** in the sidebar to create a recurring-work container. A
+project owns its instructions, default model/reasoning/verbosity/tool settings,
+chats, and source library. Defaults are copied only into newly created project
+chats. Project instructions are resolved live for every future request; changing
+them does not rewrite earlier messages. Create project chats from the project
+home; existing chats cannot be moved between projects or into the standalone
+**Chats** section.
+
+Each project supports at most 40 sources, with at most 10 files selected per
+upload and the existing strict per-file limit of less than 50 MiB. Source bytes
+are saved and verified locally first, then routed as follows:
+
+- **Searchable** formats are uploaded to a lazily created, project-exclusive
+  OpenAI vector store and become automatic File Search context.
+- **Analysis** data files are uploaded as OpenAI Files and supplied to Code
+  Interpreter when that chat tool is enabled.
+- **Attach when needed** files remain in the local project library and are added
+  to a message only when selected in the composer; they are not silently
+  injected.
+
+If expected automatic sources are unavailable, sending is blocked unless the
+user explicitly confirms a one-request send without project sources. Project
+instructions still apply. Upload/index work is sequential, the app uses OpenAI's
+reported vector-store `usage_bytes`, and app-managed indexed storage is capped
+at 900 MiB. If indexing crosses the cap, the new OpenAI File is deleted and the
+source is rejected.
+
+File Search is not necessarily free. As of this documentation update, OpenAI's
+[live pricing page](https://developers.openai.com/api/docs/pricing#built-in-tools)
+lists 1 GiB of vector-store storage free across the account, then $0.10/GiB/day,
+plus $2.50 per 1,000 Responses API File Search calls; retrieved tokens are billed
+at the selected model's rates. The account-wide free allowance may already be
+used by vector stores outside this app, and parsed chunks plus embeddings can be
+larger than the source files.
+
+Deleting a source removes it from future requests immediately and deletes its
+underlying OpenAI File, which also removes it from any vector store containing
+it. Deleting a project permanently deletes the project, all member chats,
+instructions, and sources, with no in-app undo. Deleted member chats do not
+return to the standalone **Chats** section. OpenAI Files are deleted before the
+vector store. Failed cleanup
+remains visible in Settings for retry. External ZIP backups are separate files
+and are not erased by local project deletion.
+
+API-key editing is staged behind **Save API key**. If project resources exist
+under the old key, the app must delete them with that key before it persists the
+new one. Authentication failures block the switch and show the remote resource
+IDs so they can be removed through the OpenAI dashboard. Saving again then
+requires an explicit confirmation that manual cleanup is complete before the
+local cleanup records are cleared.
+
 ## Persistence And Backups
 
 Workspace changes save automatically after the workspace loads successfully.
@@ -172,9 +229,10 @@ fallback workspace.
 
 The Settings workspace actions are:
 
-- **Backup** creates an integrity-checked ZIP containing conversations, custom
-  instructions, attachments, and locally cached generated files. It excludes
-  the API key and device-local backup preferences.
+- **Backup** creates an integrity-checked ZIP containing conversations, projects,
+  project sources, custom instructions, attachments, and locally cached
+  generated files. It excludes the API key, remote project registry, and
+  device-local backup preferences.
 - **Restore** validates the selected ZIP and shows a preview before replacing
   the workspace. The current device's API key is preserved.
 - **Merge** starts after file selection without a separate preview or
@@ -184,7 +242,8 @@ The Settings workspace actions are:
   successful workspace mutation and is single-use.
 
 Legacy JSON exports are deliberately unsupported. Archives are unencrypted and
-can contain sensitive prompts, responses, instructions, and file data.
+can contain sensitive prompts, responses, project instructions, and original
+file/source data.
 
 Compatible Chromium browsers and Electron can opt into automatic backups by choosing a folder. Automatic backups:
 
@@ -199,7 +258,10 @@ Electron waits for a due backup during close and offers Retry or Close Without B
 
 The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text, labeling assistant progress and final-answer phases when available. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 
-Chat deletion asks for confirmation and has no in-app undo. Export the workspace before destructive cleanup.
+Chat deletion asks for confirmation and has no in-app undo. Project deletion is
+also permanent and clears the current merge/restore undo point. Export the
+workspace before destructive cleanup, while remembering that exported ZIPs are
+not deleted automatically later.
 
 ## Contributing
 

@@ -104,7 +104,7 @@ describe('applyCitationAnnotations', () => {
 
     expect(result).toBe(`Cats are mammals${FIRST_MARKER}.`);
     expect(registry.sources).toEqual([
-      { title: 'Cat facts', url: FIRST_URL }
+      { kind: 'web', title: 'Cat facts', url: FIRST_URL }
     ]);
     expect(registry.sourceIndexByUrl).toEqual(new Map([[FIRST_URL, 1]]));
   });
@@ -146,8 +146,8 @@ describe('applyCitationAnnotations', () => {
       `Claim ${FIRST_MARKER} [[2]](<${SECOND_URL}>).`
     );
     expect(registry.sources).toEqual([
-      { title: 'Example source', url: FIRST_URL },
-      { title: 'Second source', url: SECOND_URL }
+      { kind: 'web', title: 'Example source', url: FIRST_URL },
+      { kind: 'web', title: 'Second source', url: SECOND_URL }
     ]);
   });
 

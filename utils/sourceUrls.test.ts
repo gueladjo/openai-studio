@@ -16,11 +16,12 @@ describe('source URL safety', () => {
     'not a URL'
   ])('does not make unsafe or malformed URL %j clickable', (url) => {
     expect(parseSourceUrl(url)).toBeNull();
-    expect(getSourcePresentation({ title: 'Source', url }).href).toBeNull();
+    expect(getSourcePresentation({ kind: 'web', title: 'Source', url }).href).toBeNull();
   });
 
   it('normalizes safe HTTP URLs for presentation', () => {
     expect(getSourcePresentation({
+      kind: 'web',
       title: '  ',
       url: ' https://docs.example.com/path?q=1 '
     })).toEqual({
@@ -41,6 +42,7 @@ describe('source URL safety', () => {
     );
 
     expect(source).toEqual({
+      kind: 'web',
       title: 'javascript:alert(1)',
       url: 'javascript:alert(1)'
     });

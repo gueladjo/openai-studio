@@ -12,7 +12,8 @@ import {
   TextVerbosity,
   WebSearchContextSize,
   WebSearchOptions,
-  WebSearchUserLocation
+  WebSearchUserLocation,
+  ProjectDefaultConfig
 } from './types';
 
 type ChatConfigInput = Partial<Omit<ChatConfig, 'tools'>> & {
@@ -214,4 +215,12 @@ export const normalizeChatConfig = (
         : DEFAULT_CONFIG.tools.codeInterpreter
     }
   };
+};
+
+export const normalizeProjectDefaultConfig = (
+  config: ChatConfigInput | null | undefined
+): ProjectDefaultConfig => {
+  const normalized = normalizeChatConfig(config);
+  const { systemInstructionId: _systemInstructionId, ...projectConfig } = normalized;
+  return projectConfig;
 };

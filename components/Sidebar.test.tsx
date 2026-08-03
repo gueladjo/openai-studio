@@ -3,6 +3,7 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONFIG, type Project, type Session } from '../types';
 import { Sidebar } from './Sidebar';
 
 describe('Sidebar workspace merge controls', () => {
@@ -31,16 +32,23 @@ describe('Sidebar workspace merge controls', () => {
   const renderSidebar = async ({
     onMergeData = vi.fn(),
     mergeDisabled = false,
-    undoWorkspaceAction = null
+    undoWorkspaceAction = null,
+    sessions = [],
+    projects = [],
+    onApiKeySave
   }: {
     onMergeData?: (file: File) => void;
     mergeDisabled?: boolean;
     undoWorkspaceAction?: 'merge' | 'restore' | null;
+    sessions?: Session[];
+    projects?: Project[];
+    onApiKeySave?: (key: string) => void | Promise<void>;
   } = {}) => {
     await act(async () => {
       root.render(
         <Sidebar
-          sessions={[]}
+          sessions={sessions}
+          projects={projects}
           currentSessionId={null}
           onSelectSession={() => undefined}
           onNewSession={() => undefined}
@@ -49,6 +57,7 @@ describe('Sidebar workspace merge controls', () => {
           toggleTheme={() => undefined}
           apiKey=""
           onApiKeyChange={() => undefined}
+          onApiKeySave={onApiKeySave}
           onExportData={() => undefined}
           onImportData={() => undefined}
           onMergeData={onMergeData}
@@ -144,5 +153,65 @@ describe('Sidebar workspace merge controls', () => {
     expect(actionButtons[1].querySelector('.lucide-upload')).not.toBeNull();
     expect(actionButtons[0].querySelector('svg')?.classList).toContain('shrink-0');
     expect(actionButtons[1].querySelector('svg')?.classList).toContain('shrink-0');
+  });
+
+  it('shows project chat paths in global search and stages API-key changes', async () => {
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-1',
+      name: 'Client Alpha',
+      icon: 'briefcase',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: 1,
+      updatedAt: 1
+    };
+    const session: Session = {
+      id: 'chat-1',
+      title: 'Quarterly plan',
+      projectId: project.id,
+      messages: [],
+      config: DEFAULT_CONFIG,
+      lastModified: 1
+    };
+    const onApiKeySave = vi.fn();
+    await renderSidebar({ sessions: [session], projects: [project], onApiKeySave });
+
+    expect(container.querySelector('.lucide-briefcase-business')).not.toBeNull();
+    expect(Array.from(container.querySelectorAll('h3')).map(heading => (
+      heading.textContent?.trim()
+    ))).toEqual(['Projects', 'Chats']);
+    expect(container.textContent).not.toContain('General chats');
+    const projectButton = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent?.includes('Client Alpha')
+    );
+    expect(projectButton?.textContent?.trim()).toBe('Client Alpha');
+
+    const search = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Search projects and chats..."]'
+    )!;
+    const searchSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value'
+    )?.set;
+    await act(async () => {
+      searchSetter?.call(search, 'quarterly');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('Quarterly plan');
+    expect(container.textContent).toContain('/ Client Alpha');
+
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => {
+      searchSetter?.call(keyInput, 'sk-staged');
+      keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(onApiKeySave).not.toHaveBeenCalled();
+    const save = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent?.trim() === 'Save API key'
+    )!;
+    await act(async () => save.click());
+    expect(onApiKeySave).toHaveBeenCalledWith('sk-staged');
   });
 });

@@ -20,6 +20,7 @@ interface ConfigPanelProps {
   onDeleteSystemInstruction: (id: string) => void;
   isMobile?: boolean;
   readOnly?: boolean;
+  hideSystemInstructions?: boolean;
 }
 
 export const ConfigPanel: React.FC<ConfigPanelProps> = ({
@@ -30,7 +31,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onCreateSystemInstruction,
   onDeleteSystemInstruction,
   isMobile = false,
-  readOnly = false
+  readOnly = false,
+  hideSystemInstructions = false
 }) => {
   const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(true);
   const [isWebSearchOptionsOpen, setIsWebSearchOptionsOpen] = useState(false);
@@ -100,9 +102,8 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
           readOnly ? 'pointer-events-none opacity-60' : ''
         }`}
       >
-
         {/* System Instructions */}
-        <div className="space-y-3">
+        {!hideSystemInstructions && <div className="space-y-3">
             <div 
               className="flex items-center justify-between cursor-pointer group"
               onClick={() => setIsSystemInstructionsOpen(!isSystemInstructionsOpen)}
@@ -167,7 +168,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                  )}
               </div>
             )}
-        </div>
+        </div>}
         
         {/* Model Selection */}
         <div className="space-y-3">

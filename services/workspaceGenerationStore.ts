@@ -2,11 +2,19 @@ import {
   AppSettings,
   parseAppSettings,
   parseJsonText,
+  parseProjectRemoteState,
+  parseProjects,
   parseStoredSessions,
   parseSystemInstructions,
   validateWorkspaceReferences
 } from './workspaceSchema';
-import { LocalBlobReference, Session, SystemInstruction } from '../types';
+import {
+  LocalBlobReference,
+  Project,
+  ProjectRemoteState,
+  Session,
+  SystemInstruction
+} from '../types';
 import {
   encodeUtf8,
   sha256Blob,
@@ -20,6 +28,7 @@ import {
   getBlobPath,
   getObjectPath,
   LOCAL_WORKSPACE_SCHEMA_VERSION,
+  PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION,
   parseWorkspaceGenerationManifest,
   SessionObjectReference,
   WorkspaceGenerationError,
@@ -43,6 +52,8 @@ export interface WorkspaceGenerationData {
   sessions: Session[];
   settings: AppSettings;
   instructions: SystemInstruction[];
+  projects: Project[];
+  projectRemoteState: ProjectRemoteState;
 }
 
 export interface ValidWorkspaceGeneration extends WorkspaceGenerationData {
@@ -90,7 +101,8 @@ const createObjectReference = (text: string): ContentObjectReference => ({
 });
 
 const collectLocalBlobReferences = (
-  sessions: Session[]
+  sessions: Session[],
+  projects: Project[]
 ): Map<string, LocalBlobReference> => {
   const references = new Map<string, LocalBlobReference>();
   const addReference = (reference: LocalBlobReference): void => {
@@ -113,6 +125,9 @@ const collectLocalBlobReferences = (
       });
     });
   });
+  projects.forEach(project => {
+    project.sources.forEach(source => addReference(source.localBlob));
+  });
 
   return references;
 };
@@ -129,6 +144,17 @@ const verifyText = (
   if (sha256Bytes(bytes) !== reference.sha256) {
     throw new WorkspaceGenerationError(`${path} failed its SHA-256 check.`);
   }
+};
+
+const migrateSchemaV4Projects = (value: unknown): Project[] => {
+  if (!Array.isArray(value)) return parseProjects(value);
+  return parseProjects(value.map(project => {
+    if (typeof project !== 'object' || project === null || Array.isArray(project)) {
+      return project;
+    }
+    const { color: _retiredColor, ...currentProject } = project as Record<string, unknown>;
+    return currentProject;
+  }));
 };
 
 export class WorkspaceGenerationStore {
@@ -215,6 +241,8 @@ export class WorkspaceGenerationStore {
     parseStoredSessions(data.sessions);
     parseAppSettings(data.settings);
     parseSystemInstructions(data.instructions);
+    parseProjects(data.projects);
+    parseProjectRemoteState(data.projectRemoteState, data.projects);
     validateWorkspaceReferences(data);
 
     const current = await this.readCurrent();
@@ -240,9 +268,13 @@ export class WorkspaceGenerationStore {
     });
     const settingsText = serializeJson(data.settings);
     const instructionsText = serializeJson(data.instructions);
+    const projectsText = serializeJson(data.projects);
+    const projectRemoteStateText = serializeJson(data.projectRemoteState);
     const settings = createObjectReference(settingsText);
     const instructions = createObjectReference(instructionsText);
-    const blobReferences = [...collectLocalBlobReferences(data.sessions).values()]
+    const projects = createObjectReference(projectsText);
+    const projectRemoteState = createObjectReference(projectRemoteStateText);
+    const blobReferences = [...collectLocalBlobReferences(data.sessions, data.projects).values()]
       .sort((left, right) => left.sha256.localeCompare(right.sha256))
       .map(reference => ({
         sha256: reference.sha256,
@@ -252,7 +284,9 @@ export class WorkspaceGenerationStore {
     await Promise.all([
       ...sessionEntries.map(entry => this.writeObject(entry.reference, entry.text)),
       this.writeObject(settings, settingsText),
-      this.writeObject(instructions, instructionsText)
+      this.writeObject(instructions, instructionsText),
+      this.writeObject(projects, projectsText),
+      this.writeObject(projectRemoteState, projectRemoteStateText)
     ]);
 
     for (const reference of blobReferences) {
@@ -284,6 +318,8 @@ export class WorkspaceGenerationStore {
       sessions: sessionEntries.map(entry => entry.reference),
       settings,
       instructions,
+      projects,
+      projectRemoteState,
       blobs: blobReferences
     };
     const nextSlot = current?.slot === WORKSPACE_MANIFEST_SLOTS[0]
@@ -387,7 +423,17 @@ export class WorkspaceGenerationStore {
   ): Promise<ValidWorkspaceGeneration> {
     const settingsPath = getObjectPath(manifest.settings);
     const instructionsPath = getObjectPath(manifest.instructions);
-    const [sessions, settingsText, instructionsText] = await Promise.all([
+    const projectsPath = manifest.projects ? getObjectPath(manifest.projects) : null;
+    const projectRemoteStatePath = manifest.projectRemoteState
+      ? getObjectPath(manifest.projectRemoteState)
+      : null;
+    const [
+      sessions,
+      settingsText,
+      instructionsText,
+      projectsText,
+      projectRemoteStateText
+    ] = await Promise.all([
       Promise.all(manifest.sessions.map(async reference => {
         const path = getObjectPath(reference);
         const text = await this.adapter.readText(path);
@@ -407,7 +453,11 @@ export class WorkspaceGenerationStore {
         return parsed;
       })),
       this.adapter.readText(settingsPath),
-      this.adapter.readText(instructionsPath)
+      this.adapter.readText(instructionsPath),
+      projectsPath ? this.adapter.readText(projectsPath) : Promise.resolve(null),
+      projectRemoteStatePath
+        ? this.adapter.readText(projectRemoteStatePath)
+        : Promise.resolve(null)
     ]);
 
     if (settingsText === null) {
@@ -430,11 +480,47 @@ export class WorkspaceGenerationStore {
       parseSystemInstructions
     );
 
-    validateWorkspaceReferences({ sessions, settings, instructions });
+    let projects: Project[] = [];
+    let projectRemoteState: ProjectRemoteState = {
+      indexes: {},
+      cleanupTombstones: []
+    };
+    if (manifest.projects || manifest.projectRemoteState) {
+      if (
+        !manifest.projects ||
+        !manifest.projectRemoteState ||
+        !projectsPath ||
+        !projectRemoteStatePath ||
+        projectsText === null ||
+        projectRemoteStateText === null
+      ) {
+        throw new WorkspaceGenerationError('The project workspace objects are missing.');
+      }
+      verifyText(projectsPath, projectsText, manifest.projects);
+      projects = parseJsonText(
+        projectsPath,
+        projectsText,
+        manifest.schemaVersion === PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION
+          ? migrateSchemaV4Projects
+          : parseProjects
+      );
+      verifyText(
+        projectRemoteStatePath,
+        projectRemoteStateText,
+        manifest.projectRemoteState
+      );
+      projectRemoteState = parseJsonText(
+        projectRemoteStatePath,
+        projectRemoteStateText,
+        value => parseProjectRemoteState(value, projects)
+      );
+    }
+
+    validateWorkspaceReferences({ sessions, settings, instructions, projects });
     const declaredBlobs = new Map(
       manifest.blobs.map(reference => [reference.sha256, reference])
     );
-    const referencedBlobs = collectLocalBlobReferences(sessions);
+    const referencedBlobs = collectLocalBlobReferences(sessions, projects);
     if (declaredBlobs.size !== referencedBlobs.size) {
       throw new WorkspaceGenerationError(
         'The workspace manifest blob list does not match workspace references.'
@@ -456,7 +542,15 @@ export class WorkspaceGenerationStore {
       }
     }));
 
-    return { manifest, slot, sessions, settings, instructions };
+    return {
+      manifest,
+      slot,
+      sessions,
+      settings,
+      instructions,
+      projects,
+      projectRemoteState
+    };
   }
 
   private async garbageCollect(): Promise<void> {

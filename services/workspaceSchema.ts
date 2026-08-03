@@ -4,10 +4,15 @@ import {
   LocalBlobReference,
   Message,
   OpenAIResponsesUsage,
+  Project,
+  ProjectRemoteState,
+  ProjectSource,
   Session,
   Source,
   SystemInstruction
 } from '../types';
+import { normalizeProjectDefaultConfig } from '../constants';
+import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
 export const WORKSPACE_SCHEMA_VERSION = 1;
 export const MAX_WORKSPACE_BACKUP_BYTES = 512 * 1024 * 1024;
@@ -26,6 +31,8 @@ const MAX_ATTACHMENTS_PER_MESSAGE = 100;
 const MAX_SOURCES_PER_MESSAGE = 1_000;
 const MAX_GENERATED_FILES_PER_MESSAGE = 1_000;
 const MAX_INSTRUCTIONS = 10_000;
+export const MAX_PROJECTS = 10_000;
+export const MAX_PROJECT_SOURCES = 40;
 const MAX_TOKEN_COUNT = 1_000_000_000_000;
 const MAX_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_TIMESTAMP = 8_640_000_000_000_000;
@@ -45,6 +52,18 @@ const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const WEB_SEARCH_CONTEXT_SIZES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
+const PROJECT_ICONS = new Set([
+  'folder',
+  'briefcase',
+  'code',
+  'book',
+  'research',
+  'writing',
+  'health'
+]);
+const PROJECT_SOURCE_CAPABILITIES = new Set(['file_search', 'code_interpreter', 'direct_attachment']);
+const PROJECT_REMOTE_STATUSES = new Set(['disconnected', 'creating', 'ready', 'failed', 'deleting']);
+const PROJECT_REMOTE_FILE_STATUSES = new Set(['uploading', 'indexing', 'ready', 'failed', 'removing']);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface AppSettings {
@@ -247,10 +266,28 @@ const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
 
 const parseSource = (value: unknown, path: string): Source => {
   const source = assertRecord(value, path);
-  assertOnlyKeys(source, ['title', 'url'], path);
-  assertString(source.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
-  assertString(source.url, `${path}.url`, MAX_URL_LENGTH, false);
-  return value as Source;
+  if (source.kind === undefined) {
+    assertOnlyKeys(source, ['title', 'url'], path);
+    return {
+      kind: 'web',
+      title: assertString(source.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH),
+      url: assertString(source.url, `${path}.url`, MAX_URL_LENGTH, false)
+    };
+  }
+  if (source.kind === 'web') {
+    assertOnlyKeys(source, ['kind', 'title', 'url'], path);
+    assertString(source.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
+    assertString(source.url, `${path}.url`, MAX_URL_LENGTH, false);
+    return value as Source;
+  }
+  if (source.kind === 'file') {
+    assertOnlyKeys(source, ['kind', 'filename', 'fileId', 'projectSourceId'], path);
+    assertString(source.filename, `${path}.filename`, MAX_SHORT_TEXT_LENGTH, false);
+    assertString(source.fileId, `${path}.fileId`, MAX_API_IDENTIFIER_LENGTH, false);
+    assertOptionalLocalId(source.projectSourceId, `${path}.projectSourceId`);
+    return value as Source;
+  }
+  return fail(`${path}.kind`, 'has an unsupported value');
 };
 
 const parseLocalBlobReference = (
@@ -395,7 +432,8 @@ const parseMessage = (
       'attachments',
       'model',
       'modelName',
-      'reasoningEffort'
+      'reasoningEffort',
+      'fileSearchCallCount'
     ],
     path
   );
@@ -543,6 +581,14 @@ const parseMessage = (
     MAX_IDENTIFIER_LENGTH,
     false
   );
+  if (message.fileSearchCallCount !== undefined) {
+    assertSafeInteger(
+      message.fileSearchCallCount,
+      `${path}.fileSearchCallCount`,
+      0,
+      MAX_SOURCES_PER_MESSAGE
+    );
+  }
   return value as Message;
 };
 
@@ -670,7 +716,7 @@ export const parseStoredSessions = (
     const session = assertRecord(sessionValue, path);
     assertOnlyKeys(
       session,
-      ['id', 'title', 'messages', 'config', 'lastModified', 'pendingRequest'],
+      ['id', 'title', 'messages', 'config', 'lastModified', 'pendingRequest', 'projectId'],
       path
     );
     const sessionId = assertLocalId(session.id, `${path}.id`);
@@ -678,6 +724,7 @@ export const parseStoredSessions = (
     assertString(session.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
     parseConfig(session.config, `${path}.config`);
     assertTimestamp(session.lastModified, `${path}.lastModified`);
+    assertOptionalLocalId(session.projectId, `${path}.projectId`);
 
     const messages = assertArray(
       session.messages,
@@ -741,7 +788,17 @@ export const parseStoredSessions = (
     }
   });
 
-  return value as Session[];
+  const parsedSessions = value as Session[];
+  parsedSessions.forEach(session => {
+    session.messages.forEach(message => {
+      message.sources?.forEach((source, index) => {
+        if (source.kind !== undefined) return;
+        const migrated = parseSource(source, `sessions.sources[${index}]`);
+        Object.assign(source, migrated);
+      });
+    });
+  });
+  return parsedSessions;
 };
 
 export const parseAppSettings = (
@@ -784,14 +841,272 @@ export const parseSystemInstructions = (value: unknown): SystemInstruction[] => 
   return value as SystemInstruction[];
 };
 
+const parseProjectDefaultConfig = (
+  value: unknown,
+  path: string
+): Project['defaultConfig'] => {
+  const config = assertRecord(value, path);
+  if (config.systemInstructionId !== undefined) {
+    fail(`${path}.systemInstructionId`, 'is not supported for project defaults');
+  }
+  parseConfig(config, path);
+  return normalizeProjectDefaultConfig(config);
+};
+
+const parseProjectSource = (
+  value: unknown,
+  path: string,
+  sourceIds: Set<string>
+): ProjectSource => {
+  const source = assertRecord(value, path);
+  assertOnlyKeys(
+    source,
+    ['id', 'name', 'mimeType', 'byteSize', 'localBlob', 'capability', 'addedAt'],
+    path
+  );
+  const id = assertLocalId(source.id, `${path}.id`);
+  assertUniqueId(sourceIds, id, `${path}.id`);
+  assertString(source.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH, false);
+  assertString(source.mimeType, `${path}.mimeType`, 512, false);
+  const byteSize = assertSafeInteger(
+    source.byteSize,
+    `${path}.byteSize`,
+    0,
+    MAX_ATTACHMENT_BYTES - 1
+  );
+  const localBlob = parseLocalBlobReference(source.localBlob, `${path}.localBlob`);
+  if (localBlob.byteSize !== byteSize) {
+    fail(`${path}.byteSize`, 'must match localBlob.byteSize');
+  }
+  if (
+    typeof source.capability !== 'string' ||
+    !PROJECT_SOURCE_CAPABILITIES.has(source.capability)
+  ) {
+    fail(`${path}.capability`, 'has an unsupported value');
+  }
+  assertTimestamp(source.addedAt, `${path}.addedAt`);
+  return value as ProjectSource;
+};
+
+export const parseProjects = (value: unknown): Project[] => {
+  const values = assertArray(value, 'projects', MAX_PROJECTS);
+  const projectIds = new Set<string>();
+  const sourceIds = new Set<string>();
+
+  return values.map((projectValue, index): Project => {
+    const path = `projects[${index}]`;
+    const project = assertRecord(projectValue, path);
+    assertOnlyKeys(
+      project,
+      [
+        'id',
+        'name',
+        'icon',
+        'instructions',
+        'defaultConfig',
+        'sources',
+        'createdAt',
+        'updatedAt'
+      ],
+      path
+    );
+    const id = assertLocalId(project.id, `${path}.id`);
+    assertUniqueId(projectIds, id, `${path}.id`);
+    const name = assertString(project.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH, false);
+    if (typeof project.icon !== 'string' || !PROJECT_ICONS.has(project.icon)) {
+      fail(`${path}.icon`, 'has an unsupported value');
+    }
+    const instructions = assertString(
+      project.instructions,
+      `${path}.instructions`,
+      MAX_INSTRUCTION_CONTENT_LENGTH
+    );
+    const defaultConfig = parseProjectDefaultConfig(
+      project.defaultConfig,
+      `${path}.defaultConfig`
+    );
+    const sources = assertArray(
+      project.sources,
+      `${path}.sources`,
+      MAX_PROJECT_SOURCES
+    ).map((source, sourceIndex) => parseProjectSource(
+      source,
+      `${path}.sources[${sourceIndex}]`,
+      sourceIds
+    ));
+    const createdAt = assertTimestamp(project.createdAt, `${path}.createdAt`);
+    const updatedAt = assertTimestamp(project.updatedAt, `${path}.updatedAt`);
+    if (updatedAt < createdAt) {
+      fail(`${path}.updatedAt`, 'must not be earlier than createdAt');
+    }
+    return {
+      id,
+      name,
+      icon: project.icon as Project['icon'],
+      instructions,
+      defaultConfig,
+      sources,
+      createdAt,
+      updatedAt
+    };
+  });
+};
+
+export const parseProjectRemoteState = (
+  value: unknown,
+  projects?: Project[]
+): ProjectRemoteState => {
+  const state = assertRecord(value, 'projectRemoteState');
+  assertOnlyKeys(state, ['indexes', 'cleanupTombstones'], 'projectRemoteState');
+  const indexes = assertRecord(state.indexes, 'projectRemoteState.indexes');
+  const projectsById = new Map((projects || []).map(project => [project.id, project]));
+  const parsedIndexes: ProjectRemoteState['indexes'] = {};
+
+  Object.entries(indexes).forEach(([projectId, indexValue]) => {
+    assertLocalId(projectId, `projectRemoteState.indexes.${projectId}`);
+    const path = `projectRemoteState.indexes.${projectId}`;
+    const index = assertRecord(indexValue, path);
+    assertOnlyKeys(
+      index,
+      [
+        'projectId',
+        'apiKeyFingerprint',
+        'vectorStoreId',
+        'status',
+        'usageBytes',
+        'files',
+        'lastVerifiedAt'
+      ],
+      path
+    );
+    if (index.projectId !== projectId) {
+      fail(`${path}.projectId`, 'must match its registry key');
+    }
+    if (projects !== undefined && !projectsById.has(projectId)) {
+      fail(`${path}.projectId`, 'must reference an existing project');
+    }
+    if (
+      typeof index.apiKeyFingerprint !== 'string' ||
+      !SHA256_PATTERN.test(index.apiKeyFingerprint)
+    ) {
+      fail(`${path}.apiKeyFingerprint`, 'must be a lowercase SHA-256 digest');
+    }
+    assertOptionalString(index.vectorStoreId, `${path}.vectorStoreId`, MAX_API_IDENTIFIER_LENGTH, false);
+    if (typeof index.status !== 'string' || !PROJECT_REMOTE_STATUSES.has(index.status)) {
+      fail(`${path}.status`, 'has an unsupported value');
+    }
+    assertSafeInteger(index.usageBytes, `${path}.usageBytes`, 0, Number.MAX_SAFE_INTEGER);
+    if (index.lastVerifiedAt !== undefined) {
+      assertTimestamp(index.lastVerifiedAt, `${path}.lastVerifiedAt`);
+    }
+    const files = assertRecord(index.files, `${path}.files`);
+    const projectSourceIds = new Set(
+      projectsById.get(projectId)?.sources.map(source => source.id) || []
+    );
+    const parsedFiles: ProjectRemoteState['indexes'][string]['files'] = {};
+    Object.entries(files).forEach(([sourceId, fileValue]) => {
+      assertLocalId(sourceId, `${path}.files.${sourceId}`);
+      const filePath = `${path}.files.${sourceId}`;
+      const file = assertRecord(fileValue, filePath);
+      assertOnlyKeys(
+        file,
+        ['projectSourceId', 'openaiFileId', 'status', 'indexedUsageBytes', 'lastError'],
+        filePath
+      );
+      if (file.projectSourceId !== sourceId) {
+        fail(`${filePath}.projectSourceId`, 'must match its registry key');
+      }
+      if (projects !== undefined && !projectSourceIds.has(sourceId)) {
+        fail(`${filePath}.projectSourceId`, 'must reference a source in the same project');
+      }
+      assertOptionalString(file.openaiFileId, `${filePath}.openaiFileId`, MAX_API_IDENTIFIER_LENGTH, false);
+      if (
+        typeof file.status !== 'string' ||
+        !PROJECT_REMOTE_FILE_STATUSES.has(file.status)
+      ) {
+        fail(`${filePath}.status`, 'has an unsupported value');
+      }
+      if (file.indexedUsageBytes !== undefined) {
+        assertSafeInteger(
+          file.indexedUsageBytes,
+          `${filePath}.indexedUsageBytes`,
+          0,
+          Number.MAX_SAFE_INTEGER
+        );
+      }
+      assertOptionalString(file.lastError, `${filePath}.lastError`, MAX_SHORT_TEXT_LENGTH);
+      parsedFiles[sourceId] = file as unknown as ProjectRemoteState['indexes'][string]['files'][string];
+    });
+    parsedIndexes[projectId] = {
+      ...index,
+      files: parsedFiles
+    } as ProjectRemoteState['indexes'][string];
+  });
+
+  const tombstoneIds = new Set<string>();
+  const cleanupTombstones = assertArray(
+    state.cleanupTombstones,
+    'projectRemoteState.cleanupTombstones',
+    MAX_PROJECTS * (MAX_PROJECT_SOURCES + 1)
+  ).map((tombstoneValue, index) => {
+    const path = `projectRemoteState.cleanupTombstones[${index}]`;
+    const tombstone = assertRecord(tombstoneValue, path);
+    assertOnlyKeys(
+      tombstone,
+      [
+        'id',
+        'projectId',
+        'projectSourceId',
+        'apiKeyFingerprint',
+        'openaiFileIds',
+        'vectorStoreId',
+        'createdAt',
+        'lastError'
+      ],
+      path
+    );
+    const id = assertLocalId(tombstone.id, `${path}.id`);
+    assertUniqueId(tombstoneIds, id, `${path}.id`);
+    assertOptionalLocalId(tombstone.projectId, `${path}.projectId`);
+    assertOptionalLocalId(tombstone.projectSourceId, `${path}.projectSourceId`);
+    if (
+      typeof tombstone.apiKeyFingerprint !== 'string' ||
+      !SHA256_PATTERN.test(tombstone.apiKeyFingerprint)
+    ) {
+      fail(`${path}.apiKeyFingerprint`, 'must be a lowercase SHA-256 digest');
+    }
+    const fileIds = assertArray(
+      tombstone.openaiFileIds,
+      `${path}.openaiFileIds`,
+      MAX_PROJECT_SOURCES
+    ).map((fileId, fileIndex) => assertString(
+      fileId,
+      `${path}.openaiFileIds[${fileIndex}]`,
+      MAX_API_IDENTIFIER_LENGTH,
+      false
+    ));
+    if (new Set(fileIds).size !== fileIds.length) {
+      fail(`${path}.openaiFileIds`, 'must not contain duplicates');
+    }
+    assertOptionalString(tombstone.vectorStoreId, `${path}.vectorStoreId`, MAX_API_IDENTIFIER_LENGTH, false);
+    assertTimestamp(tombstone.createdAt, `${path}.createdAt`);
+    assertOptionalString(tombstone.lastError, `${path}.lastError`, MAX_SHORT_TEXT_LENGTH);
+    return tombstone as unknown as ProjectRemoteState['cleanupTombstones'][number];
+  });
+
+  return { indexes: parsedIndexes, cleanupTombstones };
+};
+
 export const validateWorkspaceReferences = ({
   sessions,
   settings,
-  instructions
+  instructions,
+  projects
 }: {
   sessions: Session[];
   settings?: AppSettings | BackupSettings | null;
   instructions?: SystemInstruction[];
+  projects?: Project[];
 }, options: {
   allowDanglingSelections?: boolean;
 } = {}): void => {
@@ -805,6 +1120,18 @@ export const validateWorkspaceReferences = ({
       'settings.lastActiveSessionId',
       'must reference a session in the same workspace'
     );
+  }
+
+  if (projects !== undefined) {
+    const projectIds = new Set(projects.map(project => project.id));
+    sessions.forEach((session, index) => {
+      if (session.projectId !== undefined && !projectIds.has(session.projectId)) {
+        fail(
+          `sessions[${index}].projectId`,
+          'must reference a project in the same workspace'
+        );
+      }
+    });
   }
 
   if (instructions === undefined || options.allowDanglingSelections) return;

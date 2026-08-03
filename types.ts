@@ -88,10 +88,21 @@ export interface ChatConfig {
   systemInstructionId?: string;
 }
 
-export interface Source {
+export interface WebCitationSource {
+  kind: 'web';
   title: string;
   url: string;
 }
+
+export type CitationSource =
+  | WebCitationSource
+  | {
+      kind: 'file';
+      filename: string;
+      fileId: string;
+      projectSourceId?: string;
+    };
+export type Source = CitationSource;
 
 export interface LocalBlobReference {
   sha256: string;
@@ -147,6 +158,7 @@ export interface Message {
   model?: string;
   modelName?: string; // Required for persisted assistant messages
   reasoningEffort?: string;
+  fileSearchCallCount?: number;
 }
 
 export interface FileAttachment {
@@ -166,6 +178,100 @@ export interface Session {
   config: ChatConfig;
   lastModified: number;
   pendingRequest?: PendingRequest;
+  projectId?: string;
+}
+
+export type ProjectIcon =
+  | 'folder'
+  | 'briefcase'
+  | 'code'
+  | 'book'
+  | 'research'
+  | 'writing'
+  | 'health';
+
+export type ProjectSourceCapability =
+  | 'file_search'
+  | 'code_interpreter'
+  | 'direct_attachment';
+
+export interface ProjectSource {
+  id: string;
+  name: string;
+  mimeType: string;
+  byteSize: number;
+  localBlob: LocalBlobReference;
+  capability: ProjectSourceCapability;
+  addedAt: number;
+}
+
+export type ProjectDefaultConfig = Omit<ChatConfig, 'systemInstructionId'>;
+
+export interface Project {
+  id: string;
+  name: string;
+  icon: ProjectIcon;
+  instructions: string;
+  defaultConfig: ProjectDefaultConfig;
+  sources: ProjectSource[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ProjectRemoteStatus =
+  | 'disconnected'
+  | 'creating'
+  | 'ready'
+  | 'failed'
+  | 'deleting';
+
+export type ProjectRemoteFileStatus =
+  | 'uploading'
+  | 'indexing'
+  | 'ready'
+  | 'failed'
+  | 'removing';
+
+export interface ProjectRemoteFile {
+  projectSourceId: string;
+  openaiFileId?: string;
+  status: ProjectRemoteFileStatus;
+  indexedUsageBytes?: number;
+  lastError?: string;
+}
+
+export interface ProjectRemoteIndex {
+  projectId: string;
+  apiKeyFingerprint: string;
+  vectorStoreId?: string;
+  status: ProjectRemoteStatus;
+  usageBytes: number;
+  files: Record<string, ProjectRemoteFile>;
+  lastVerifiedAt?: number;
+}
+
+export interface RemoteCleanupTombstone {
+  id: string;
+  projectId?: string;
+  projectSourceId?: string;
+  apiKeyFingerprint: string;
+  openaiFileIds: string[];
+  vectorStoreId?: string;
+  createdAt: number;
+  lastError?: string;
+}
+
+export interface ProjectRemoteState {
+  indexes: Record<string, ProjectRemoteIndex>;
+  cleanupTombstones: RemoteCleanupTombstone[];
+}
+
+export interface ResolvedProjectContext {
+  projectId: string;
+  instructions: string;
+  vectorStoreId?: string;
+  analysisFileIds: string[];
+  sourceIdByFileId?: Readonly<Record<string, string>>;
 }
 
 export interface PendingRequest {

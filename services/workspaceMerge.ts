@@ -1,6 +1,7 @@
 import {
   FileAttachment,
   Message,
+  Project,
   Session,
   SystemInstruction
 } from '../types';
@@ -69,11 +70,29 @@ const instructionContentKey = (instruction: SystemInstruction): string => (
 
 const serializeSessionContent = (session: Session): string => {
   const { systemInstructionId: _instructionId, ...config } = session.config;
+  const { projectId: _projectId, ...sessionWithoutProject } = session;
   return serializeCanonical({
-    ...session,
+    ...sessionWithoutProject,
     config
   });
 };
+
+const projectContentKey = (project: Project): string => serializeCanonical({
+  name: project.name,
+  icon: project.icon,
+  instructions: project.instructions,
+  defaultConfig: project.defaultConfig,
+  sources: project.sources.map(source => ({
+    name: source.name,
+    mimeType: source.mimeType,
+    byteSize: source.byteSize,
+    localBlob: source.localBlob,
+    capability: source.capability,
+    addedAt: source.addedAt
+  })),
+  createdAt: project.createdAt,
+  updatedAt: project.updatedAt
+});
 
 const referencedInstructionsMatch = (
   local: Session,
@@ -167,6 +186,8 @@ const remapAttachment = (
 const remapSession = (
   session: Session,
   instructionId: string | undefined,
+  projectId: string | undefined,
+  sourceIdMap: ReadonlyMap<string, string>,
   usedIds: ReturnType<typeof collectIds>,
   force: boolean
 ): Session => {
@@ -204,6 +225,19 @@ const remapSession = (
                 attachmentIdMap,
                 force
               )
+            ))
+          }
+        : {}),
+      ...(message.sources
+        ? {
+            sources: message.sources.map(source => (
+              source.kind === 'file' && source.projectSourceId
+                ? {
+                    ...source,
+                    projectSourceId: sourceIdMap.get(source.projectSourceId) ||
+                      source.projectSourceId
+                  }
+                : source
             ))
           }
         : {})
@@ -247,6 +281,7 @@ const remapSession = (
         ? { systemInstructionId: undefined }
         : { systemInstructionId: instructionId })
     },
+    ...(projectId === undefined ? { projectId: undefined } : { projectId }),
     ...(pendingRequest ? { pendingRequest } : {})
   };
 };
@@ -266,10 +301,84 @@ const collectBlobHashes = (sessions: Session[]): Set<string> => {
   return hashes;
 };
 
+const addProjectBlobHashes = (hashes: Set<string>, projects: Project[]): void => {
+  projects.forEach(project => {
+    project.sources.forEach(source => hashes.add(source.localBlob.sha256));
+  });
+};
+
+const createMergedProjectName = (
+  name: string,
+  usedNames: ReadonlySet<string>
+): string => {
+  const first = `${name} (merged)`;
+  if (!usedNames.has(first.trim().toLowerCase())) return first;
+  let suffix = 2;
+  while (usedNames.has(`${name} (merged ${suffix})`.trim().toLowerCase())) {
+    suffix += 1;
+  }
+  return `${name} (merged ${suffix})`;
+};
+
 export const createWorkspaceMergePlan = (
-  current: Pick<WorkspaceSnapshot, 'sessions' | 'settings' | 'instructions'>,
+  current: Pick<
+    WorkspaceSnapshot,
+    'sessions' | 'settings' | 'instructions' | 'projects' | 'projectRemoteState'
+  >,
   imported: WorkspaceReplacement
 ): WorkspaceMergePlan => {
+  const projects = (current.projects || []).map(project => ({
+    ...project,
+    sources: project.sources.map(source => ({ ...source }))
+  }));
+  const projectsByContent = new Map(
+    projects.map(project => [projectContentKey(project), project])
+  );
+  const usedProjectIds = new Set(projects.map(project => project.id));
+  const usedProjectNames = new Set(projects.map(project => project.name.trim().toLowerCase()));
+  const usedSourceIds = new Set(
+    projects.flatMap(project => project.sources.map(source => source.id))
+  );
+  const projectIdMap = new Map<string, string>();
+  const sourceIdMap = new Map<string, string>();
+  const importedProjectsAdded: Project[] = [];
+
+  (imported.projects || []).forEach(importedProject => {
+    const identical = projectsByContent.get(projectContentKey(importedProject));
+    if (identical) {
+      projectIdMap.set(importedProject.id, identical.id);
+      importedProject.sources.forEach((source, index) => {
+        const identicalSource = identical.sources[index];
+        if (identicalSource) sourceIdMap.set(source.id, identicalSource.id);
+      });
+      return;
+    }
+
+    const idConflict = usedProjectIds.has(importedProject.id);
+    const projectId = idConflict
+      ? createUniqueId(importedProject.id, usedProjectIds)
+      : importedProject.id;
+    usedProjectIds.add(projectId);
+    projectIdMap.set(importedProject.id, projectId);
+    const nameConflict = usedProjectNames.has(importedProject.name.trim().toLowerCase());
+    const name = idConflict || nameConflict
+      ? createMergedProjectName(importedProject.name, usedProjectNames)
+      : importedProject.name;
+    usedProjectNames.add(name.trim().toLowerCase());
+    const sources = importedProject.sources.map(source => {
+      const sourceId = usedSourceIds.has(source.id)
+        ? createUniqueId(source.id, usedSourceIds)
+        : source.id;
+      usedSourceIds.add(sourceId);
+      sourceIdMap.set(source.id, sourceId);
+      return { ...source, id: sourceId };
+    });
+    const project = { ...importedProject, id: projectId, name, sources };
+    projects.push(project);
+    importedProjectsAdded.push(project);
+    projectsByContent.set(projectContentKey(project), project);
+  });
+
   const localSessionsById = new Map(
     current.sessions.map(session => [session.id, session])
   );
@@ -333,6 +442,10 @@ export const createWorkspaceMergePlan = (
     remapSession(
       session,
       resolveInstructionId(session.config.systemInstructionId),
+      session.projectId === undefined
+        ? undefined
+        : projectIdMap.get(session.projectId),
+      sourceIdMap,
       usedIds,
       divergent
     )
@@ -360,8 +473,12 @@ export const createWorkspaceMergePlan = (
   validateWorkspaceReferences({
     sessions,
     settings: current.settings,
-    instructions
+    instructions,
+    projects
   });
+
+  const importedBlobHashes = collectBlobHashes(importedSessions);
+  addProjectBlobHashes(importedBlobHashes, importedProjectsAdded);
 
   return {
     replacement: {
@@ -373,9 +490,11 @@ export const createWorkspaceMergePlan = (
           : {})
       },
       instructions,
+      projects,
+      projectRemoteState: current.projectRemoteState,
       blobs: new Map()
     },
-    importedBlobHashes: collectBlobHashes(importedSessions),
+    importedBlobHashes,
     counts: {
       imported: importedSessions.length,
       skipped: imported.sessions.length - importedSessions.length,

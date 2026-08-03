@@ -1,7 +1,9 @@
 import { LocalBlobReference } from '../types';
 import { SHA256_PATTERN } from './contentAddressing';
 
-export const LOCAL_WORKSPACE_SCHEMA_VERSION = 3;
+export const LOCAL_WORKSPACE_SCHEMA_VERSION = 5;
+export const PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION = 4;
+export const LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION = 3;
 export const WORKSPACE_MANIFEST_SLOTS = [
   'workspace_manifest_a.json',
   'workspace_manifest_b.json'
@@ -21,12 +23,17 @@ export interface SessionObjectReference extends ContentObjectReference {
 }
 
 export interface WorkspaceGenerationManifest {
-  schemaVersion: typeof LOCAL_WORKSPACE_SCHEMA_VERSION;
+  schemaVersion:
+    | typeof LOCAL_WORKSPACE_SCHEMA_VERSION
+    | typeof PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION
+    | typeof LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION;
   revision: number;
   createdAt: number;
   sessions: SessionObjectReference[];
   settings: ContentObjectReference;
   instructions: ContentObjectReference;
+  projects?: ContentObjectReference;
+  projectRemoteState?: ContentObjectReference;
   blobs: ContentObjectReference[];
 }
 
@@ -92,12 +99,42 @@ export const parseWorkspaceGenerationManifest = (
   }
   assertOnlyKeys(
     value,
-    ['schemaVersion', 'revision', 'createdAt', 'sessions', 'settings', 'instructions', 'blobs'],
+    [
+      'schemaVersion',
+      'revision',
+      'createdAt',
+      'sessions',
+      'settings',
+      'instructions',
+      'projects',
+      'projectRemoteState',
+      'blobs'
+    ],
     filename
   );
-  if (value.schemaVersion !== LOCAL_WORKSPACE_SCHEMA_VERSION) {
+  if (
+    value.schemaVersion !== LOCAL_WORKSPACE_SCHEMA_VERSION &&
+    value.schemaVersion !== PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION &&
+    value.schemaVersion !== LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION
+  ) {
     throw new WorkspaceGenerationError(
-      `${filename}.schemaVersion must be ${LOCAL_WORKSPACE_SCHEMA_VERSION}.`
+      `${filename}.schemaVersion must be ${LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION}, ${PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION}, or ${LOCAL_WORKSPACE_SCHEMA_VERSION}.`
+    );
+  }
+  if (
+    value.schemaVersion !== LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION &&
+    (value.projects === undefined || value.projectRemoteState === undefined)
+  ) {
+    throw new WorkspaceGenerationError(
+      `${filename} is missing project workspace objects.`
+    );
+  }
+  if (
+    value.schemaVersion === LEGACY_LOCAL_WORKSPACE_SCHEMA_VERSION &&
+    (value.projects !== undefined || value.projectRemoteState !== undefined)
+  ) {
+    throw new WorkspaceGenerationError(
+      `${filename} schema-v3 cannot contain project objects.`
     );
   }
   const createdAt = parseNonNegativeInteger(value.createdAt, `${filename}.createdAt`);
@@ -147,12 +184,23 @@ export const parseWorkspaceGenerationManifest = (
   });
 
   return {
-    schemaVersion: LOCAL_WORKSPACE_SCHEMA_VERSION,
+    schemaVersion: value.schemaVersion,
     revision: parseNonNegativeInteger(value.revision, `${filename}.revision`),
     createdAt,
     sessions,
     settings: parseContentReference(value.settings, `${filename}.settings`),
     instructions: parseContentReference(value.instructions, `${filename}.instructions`),
+    ...(value.projects === undefined
+      ? {}
+      : { projects: parseContentReference(value.projects, `${filename}.projects`) }),
+    ...(value.projectRemoteState === undefined
+      ? {}
+      : {
+          projectRemoteState: parseContentReference(
+            value.projectRemoteState,
+            `${filename}.projectRemoteState`
+          )
+        }),
     blobs
   };
 };
@@ -170,6 +218,8 @@ export const collectManifestObjectHashes = (
 ): Set<string> => new Set([
   manifest.settings.sha256,
   manifest.instructions.sha256,
+  ...(manifest.projects ? [manifest.projects.sha256] : []),
+  ...(manifest.projectRemoteState ? [manifest.projectRemoteState.sha256] : []),
   ...manifest.sessions.map(session => session.sha256)
 ]);
 

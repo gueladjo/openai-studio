@@ -171,6 +171,7 @@ describe('OpenAI request contracts', () => {
           container: { type: 'auto' }
         }
       ],
+      tool_choice: 'auto',
       store: true,
       stream: true,
       include: [
@@ -191,6 +192,136 @@ describe('OpenAI request contracts', () => {
         summary: 'auto'
       }
     });
+  });
+
+  it('applies live project context with threaded history and parses file citations', async () => {
+    const previousAssistant: Message = {
+      id: 'assistant-previous',
+      role: 'assistant',
+      content: 'Earlier answer.',
+      openaiResponseId: 'resp-previous',
+      modelName: 'GPT-5.6 Sol',
+      timestamp: 2
+    };
+    const nextUser: Message = {
+      id: 'user-next',
+      role: 'user',
+      content: 'Use the project evidence.',
+      timestamp: 3
+    };
+    const citedMessage = {
+      ...messageOutput,
+      content: [{
+        type: 'output_text',
+        text: 'The project says 42.',
+        annotations: [{
+          type: 'file_citation',
+          file_id: 'file-search-source',
+          filename: 'evidence.txt'
+        }],
+        logprobs: []
+      }]
+    } as unknown as OpenAIResponse['output'][number];
+    const fileSearchCall = {
+      id: 'search-1',
+      type: 'file_search_call',
+      status: 'completed',
+      queries: ['answer'],
+      results: null
+    } as unknown as OpenAIResponse['output'][number];
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed',
+      sequence_number: 1,
+      response: createCompletedResponse([fileSearchCall, citedMessage])
+    }]));
+
+    const result = await generateResponse(
+      [userMessage, previousAssistant, nextUser],
+      {
+        ...DEFAULT_CONFIG,
+        tools: {
+          ...DEFAULT_CONFIG.tools,
+          webSearch: false,
+          codeInterpreter: true
+        }
+      },
+      'project-key',
+      'This global instruction must be ignored.',
+      {
+        projectContext: {
+          projectId: 'project-1',
+          instructions: 'Use current project instructions.',
+          vectorStoreId: 'vector-project-1',
+          analysisFileIds: ['file-analysis-1'],
+          sourceIdByFileId: {
+            'file-search-source': 'source-1'
+          }
+        }
+      }
+    );
+
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      input: [{ role: 'user', content: 'Use the project evidence.' }],
+      previous_response_id: 'resp-previous',
+      instructions: expect.stringContaining('Use current project instructions.'),
+      tool_choice: 'auto',
+      tools: [{
+        type: 'file_search',
+        vector_store_ids: ['vector-project-1'],
+        max_num_results: 20
+      }, {
+        type: 'code_interpreter',
+        container: {
+          type: 'auto',
+          file_ids: ['file-analysis-1']
+        }
+      }]
+    });
+    expect(createResponseMock.mock.calls[0][0].instructions)
+      .not.toContain('global instruction');
+    expect(result).toMatchObject({
+      fileSearchCallCount: 1,
+      sources: [{
+        kind: 'file',
+        filename: 'evidence.txt',
+        fileId: 'file-search-source',
+        projectSourceId: 'source-1'
+      }]
+    });
+  });
+
+  it('does not retry a rejected project File Search request without its context', async () => {
+    const error = Object.assign(new Error('Vector store is unavailable.'), {
+      status: 400,
+      param: 'tools[0].vector_store_ids'
+    });
+    createResponseMock.mockRejectedValue(error);
+
+    await expect(generateResponse(
+      [userMessage],
+      {
+        ...DEFAULT_CONFIG,
+        reasoningEffort: 'none',
+        tools: { ...DEFAULT_CONFIG.tools, webSearch: false }
+      },
+      'project-key',
+      undefined,
+      {
+        projectContext: {
+          projectId: 'project-1',
+          instructions: 'Project instructions.',
+          vectorStoreId: 'vector-project-1',
+          analysisFileIds: []
+        }
+      }
+    )).rejects.toBe(error);
+
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock.mock.calls[0][0].tools).toEqual([{
+      type: 'file_search',
+      vector_store_ids: ['vector-project-1'],
+      max_num_results: 20
+    }]);
   });
 
   it('normalizes custom Web Search options and omits blank location fields', async () => {
@@ -865,7 +996,7 @@ describe('generateResponse terminal output', () => {
       content: `Partial answer[[1]](<${sourceUrl}>).`,
       status: 'incomplete',
       incompleteReason: 'max_output_tokens',
-      sources: [{ title: 'Partial source', url: sourceUrl }],
+      sources: [{ kind: 'web', title: 'Partial source', url: sourceUrl }],
       usage,
       responseId: 'resp-1'
     });

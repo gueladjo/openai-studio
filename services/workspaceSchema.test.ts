@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, Session } from '../types';
+import { DEFAULT_CONFIG, Project, Session } from '../types';
 import {
   WORKSPACE_SCHEMA_VERSION,
   parseJsonText,
   parseJsonTextWithBackup,
+  parseProjectRemoteState,
+  parseProjects,
   parseStoredSessions,
   parseWorkspaceBackup,
   validateWorkspaceReferences
@@ -48,7 +50,7 @@ const createSession = (): Session => ({
       status: 'complete' as const,
       timestamp: 2,
       modelName: 'GPT-5.6 Sol',
-      sources: [{ title: 'OpenAI', url: 'https://openai.com' }],
+      sources: [{ kind: 'web', title: 'OpenAI', url: 'https://openai.com' }],
       usage: {
         input_tokens: 10,
         input_tokens_details: {
@@ -78,6 +80,33 @@ const createBackup = () => ({
   instructions: [],
   timestamp: 3
 });
+
+const createProject = (overrides: Partial<Project> = {}): Project => {
+  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+  return {
+    id: 'project-1',
+    name: 'Research',
+    icon: 'research',
+    instructions: 'Use project sources.',
+    defaultConfig,
+    sources: [{
+      id: 'source-1',
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      byteSize: 5,
+      localBlob: {
+        sha256: 'a'.repeat(64),
+        byteSize: 5,
+        mimeType: 'text/plain'
+      },
+      capability: 'file_search',
+      addedAt: 1
+    }],
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides
+  };
+};
 
 describe('workspace runtime schema', () => {
   it('accepts a complete versioned backup and migrates a legacy version marker', () => {
@@ -307,6 +336,93 @@ describe('workspace runtime schema', () => {
     })).toThrow('must reference a system instruction');
   });
 
+  it('migrates historical web citation records to the discriminated shape', () => {
+    const session = createSession();
+    session.messages[1].sources = [{
+      title: 'Legacy',
+      url: 'https://example.com'
+    } as any];
+
+    expect(parseStoredSessions([session])[0].messages[1].sources).toEqual([{
+      kind: 'web',
+      title: 'Legacy',
+      url: 'https://example.com'
+    }]);
+  });
+
+  it('validates project bounds, global source IDs, capabilities, and defaults', () => {
+    expect(parseProjects([createProject()])).toHaveLength(1);
+    expect(parseProjects([{ ...createProject(), icon: 'health' }])).toHaveLength(1);
+    expect(() => parseProjects([{
+      ...createProject(),
+      color: 'blue'
+    } as any])).toThrow('projects[0].color is not supported');
+
+    expect(() => parseProjects([
+      createProject(),
+      createProject({ id: 'project-2' })
+    ])).toThrow('sources[0].id duplicates');
+
+    expect(() => parseProjects([createProject({
+      sources: Array.from({ length: 41 }, (_, index) => ({
+        ...createProject().sources[0],
+        id: `source-${index}`
+      }))
+    })])).toThrow('must contain at most 40 items');
+
+    expect(() => parseProjects([createProject({
+      sources: [{
+        ...createProject().sources[0],
+        capability: 'memory' as any
+      }]
+    })])).toThrow('capability has an unsupported value');
+
+    expect(() => parseProjects([createProject({
+      sources: [{
+        ...createProject().sources[0],
+        byteSize: 50 * 1024 * 1024,
+        localBlob: {
+          ...createProject().sources[0].localBlob,
+          byteSize: 50 * 1024 * 1024
+        }
+      }]
+    })])).toThrow('byteSize must be a finite number between 0 and 52428799');
+
+    expect(() => parseProjects([createProject({
+      defaultConfig: {
+        ...createProject().defaultConfig,
+        systemInstructionId: 'instruction-1'
+      } as any
+    })])).toThrow('systemInstructionId is not supported');
+  });
+
+  it('validates project membership and live remote-registry references', () => {
+    const session = createSession();
+    session.projectId = 'missing-project';
+    expect(() => validateWorkspaceReferences({
+      sessions: [session],
+      projects: [createProject()]
+    })).toThrow('must reference a project');
+
+    expect(() => parseProjectRemoteState({
+      indexes: {
+        'project-1': {
+          projectId: 'project-1',
+          apiKeyFingerprint: 'b'.repeat(64),
+          status: 'ready',
+          usageBytes: 1,
+          files: {
+            'missing-source': {
+              projectSourceId: 'missing-source',
+              status: 'ready'
+            }
+          }
+        }
+      },
+      cleanupTombstones: []
+    }, [createProject()])).toThrow('must reference a source in the same project');
+  });
+
   it('reports schema-invalid JSON distinctly from syntax-invalid JSON', () => {
     expect(() => parseJsonText(
       'sessions.json',
@@ -328,7 +444,7 @@ describe('workspace runtime schema', () => {
       primaryText: '{}',
       readBackupText: async () => JSON.stringify(sessions),
       parseValue: parseStoredSessions
-    })).resolves.toEqual(sessions);
+    })).resolves.toEqual(JSON.parse(JSON.stringify(sessions)));
 
     await expect(parseJsonTextWithBackup({
       filename: 'sessions.json',

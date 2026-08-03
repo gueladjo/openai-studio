@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
+import { ProjectHome } from './components/ProjectHome';
 import { TitleBar } from './components/TitleBar';
 import {
   AssistantOutputMessage,
@@ -14,7 +15,11 @@ import {
   GeneratedFile,
   Message,
   DEFAULT_CONFIG,
-  SystemInstruction
+  SystemInstruction,
+  Project,
+  ProjectRemoteState,
+  ProjectSource,
+  ResolvedProjectContext
 } from './types';
 import {
   fetchGeneratedFileContent,
@@ -29,6 +34,7 @@ import {
   writeJsonFile,
   readSessions,
   writeSessions,
+  writeWorkspaceState,
   storeAttachmentBlob,
   readLocalBlob,
   storeLocalBlob,
@@ -36,6 +42,7 @@ import {
   readWorkspaceSnapshot,
   synchronizeWorkspaceRevision,
   getWorkspaceRevision,
+  clearInternalRecoveryArchive,
   WorkspaceRevisionConflictError,
   StorageBackendChoice,
   StorageBackendChoiceRequest,
@@ -90,6 +97,17 @@ import { confirmChatDeletion } from './utils/chatDeletion';
 import { getModelConfig, normalizeChatConfig } from './constants';
 import { AlertTriangle, Loader2, Menu, RefreshCw, Settings, X } from 'lucide-react';
 import { validateAttachments } from './utils/attachmentValidation';
+import {
+  ProjectSourceService,
+  ProjectSourceServiceError,
+  createEmptyProjectRemoteState,
+  createProjectCleanupTombstone,
+  createSourceCleanupTombstone,
+  fingerprintApiKey,
+  getProjectSourceAvailability,
+  resolveProjectContext
+} from './services/projectSourceService';
+import { validateProjectSourceFiles } from './utils/projectSources';
 
 // Hook for detecting mobile viewport
 const useIsMobile = (breakpoint = 768) => {
@@ -140,13 +158,26 @@ declare global {
   }
 }
 
-type SaveKey = 'sessions' | 'instructions' | 'settings';
+type SaveKey =
+  | 'sessions'
+  | 'instructions'
+  | 'settings'
+  | 'projects'
+  | 'projectRemoteState';
 
-const SAVE_KEYS: SaveKey[] = ['sessions', 'instructions', 'settings'];
+const SAVE_KEYS: SaveKey[] = [
+  'sessions',
+  'instructions',
+  'settings',
+  'projects',
+  'projectRemoteState'
+];
 const SAVE_DELAYS: Record<SaveKey, number> = {
   sessions: 1000,
   instructions: 500,
-  settings: 500
+  settings: 500,
+  projects: 500,
+  projectRemoteState: 0
 };
 const SESSION_SAVE_MAX_WAIT_MS = 5000;
 const SAVE_RETRY_DELAYS_MS = [500, 1500, 5000] as const;
@@ -374,6 +405,23 @@ function App() {
   const [apiKey, setApiKey] = useState('');
   const [systemInstructions, setSystemInstructions] = useState<SystemInstruction[]>([]);
   const systemInstructionsRef = useRef<SystemInstruction[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const projectsRef = useRef<Project[]>([]);
+  const [projectRemoteState, setProjectRemoteState] = useState<ProjectRemoteState>(
+    createEmptyProjectRemoteState
+  );
+  const projectRemoteStateRef = useRef<ProjectRemoteState>(
+    createEmptyProjectRemoteState()
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [busyProjectSourceIds, setBusyProjectSourceIds] = useState<Set<string>>(
+    new Set()
+  );
+  const busyProjectSourceIdsRef = useRef<Set<string>>(new Set());
+  const [projectActionError, setProjectActionError] = useState<string | null>(null);
+  const projectOpenReconciliationRef = useRef<string | null>(null);
+  const projectSourceIngestionChainRef = useRef<Promise<void>>(Promise.resolve());
+  const skipNextRemoteStateEffectSaveRef = useRef(false);
   const settingsRef = useRef<AppSettings>({
     theme: 'dark',
     apiKey: ''
@@ -421,6 +469,14 @@ function App() {
   }, [systemInstructions]);
 
   useLayoutEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  useLayoutEffect(() => {
+    projectRemoteStateRef.current = projectRemoteState;
+  }, [projectRemoteState]);
+
+  useLayoutEffect(() => {
     dirHandleRef.current = dirHandle;
     isWorkspaceLoadedRef.current = isWorkspaceLoaded;
   }, [dirHandle, isWorkspaceLoaded]);
@@ -435,9 +491,15 @@ function App() {
 
   // Close sidebar when selecting a session on mobile
   const handleSelectSession = useCallback((id: string) => {
+    setSelectedProjectId(null);
     updateCurrentSessionId(id);
     if (isMobile) setIsSidebarOpen(false);
   }, [isMobile, updateCurrentSessionId]);
+
+  const handleSelectProject = useCallback((id: string) => {
+    setSelectedProjectId(id);
+    if (isMobile) setIsSidebarOpen(false);
+  }, [isMobile]);
 
   const forceImmediateSessionSaveRef = useRef(false);
   const skipNextSessionEffectSaveRef = useRef(false);
@@ -461,8 +523,16 @@ function App() {
           STORAGE_FILES.INSTRUCTIONS,
           systemInstructionsRef.current
         );
-      } else {
+      } else if (key === 'settings') {
         revision = await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
+      } else if (key === 'projects') {
+        revision = await writeJsonFile(handle, STORAGE_FILES.PROJECTS, projectsRef.current);
+      } else {
+        revision = await writeJsonFile(
+          handle,
+          STORAGE_FILES.PROJECT_REMOTE_STATE,
+          projectRemoteStateRef.current
+        );
       }
       workspaceCoordinatorRef.current?.publishUpdate(revision);
       void backupSchedulerRef.current?.evaluate().catch(() => undefined);
@@ -787,22 +857,35 @@ function App() {
     let loadedSessions: Session[] = [];
     let loadedSettings: AppSettings | null = null;
     let loadedInstructions: SystemInstruction[] | null = null;
+    let loadedProjects: Project[] = [];
+    let loadedProjectRemoteState = createEmptyProjectRemoteState();
 
     // A reader retries if a broadcast lands while its snapshot is being read.
     // The writer is already protected by the exclusive workspace lock.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revisionBeforeRead = await synchronizeWorkspaceRevision(handle);
       if (!isStillCurrent()) throw createOperationAbortError();
-      [loadedSessions, loadedSettings, loadedInstructions] = await Promise.all([
+      [
+        loadedSessions,
+        loadedSettings,
+        loadedInstructions,
+        loadedProjects,
+        loadedProjectRemoteState
+      ] = await Promise.all([
         readSessions(handle, { readOnly: role === 'reader' }),
         readJsonFile(handle, STORAGE_FILES.SETTINGS),
-        readJsonFile(handle, STORAGE_FILES.INSTRUCTIONS)
+        readJsonFile(handle, STORAGE_FILES.INSTRUCTIONS),
+        readJsonFile(handle, STORAGE_FILES.PROJECTS).then(value => value || []),
+        readJsonFile(handle, STORAGE_FILES.PROJECT_REMOTE_STATE).then(
+          value => value || createEmptyProjectRemoteState()
+        )
       ]);
       if (!isStillCurrent()) throw createOperationAbortError();
       validateWorkspaceReferences({
         sessions: loadedSessions,
         settings: loadedSettings,
-        instructions: loadedInstructions || []
+        instructions: loadedInstructions || [],
+        projects: loadedProjects
       }, {
         allowDanglingSelections: true
       });
@@ -829,6 +912,8 @@ function App() {
     revokeAttachmentPreviewUrls(sessionsRef.current);
     sessionsRef.current = cleanedSessions;
     systemInstructionsRef.current = nextInstructions;
+    projectsRef.current = loadedProjects;
+    projectRemoteStateRef.current = loadedProjectRemoteState;
     settingsRef.current = {
       theme: loadedSettings?.theme === 'light' ? 'light' : 'dark',
       apiKey: loadedSettings?.apiKey || '',
@@ -840,6 +925,14 @@ function App() {
 
     updateSessionsState(cleanedSessions);
     setSystemInstructions(nextInstructions);
+    setProjects(loadedProjects);
+    setProjectRemoteState(loadedProjectRemoteState);
+    projectOpenReconciliationRef.current = null;
+    setSelectedProjectId(current => (
+      current && loadedProjects.some(project => project.id === current)
+        ? current
+        : null
+    ));
     setIsDarkMode(loadedSettings ? loadedSettings.theme === 'dark' : true);
     setApiKey(loadedSettings?.apiKey || '');
     updateCurrentSessionId(nextCurrentSessionId);
@@ -997,6 +1090,18 @@ function App() {
     scheduleSave('instructions');
   }, [systemInstructions, dirHandle, isWorkspaceLoaded, scheduleSave]);
 
+  useEffect(() => {
+    scheduleSave('projects');
+  }, [projects, dirHandle, isWorkspaceLoaded, scheduleSave]);
+
+  useEffect(() => {
+    if (skipNextRemoteStateEffectSaveRef.current) {
+      skipNextRemoteStateEffectSaveRef.current = false;
+      return;
+    }
+    scheduleSave('projectRemoteState', true);
+  }, [projectRemoteState, dirHandle, isWorkspaceLoaded, scheduleSave]);
+
   // Effect: Persist Settings (Theme, API Key, Active Session)
   useEffect(() => {
     scheduleSave('settings');
@@ -1106,8 +1211,14 @@ function App() {
   // --- App Logic ---
 
   const currentSession = sessions.find(s => s.id === currentSessionId) || null;
+  const selectedProject = projects.find(project => project.id === selectedProjectId) || null;
+  const currentSessionProject = currentSession?.projectId
+    ? projects.find(project => project.id === currentSession.projectId) || null
+    : null;
+  const totalIndexedUsageBytes = Object.values(projectRemoteState.indexes)
+    .reduce((sum, index) => sum + index.usageBytes, 0);
 
-  const createNewSession = () => {
+  const createSession = (projectId?: string) => {
     if (
       !workspaceCanWriteRef.current ||
       workspaceMutationBlockedRef.current
@@ -1115,7 +1226,13 @@ function App() {
       return;
     }
 
-    const sourceConfig = currentSession?.config || DEFAULT_CONFIG;
+    const project = projectId
+      ? projectsRef.current.find(item => item.id === projectId)
+      : undefined;
+    const standaloneConfig = currentSession && !currentSession.projectId
+      ? currentSession.config
+      : sessionsRef.current.find(session => !session.projectId)?.config;
+    const sourceConfig = project?.defaultConfig || standaloneConfig || DEFAULT_CONFIG;
     const configToUse: ChatConfig = {
       ...sourceConfig,
       tools: {
@@ -1135,10 +1252,517 @@ function App() {
       messages: [],
       config: configToUse,
       lastModified: Date.now(),
+      ...(projectId ? { projectId } : {})
     };
     updateSessionsState(prev => [newSession, ...prev]);
+    setSelectedProjectId(null);
     updateCurrentSessionId(newSession.id);
   };
+
+  const createNewSession = () => createSession();
+
+  const createProjectSession = (projectId: string) => createSession(projectId);
+
+  const createNewProject = () => {
+    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    const now = Date.now();
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } =
+      normalizeChatConfig(currentSession?.config || DEFAULT_CONFIG);
+    const project: Project = {
+      id: uuidv4(),
+      name: 'New Project',
+      icon: 'folder',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    const next = [...projectsRef.current, project];
+    projectsRef.current = next;
+    setProjects(next);
+    setSelectedProjectId(project.id);
+    scheduleSave('projects', true);
+  };
+
+  const updateProject = (updated: Project) => {
+    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    const next = projectsRef.current.map(project => (
+      project.id === updated.id ? updated : project
+    ));
+    projectsRef.current = next;
+    setProjects(next);
+  };
+
+  const setRemoteState = (state: ProjectRemoteState): void => {
+    projectRemoteStateRef.current = state;
+    setProjectRemoteState(state);
+  };
+
+  const persistRemoteState = async (state: ProjectRemoteState): Promise<void> => {
+    const handle = dirHandleRef.current;
+    if (!handle) throw new Error('Workspace storage is unavailable.');
+    const revision = await writeWorkspaceState(handle, {
+      projectRemoteState: state
+    });
+    projectRemoteStateRef.current = state;
+    skipNextRemoteStateEffectSaveRef.current = true;
+    setProjectRemoteState(state);
+    workspaceCoordinatorRef.current?.publishUpdate(revision);
+  };
+
+  const setProjectSourceBusy = (sourceId: string, busy: boolean): void => {
+    const next = new Set(busyProjectSourceIdsRef.current);
+    if (busy) next.add(sourceId); else next.delete(sourceId);
+    busyProjectSourceIdsRef.current = next;
+    setBusyProjectSourceIds(next);
+  };
+
+  const indexProjectSourceNow = async (
+    projectId: string,
+    source: ProjectSource,
+    blob: Blob
+  ): Promise<void> => {
+    if (source.capability === 'direct_attachment') return;
+    const project = projectsRef.current.find(item => item.id === projectId);
+    const requestApiKey = settingsRef.current.apiKey;
+    if (!project || !requestApiKey) {
+      setProjectActionError('Add an API key in Settings to index project sources.');
+      return;
+    }
+    try {
+      await flushPendingSaves();
+      const service = new ProjectSourceService(requestApiKey);
+      const state = await service.ingestSource({
+        project,
+        source,
+        blob,
+        state: projectRemoteStateRef.current,
+        apiKeyFingerprint: fingerprintApiKey(requestApiKey),
+        persist: persistRemoteState
+      });
+      setRemoteState(state);
+      setProjectActionError(null);
+    } catch (error) {
+      setProjectActionError(getErrorMessage(error));
+    }
+  };
+
+  const indexProjectSource = (
+    projectId: string,
+    source: ProjectSource,
+    blob: Blob
+  ): Promise<void> => {
+    if (source.capability === 'direct_attachment') return Promise.resolve();
+    setProjectSourceBusy(source.id, true);
+    const pending = projectSourceIngestionChainRef.current.then(() => (
+      indexProjectSourceNow(projectId, source, blob)
+    )).finally(() => setProjectSourceBusy(source.id, false));
+    projectSourceIngestionChainRef.current = pending.catch(() => undefined);
+    return pending;
+  };
+
+  const addProjectSources = (projectId: string, files: File[]) => {
+    const project = projectsRef.current.find(item => item.id === projectId);
+    const handle = dirHandleRef.current;
+    if (
+      !project ||
+      !handle ||
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      busyProjectSourceIdsRef.current.size > 0
+    ) return;
+
+    const batchOperationId = `project-source-batch:${uuidv4()}`;
+    setProjectSourceBusy(batchOperationId, true);
+    void (async () => {
+      try {
+        const formats = validateProjectSourceFiles(files, project.sources.length);
+        const additions: Array<{ source: ProjectSource; blob: Blob }> = [];
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          const localBlob = await storeLocalBlob(handle, file, formats[index].mimeType);
+          additions.push({
+            source: {
+              id: uuidv4(),
+              name: file.name,
+              mimeType: formats[index].mimeType,
+              byteSize: file.size,
+              localBlob,
+              capability: formats[index].capability,
+              addedAt: Date.now()
+            },
+            blob: file
+          });
+        }
+        const currentProject = projectsRef.current.find(item => item.id === projectId);
+        if (!currentProject) return;
+        const updatedProject = {
+          ...currentProject,
+          sources: [...currentProject.sources, ...additions.map(item => item.source)],
+          updatedAt: Date.now()
+        };
+        const nextProjects = projectsRef.current.map(item => (
+          item.id === projectId ? updatedProject : item
+        ));
+        projectsRef.current = nextProjects;
+        setProjects(nextProjects);
+        scheduleSave('projects', true);
+        await flushPendingSaves(['projects']);
+        for (const addition of additions) {
+          await indexProjectSource(projectId, addition.source, addition.blob);
+        }
+      } catch (error) {
+        setProjectActionError(getErrorMessage(error));
+      } finally {
+        setProjectSourceBusy(batchOperationId, false);
+      }
+    })();
+  };
+
+  const retryProjectSource = (projectId: string, source: ProjectSource) => {
+    const handle = dirHandleRef.current;
+    if (!handle || busyProjectSourceIdsRef.current.size > 0) return;
+    void readLocalBlob(handle, source.localBlob)
+      .then(blob => {
+        if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
+        return indexProjectSource(projectId, source, blob);
+      })
+      .catch(error => setProjectActionError(getErrorMessage(error)));
+  };
+
+  const downloadProjectSource = (source: ProjectSource) => {
+    const handle = dirHandleRef.current;
+    if (!handle) return;
+    void readLocalBlob(handle, source.localBlob)
+      .then(blob => {
+        if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
+        downloadBlobFile(source.name, blob);
+      })
+      .catch(error => setProjectActionError(getErrorMessage(error)));
+  };
+
+  const loadProjectSourceFile = async (source: ProjectSource): Promise<File> => {
+    const handle = dirHandleRef.current;
+    if (!handle) throw new Error('Workspace storage is unavailable.');
+    const blob = await readLocalBlob(handle, source.localBlob);
+    if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
+    return new File([blob], source.name, {
+      type: source.mimeType || blob.type
+    });
+  };
+
+  const deleteProjectSource = (projectId: string, source: ProjectSource) => {
+    if (busyProjectSourceIdsRef.current.size > 0) {
+      setProjectActionError('Wait for project source uploads to finish before deleting a source.');
+      return;
+    }
+    if (
+      !window.confirm(`Delete "${source.name}" from this project? This also deletes its OpenAI File.`)
+    ) return;
+    const handle = dirHandleRef.current;
+    if (!handle || !workspaceCanWriteRef.current) return;
+    void enqueueDestructiveOperation(async () => {
+      await flushPendingSaves();
+      const project = projectsRef.current.find(item => item.id === projectId);
+      if (!project) return;
+      const index = projectRemoteStateRef.current.indexes[projectId];
+      const tombstone = createSourceCleanupTombstone(projectId, source.id, index);
+      const nextProjects = projectsRef.current.map(item => (
+        item.id === projectId
+          ? {
+              ...item,
+              sources: item.sources.filter(value => value.id !== source.id),
+              updatedAt: Date.now()
+            }
+          : item
+      ));
+      const nextRemoteState = createEmptyProjectRemoteState();
+      nextRemoteState.indexes = { ...projectRemoteStateRef.current.indexes };
+      nextRemoteState.cleanupTombstones = [
+        ...projectRemoteStateRef.current.cleanupTombstones,
+        ...(tombstone ? [tombstone] : [])
+      ];
+      if (index) {
+        nextRemoteState.indexes[projectId] = {
+          ...index,
+          files: Object.fromEntries(
+            Object.entries(index.files).filter(([sourceId]) => sourceId !== source.id)
+          )
+        };
+      }
+      const revision = await writeWorkspaceState(handle, {
+        projects: nextProjects,
+        projectRemoteState: nextRemoteState
+      });
+      projectsRef.current = nextProjects;
+      setProjects(nextProjects);
+      skipNextRemoteStateEffectSaveRef.current = true;
+      setRemoteState(nextRemoteState);
+      workspaceCoordinatorRef.current?.publishUpdate(revision);
+      if (tombstone && settingsRef.current.apiKey) {
+        const service = new ProjectSourceService(settingsRef.current.apiKey);
+        await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
+      }
+    }, { blocksInteractions: false }).catch(error => {
+      setProjectActionError(getErrorMessage(error));
+    });
+  };
+
+  const deleteProject = (projectId: string) => {
+    const project = projectsRef.current.find(item => item.id === projectId);
+    const handle = dirHandleRef.current;
+    if (!project || !handle) return;
+    if (busyProjectSourceIdsRef.current.size > 0) {
+      window.alert('Wait for project source uploads to finish before deleting a project.');
+      return;
+    }
+    const memberSessions = sessionsRef.current.filter(session => session.projectId === projectId);
+    if (memberSessions.some(session => processingSessionIdsRef.current.has(session.id))) {
+      window.alert('Stop active responses in this project before deleting it.');
+      return;
+    }
+    if (!window.confirm([
+      `Permanently delete "${project.name}"?`,
+      '',
+      `${memberSessions.length} chat(s) and ${project.sources.length} source(s) will be removed with no in-app undo.`,
+      'External ZIP backups are not erased automatically.'
+    ].join('\n'))) return;
+
+    void enqueueDestructiveOperation(async () => {
+      await flushPendingSaves();
+      const index = projectRemoteStateRef.current.indexes[projectId];
+      const tombstone = createProjectCleanupTombstone(projectId, index);
+      const nextSessions = sessionsRef.current.filter(session => session.projectId !== projectId);
+      const nextProjects = projectsRef.current.filter(item => item.id !== projectId);
+      const nextRemoteState: ProjectRemoteState = {
+        indexes: Object.fromEntries(
+          Object.entries(projectRemoteStateRef.current.indexes)
+            .filter(([id]) => id !== projectId)
+        ),
+        cleanupTombstones: [
+          ...projectRemoteStateRef.current.cleanupTombstones,
+          ...(tombstone ? [tombstone] : [])
+        ]
+      };
+      memberSessions.forEach(session => invalidateSessionOperations(session.id));
+      await clearInternalRecoveryArchive(handle);
+      const revision = await writeWorkspaceState(handle, {
+        sessions: nextSessions,
+        projects: nextProjects,
+        projectRemoteState: nextRemoteState
+      }, { publishTwice: true });
+      sessionsRef.current = nextSessions;
+      projectsRef.current = nextProjects;
+      projectRemoteStateRef.current = nextRemoteState;
+      updateSessionsState(nextSessions);
+      setProjects(nextProjects);
+      skipNextRemoteStateEffectSaveRef.current = true;
+      setProjectRemoteState(nextRemoteState);
+      setSelectedProjectId(null);
+      setUndoWorkspaceAction(null);
+      if (currentSessionIdRef.current && memberSessions.some(
+        session => session.id === currentSessionIdRef.current
+      )) {
+        updateCurrentSessionId(nextSessions[0]?.id || null);
+      }
+      workspaceCoordinatorRef.current?.publishUpdate(revision);
+      if (tombstone && settingsRef.current.apiKey) {
+        const service = new ProjectSourceService(settingsRef.current.apiKey);
+        try {
+          await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
+        } catch (error) {
+          setProjectActionError(`Project deletion pending: ${getErrorMessage(error)}`);
+        }
+      }
+    }).catch(error => setProjectActionError(getErrorMessage(error)));
+  };
+
+  const retryRemoteCleanup = async (): Promise<void> => {
+    if (busyProjectSourceIdsRef.current.size > 0) {
+      setProjectActionError('Wait for project source work to finish before retrying cleanup.');
+      return;
+    }
+    const cleanupKey = settingsRef.current.apiKey;
+    if (!cleanupKey) {
+      setProjectActionError('The API key used to create these resources is required for cleanup.');
+      return;
+    }
+    const fingerprint = fingerprintApiKey(cleanupKey);
+    const pending = projectRemoteStateRef.current.cleanupTombstones.filter(
+      tombstone => tombstone.apiKeyFingerprint === fingerprint
+    );
+    if (pending.length === 0) {
+      setProjectActionError('No pending cleanup matches the current API key.');
+      return;
+    }
+    const service = new ProjectSourceService(cleanupKey);
+    const cleanupOperationId = `remote-cleanup:${uuidv4()}`;
+    setProjectSourceBusy(cleanupOperationId, true);
+    try {
+      for (const tombstone of pending) {
+        await service.runCleanup(
+          projectRemoteStateRef.current,
+          tombstone.id,
+          persistRemoteState
+        );
+      }
+      setProjectActionError(null);
+    } catch (error) {
+      setProjectActionError(`Remote cleanup is still pending: ${getErrorMessage(error)}`);
+    } finally {
+      setProjectSourceBusy(cleanupOperationId, false);
+    }
+  };
+
+  const saveApiKey = async (nextApiKey: string): Promise<void> => {
+    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    if (busyProjectSourceIdsRef.current.size > 0) {
+      setProjectActionError('Wait for project source uploads to finish before changing API keys.');
+      return;
+    }
+    const oldApiKey = settingsRef.current.apiKey;
+    if (nextApiKey === oldApiKey) return;
+    const oldFingerprint = oldApiKey ? fingerprintApiKey(oldApiKey) : '';
+    const ownedIndexes = Object.values(projectRemoteStateRef.current.indexes)
+      .filter(index => index.apiKeyFingerprint === oldFingerprint);
+    const existingCleanup = projectRemoteStateRef.current.cleanupTombstones
+      .filter(tombstone => tombstone.apiKeyFingerprint === oldFingerprint);
+    if (ownedIndexes.length > 0 || existingCleanup.length > 0) {
+      const keySwitchOperationId = `api-key-switch:${uuidv4()}`;
+      setProjectSourceBusy(keySwitchOperationId, true);
+      try {
+        if (!oldApiKey) {
+          setProjectActionError(
+            'The old API key is required to delete existing remote project resources before switching keys.'
+          );
+          return;
+        }
+        if (!window.confirm(
+          'Switching API keys must first delete this app’s Files and vector stores under the old key. Continue?'
+        )) return;
+        try {
+          await flushPendingSaves();
+          const generatedTombstones = ownedIndexes.flatMap(index => {
+            const tombstone = createProjectCleanupTombstone(index.projectId, index);
+            return tombstone ? [tombstone] : [];
+          });
+          const state: ProjectRemoteState = {
+            indexes: Object.fromEntries(
+              Object.entries(projectRemoteStateRef.current.indexes)
+                .filter(([, index]) => index.apiKeyFingerprint !== oldFingerprint)
+            ),
+            cleanupTombstones: [
+              ...projectRemoteStateRef.current.cleanupTombstones,
+              ...generatedTombstones
+            ]
+          };
+          await persistRemoteState(state);
+          const service = new ProjectSourceService(oldApiKey);
+          for (const tombstone of state.cleanupTombstones.filter(
+            item => item.apiKeyFingerprint === oldFingerprint
+          )) {
+            await service.runCleanup(
+              projectRemoteStateRef.current,
+              tombstone.id,
+              persistRemoteState
+            );
+          }
+        } catch (error) {
+          const resourceIds = projectRemoteStateRef.current.cleanupTombstones
+            .filter(item => item.apiKeyFingerprint === oldFingerprint)
+            .flatMap(item => [
+              ...item.openaiFileIds,
+              ...(item.vectorStoreId ? [item.vectorStoreId] : [])
+            ]);
+          if (
+            error instanceof ProjectSourceServiceError &&
+            error.kind === 'authentication' &&
+            window.confirm([
+              'The old API key could not authenticate cleanup.',
+              'Delete every listed resource in the OpenAI dashboard first.',
+              resourceIds.length > 0 ? `Resources: ${resourceIds.join(', ')}` : '',
+              '',
+              'Select OK only after confirming those resources are deleted. This will clear the local cleanup records and continue the key switch.'
+            ].filter(Boolean).join('\n'))
+          ) {
+            try {
+              await persistRemoteState({
+                indexes: projectRemoteStateRef.current.indexes,
+                cleanupTombstones: projectRemoteStateRef.current.cleanupTombstones.filter(
+                  item => item.apiKeyFingerprint !== oldFingerprint
+                )
+              });
+            } catch (persistError) {
+              setProjectActionError(
+                `Manual cleanup confirmation could not be saved: ${getErrorMessage(persistError)}`
+              );
+              return;
+            }
+          } else {
+            setProjectActionError(
+              [
+                `API key switch blocked until old remote resources are removed: ${getErrorMessage(error)}`,
+                'Retry cleanup with the old key, or delete these resources in the OpenAI dashboard, save the new key again, and explicitly confirm the manual cleanup.',
+                ...(resourceIds.length > 0 ? [`Resources: ${resourceIds.join(', ')}`] : [])
+              ].join(' ')
+            );
+            return;
+          }
+        }
+      } finally {
+        setProjectSourceBusy(keySwitchOperationId, false);
+      }
+    }
+    setApiKey(nextApiKey);
+    setProjectActionError(null);
+  };
+
+  useEffect(() => {
+    const project = projectsRef.current.find(item => item.id === selectedProjectId);
+    const handle = dirHandleRef.current;
+    if (
+      !project ||
+      !handle ||
+      !apiKey ||
+      !isWorkspaceLoaded ||
+      !workspaceCanWriteRef.current
+    ) return;
+    const fingerprint = fingerprintApiKey(apiKey);
+    const reconciliationKey = `${project.id}:${fingerprint}`;
+    if (projectOpenReconciliationRef.current === reconciliationKey) return;
+    projectOpenReconciliationRef.current = reconciliationKey;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const service = new ProjectSourceService(apiKey);
+        const reconciled = await service.reconcile(
+          [project],
+          projectRemoteStateRef.current,
+          fingerprint,
+          persistRemoteState
+        );
+        if (cancelled) return;
+        setRemoteState(reconciled);
+        for (const source of project.sources) {
+          if (cancelled || source.capability === 'direct_attachment') continue;
+          if (projectRemoteStateRef.current.indexes[project.id]?.files[source.id]) {
+            continue;
+          }
+          const blob = await readLocalBlob(handle, source.localBlob);
+          if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
+          await indexProjectSource(project.id, source, blob);
+        }
+      } catch (error) {
+        if (!cancelled) setProjectActionError(getErrorMessage(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, draftWorkspaceEpoch, isWorkspaceLoaded, selectedProjectId]);
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -1315,7 +1939,8 @@ function App() {
     messagesForApi,
     requestId,
     assistantMessageId,
-    modelSnapshot
+    modelSnapshot,
+    projectContext
   }: {
     operation: OperationRecord;
     targetSessionId: string;
@@ -1324,6 +1949,7 @@ function App() {
     requestId: string;
     assistantMessageId: string;
     modelSnapshot: AssistantModelSnapshot;
+    projectContext?: ResolvedProjectContext;
   }) => {
     const controller = operation.controller;
     const currentSession = sessionsRef.current.find(item => item.id === targetSessionId);
@@ -1493,7 +2119,8 @@ function App() {
         generatedFiles,
         thinkingDuration,
         responseId,
-        usage
+        usage,
+        fileSearchCallCount
       } = await generateResponse(
         messagesForApi,
         session.config,
@@ -1534,7 +2161,8 @@ function App() {
             const content = await getAttachmentDataUrl(handle, attachment);
             if (!isOperationCurrent(operation)) throw createOperationAbortError();
             return content;
-          }
+          },
+          projectContext
         }
       );
 
@@ -1568,6 +2196,7 @@ function App() {
         incompleteReason,
         thinkingDuration,
         usage,
+        fileSearchCallCount,
         sources,
         generatedFiles,
         timestamp: Date.now(),
@@ -1672,6 +2301,43 @@ function App() {
     }
   };
 
+  const getProjectContextForRequest = (
+    session: Session
+  ): ResolvedProjectContext | undefined | null => {
+    if (!session.projectId) return undefined;
+    const project = projectsRef.current.find(item => item.id === session.projectId);
+    if (!project) {
+      setProjectActionError('This chat references a project that is no longer available.');
+      return null;
+    }
+    const requestApiKey = settingsRef.current.apiKey;
+    const availability = getProjectSourceAvailability(
+      project,
+      projectRemoteStateRef.current,
+      requestApiKey
+    );
+    const context = resolveProjectContext(
+      project,
+      projectRemoteStateRef.current,
+      requestApiKey
+    );
+    if (!availability.ready) {
+      const sendWithoutSources = window.confirm([
+        'Project sources are unavailable.',
+        availability.reason || 'Sources have not finished indexing.',
+        '',
+        'Select OK to send this one request without project sources. Project instructions still apply.'
+      ].join('\n'));
+      if (!sendWithoutSources) return null;
+      return {
+        projectId: context.projectId,
+        instructions: context.instructions,
+        analysisFileIds: []
+      };
+    }
+    return context;
+  };
+
   const handleSendMessage = async (
     targetSessionId: string,
     content: string,
@@ -1687,6 +2353,8 @@ function App() {
     if (processingSessionIdsRef.current.has(targetSessionId)) return false;
     const initialSession = sessionsRef.current.find(s => s.id === targetSessionId);
     if (!initialSession) return false;
+    const projectContext = getProjectContextForRequest(initialSession);
+    if (projectContext === null) return false;
     const handle = dirHandleRef.current;
     if (!handle) return false;
 
@@ -1777,7 +2445,8 @@ function App() {
         messagesForApi,
         requestId,
         assistantMessageId,
-        modelSnapshot
+        modelSnapshot,
+        projectContext
       });
       return true;
 
@@ -1831,6 +2500,8 @@ function App() {
 
     const session = sessionsRef.current.find(s => s.id === targetSessionId);
     if (!session) return;
+    const projectContext = getProjectContextForRequest(session);
+    if (projectContext === null) return;
 
     const assistantMessage = session.messages[assistantMessageIndex];
     const userMessage = session.messages[assistantMessageIndex - 1];
@@ -1892,7 +2563,8 @@ function App() {
       messagesForApi,
       requestId,
       assistantMessageId: newAssistantMessageId,
-      modelSnapshot
+      modelSnapshot,
+      projectContext
     });
   };
 
@@ -2351,6 +3023,10 @@ function App() {
   const confirmWorkspaceRestore = async () => {
     const pending = pendingRestore;
     if (!pending || !dirHandleRef.current) return;
+    if (busyProjectSourceIdsRef.current.size > 0) {
+      alert('Wait for project source uploads to finish before restoring a workspace.');
+      return;
+    }
     setPendingRestore(null);
     await flushPendingSaves();
     invalidateWorkspaceOperations();
@@ -2404,6 +3080,7 @@ function App() {
       workspaceMutationBlockedRef.current ||
       activeRequestsRef.current.size > 0 ||
       processingSessionIdsRef.current.size > 0 ||
+      busyProjectSourceIdsRef.current.size > 0 ||
       !dirHandleRef.current
     ) {
       return;
@@ -2414,7 +3091,8 @@ function App() {
         if (
           !workspaceCanWriteRef.current ||
           activeRequestsRef.current.size > 0 ||
-          processingSessionIdsRef.current.size > 0
+          processingSessionIdsRef.current.size > 0 ||
+          busyProjectSourceIdsRef.current.size > 0
         ) {
           throw new Error('Finish active responses before merging a backup.');
         }
@@ -2465,7 +3143,11 @@ function App() {
 
   const handleUndoWorkspaceMutation = async () => {
     const handle = dirHandleRef.current;
-    if (!handle || !workspaceCanWriteRef.current) return;
+    if (
+      !handle ||
+      !workspaceCanWriteRef.current ||
+      busyProjectSourceIdsRef.current.size > 0
+    ) return;
     const action = undoWorkspaceAction;
     await flushPendingSaves();
     invalidateWorkspaceOperations();
@@ -2690,8 +3372,12 @@ function App() {
           {!isMobile ? (
             <Sidebar
               sessions={sessions}
+              projects={projects}
               currentSessionId={currentSessionId}
-              onSelectSession={updateCurrentSessionId}
+              selectedProjectId={selectedProjectId}
+              onSelectSession={handleSelectSession}
+              onSelectProject={handleSelectProject}
+              onNewProject={createNewProject}
               onNewSession={createNewSession}
               onDeleteSession={deleteSession}
               isDarkMode={isDarkMode}
@@ -2704,6 +3390,10 @@ function App() {
                 }
               }}
               apiKey={apiKey}
+              onApiKeySave={saveApiKey}
+              pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
+              remoteCleanupError={projectActionError}
+              onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
               onApiKeyChange={key => {
                 if (
                   workspaceCanWriteRef.current &&
@@ -2717,7 +3407,8 @@ function App() {
               onMergeData={handleMergeData}
               mergeDisabled={
                 isWorkspaceInteractionReadOnly ||
-                processingSessionIds.size > 0
+                processingSessionIds.size > 0 ||
+                busyProjectSourceIds.size > 0
               }
               backupState={backupState}
               backupActionError={backupActionError}
@@ -2760,8 +3451,12 @@ function App() {
                   </div>
                   <Sidebar
                     sessions={sessions}
+                    projects={projects}
                     currentSessionId={currentSessionId}
+                    selectedProjectId={selectedProjectId}
                     onSelectSession={handleSelectSession}
+                    onSelectProject={handleSelectProject}
+                    onNewProject={createNewProject}
                     onNewSession={() => { createNewSession(); setIsSidebarOpen(false); }}
                     onDeleteSession={deleteSession}
                     isDarkMode={isDarkMode}
@@ -2774,6 +3469,10 @@ function App() {
                       }
                     }}
                     apiKey={apiKey}
+                    onApiKeySave={saveApiKey}
+                    pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
+                    remoteCleanupError={projectActionError}
+                    onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
                     onApiKeyChange={key => {
                       if (
                         workspaceCanWriteRef.current &&
@@ -2787,7 +3486,8 @@ function App() {
                     onMergeData={handleMergeData}
                     mergeDisabled={
                       isWorkspaceInteractionReadOnly ||
-                      processingSessionIds.size > 0
+                      processingSessionIds.size > 0 ||
+                      busyProjectSourceIds.size > 0
                     }
                     backupState={backupState}
                     backupActionError={backupActionError}
@@ -2810,6 +3510,25 @@ function App() {
           )}
 
           <main className="flex-1 flex min-w-0 w-full overflow-hidden">
+            {selectedProject ? (
+              <ProjectHome
+                project={selectedProject}
+                sessions={sessions.filter(session => session.projectId === selectedProject.id)}
+                remoteIndex={projectRemoteState.indexes[selectedProject.id]}
+                totalIndexedUsageBytes={totalIndexedUsageBytes}
+                busySourceIds={busyProjectSourceIds}
+                error={projectActionError}
+                readOnly={isWorkspaceInteractionReadOnly}
+                isMobile={isMobile}
+                onUpdate={updateProject}
+                onNewChat={() => createProjectSession(selectedProject.id)}
+                onAddSources={files => addProjectSources(selectedProject.id, files)}
+                onDeleteSource={source => deleteProjectSource(selectedProject.id, source)}
+                onRetrySource={source => retryProjectSource(selectedProject.id, source)}
+                onDownloadSource={downloadProjectSource}
+                onDeleteProject={() => deleteProject(selectedProject.id)}
+              />
+            ) : <>
             <ChatArea
               key={draftWorkspaceEpoch}
               session={currentSession}
@@ -2826,6 +3545,11 @@ function App() {
               isLoading={isCurrentSessionProcessing}
               isMobile={isMobile}
               readOnly={isWorkspaceInteractionReadOnly}
+              projectSources={currentSessionProject?.sources.filter(
+                source => source.capability === 'direct_attachment'
+              ) || []}
+              onLoadProjectSource={loadProjectSourceFile}
+              project={currentSessionProject || undefined}
             />
 
             {/* ConfigPanel - Desktop: always visible when session selected, Mobile: modal */}
@@ -2837,14 +3561,16 @@ function App() {
                 onCreateSystemInstruction={handleCreateSystemInstruction}
                 onUpdateSystemInstruction={handleUpdateSystemInstruction}
                 onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                hideSystemInstructions={Boolean(currentSession.projectId)}
                 readOnly={isWorkspaceInteractionReadOnly}
               />
             )}
+            </>}
           </main>
         </div>
 
         {/* Mobile Config Modal */}
-        {isMobile && isConfigOpen && currentSession && (
+        {isMobile && isConfigOpen && currentSession && !selectedProject && (
           <>
             <div
               className="fixed inset-0 bg-black/50 z-40 animate-in fade-in duration-200"
@@ -2868,6 +3594,7 @@ function App() {
                   onCreateSystemInstruction={handleCreateSystemInstruction}
                   onUpdateSystemInstruction={handleUpdateSystemInstruction}
                   onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                  hideSystemInstructions={Boolean(currentSession.projectId)}
                   isMobile={true}
                   readOnly={isWorkspaceInteractionReadOnly}
                 />

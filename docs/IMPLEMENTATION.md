@@ -3,9 +3,10 @@
 ## Status And Authority
 
 - Status: implemented current behavior and approved constraints.
-- Last meaningful update: 2026-08-01, when this canonical specification was
-  established from repository behavior, tests, `README.md`, and `AGENTS.md`.
-- Last verified against code and tests: 2026-08-01.
+- Last meaningful update: 2026-08-03, adding local projects, project-owned
+  instructions and sources, remote File/vector-store indexing, and portable
+  project archives.
+- Last verified against code and tests: 2026-08-03.
 
 This document is authoritative for intended application behavior, architecture,
 interfaces, invariants, failure handling, and security constraints. Code and
@@ -29,6 +30,8 @@ OpenAI Studio is intended to:
 - keep workspace state durable in client-managed storage, with strict runtime
   validation and recoverable publication;
 - support portable, integrity-checked backup, merge, restore, and limited undo;
+- group recurring work into locally canonical projects whose chats share live
+  instructions and reusable source configuration without sharing transcripts;
 - make key handling, remote data transmission, response storage, and archive
   sensitivity visible to the user.
 
@@ -111,11 +114,96 @@ link. The transcript contains message text and uses a placeholder for an
 attachment-only turn. It omits attachment bytes, response details, sources,
 and generated-file references.
 
+### Projects And Reusable Sources
+
+A project owns a required name, fixed-enum icon, inline project
+instructions, defaults for newly created chats, member chats, and at most 40
+locally canonical sources. The sidebar provides project hierarchy, expandable
+member chats, separate Projects and Chats sections, and global project/chat
+search with the project path shown for chat matches. Project rows show their
+icon and name without an aggregate chat counter. Selecting a project opens its
+project home; below 768 px that home and its settings occupy the full main sheet.
+
+The selected icon appears on the project home, in its sidebar row, and in each
+member chat header. Project chat headers use `Icon Project / Chat`; standalone
+chat headers continue to show only the chat title. The icon enum includes a
+health option.
+
+Project defaults exclude `systemInstructionId` and affect only subsequently
+created project chats. Project instructions are resolved live when each request
+starts and override the chat's reusable global instruction. Existing project
+chats therefore see instruction edits on their next request, while an in-flight
+request retains its snapshot. Project sources configure future context but do
+not add another chat's transcript or provide cross-chat memory.
+
+Project membership is assigned when a project chat is created or when a
+portable archive is imported. The application exposes no chat-moving workflow.
+New standalone chats inherit the current standalone configuration, not project
+defaults.
+
+Project source selection permits at most 10 files at once and preserves the
+strict per-file limit of less than 50 MiB. Each file is stored and verified in
+the local blob store before any remote operation. The official File Search
+extension set routes supported documents/code to `file_search`; spreadsheet and
+delimited analysis formats route to Code Interpreter; other supported images or
+files are `direct_attachment` and must be selected explicitly in the composer.
+
+One lazily created vector store belongs exclusively to each project. OpenAI File
+objects are never shared across projects, even when local content-addressed bytes
+deduplicate. Upload/index work is serialized. The UI exposes uploading,
+indexing, ready, failed, removing, and needs-indexing states, error/retry,
+canonical local download, capability, type, size, and workspace indexed usage.
+Opening a project reconciles interrupted remote state and indexes sources that
+have no remote record under the current key.
+
+If any configured automatic source is pending, failed, disconnected, or bound
+to another key, request construction blocks. A confirmation may override that
+check for one request only; the current project instructions still apply and no
+automatic source IDs are sent. Direct-attachment sources do not cause this
+block.
+
+Deleting a source immediately removes it from future context, atomically writes
+a durable cleanup tombstone, and deletes the underlying OpenAI File. A `404`
+delete is success. The project vector store remains. Retried indexing first
+deletes any previous failed File so retries cannot orphan duplicates.
+
+Project deletion confirms chat/source counts and external-backup persistence,
+blocks active responses or source work, clears the merge/restore undo point,
+removes the project and member chats atomically, and publishes the same deletion
+through both manifest slots. Chats never return to standalone history. Remote
+cleanup deletes every project File before the vector store. Cleanup failures
+remain nonportable, visible, and retryable in Settings.
+
+API-key editing is staged. When app-managed resources use the old key, saving a
+different key first converts them to cleanup work, completes deletion with the
+old key, and only then persists the new key. Authentication or cleanup failure
+blocks the switch and exposes the resource IDs for dashboard cleanup. Plaintext
+old keys are never retained separately. If the old key cannot authenticate,
+the user may continue only by explicitly confirming that every listed resource
+was deleted manually in the dashboard; that confirmation clears the matching
+local cleanup records before the new key is persisted.
+
+The app enforces a 900 MiB ceiling across app-managed vector-store
+`usage_bytes`, not raw source sizes. Before each searchable ingestion it refreshes
+usage for accessible app-managed stores, polls indexing to a terminal state,
+then reads actual usage. Crossing the ceiling deletes the newly uploaded File
+and marks the source failed. This application headroom does not guarantee that
+the OpenAI account remains inside its free allowance because unrelated vector
+stores also count and parsed chunks/embeddings can exceed source bytes.
+
+Pricing is externally controlled. The user guidance links the live
+[OpenAI pricing page](https://developers.openai.com/api/docs/pricing#built-in-tools)
+and, as of this specification update, describes the listed 1 GiB account-wide
+free vector storage, $0.10/GiB/day beyond it, $2.50 per 1,000 Responses API File
+Search calls, and normal model billing for retrieved tokens. These values are
+documentation, not application constants.
+
 ### Workspace Backup, Merge, Restore, And Undo
 
 Manual Backup produces a portable, unencrypted ZIP containing conversations,
-custom instructions, referenced attachments, and locally cached generated
-files. It excludes the API key and device-local automatic-backup preferences.
+projects, project sources, custom instructions, referenced attachments, and
+locally cached generated files. It excludes the API key, remote project
+registry, and device-local automatic-backup preferences.
 
 Restore validates the complete archive and shows a preview before replacing the
 workspace. It preserves the current device's API key. Merge begins after file
@@ -152,13 +240,20 @@ Primary boundaries are:
   rendering, response details, citations, generated files, copying, and
   conversation export.
 - `components/Sidebar.tsx`: chat search and selection, theme, API key,
-  workspace backup/merge/restore controls, and application version.
+  project hierarchy and global search, workspace backup/merge/restore controls,
+  pending remote cleanup, and application version.
+- `components/ProjectHome.tsx`: project metadata, instructions, defaults,
+  source lifecycle and usage, new project chats, and permanent deletion.
 - `components/ConfigPanel.tsx`: custom instructions, model, reasoning,
   verbosity, and tool configuration.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: Responses API request construction, streaming,
   cancellation, title generation, citation processing, and generated-file
   retrieval.
+- `services/projectSourceService.ts`: OpenAI File and vector-store lifecycle,
+  usage refresh, interruption reconciliation, key fingerprints, error classes,
+  and durable cleanup execution. `utils/projectSources.ts` owns routing and
+  project-source limits.
 - `services/storage.ts`: public persistence facade over backend selection,
   runtime schema validation, immutable generations, blobs, migration, and
   workspace replacement.
@@ -200,8 +295,9 @@ resume. A stale writer is rejected by revision checks rather than overwriting a
 newer generation.
 
 Session changes use a one-second trailing save and a five-second maximum wait
-during streaming. Request boundaries save immediately. Settings and custom
-instructions use a 500 ms trailing save. The versioned queue serializes writes,
+during streaming. Request boundaries save immediately. Settings, custom
+instructions, and project metadata/defaults use a 500 ms trailing save. The
+versioned queue serializes writes,
 retries failures after 500 ms, 1.5 seconds, and 5 seconds, and can be flushed
 explicitly.
 
@@ -215,6 +311,12 @@ workspace-mutation lifetimes. Session deletion and workspace replacement
 invalidate affected operations so late work cannot restore removed state.
 Destructive and workspace-wide changes pass through a serialized operation
 queue.
+
+Source-library additions/removals, permanent project deletion, and remote
+cleanup-journal transitions save immediately. A project deletion uses an
+atomic multi-object write and two verified publications. Source ingestion is
+serialized separately and source/project deletion, restore, merge, undo, and
+API-key switching cannot race queued source work.
 
 ## Responses API Contract
 
@@ -237,6 +339,26 @@ eligible local transcript. If the API definitively reports that the previous
 response is inaccessible, generation may retry once without that ID using full
 local history. This recovery is never repeated for the same request and is not
 used for ambiguous validation errors.
+
+Every project request receives an explicit immutable `ResolvedProjectContext`
+captured by `App.tsx` before the user turn is added. The request always sends
+the snapshot's project instructions, including with `previous_response_id`,
+because prior-response instructions are not inherited. Project instructions
+take precedence over reusable global instructions.
+
+A ready searchable project adds exactly one `file_search` tool with the
+project's vector-store ID, `max_num_results: 20`, and normal
+`tool_choice: "auto"`. Ready analysis File IDs are added only to an enabled Code
+Interpreter automatic container. Ordinary direct/base64 attachments remain
+unchanged. File Search errors never trigger a retry with the project tool
+removed; the only request fallback remains the existing definitive
+`previous_response_id` replay, which preserves project context.
+
+Ordinary requests do not include `file_search_call.results`. File citation
+annotations become non-URL `{kind: "file", filename, fileId,
+projectSourceId?}` sources, while historical and current web citations use
+`{kind: "web", title, url}`. Actual `file_search_call` output items are counted
+on the persisted assistant message for diagnostics.
 
 Assistant output messages retain their API order and optional `phase` value.
 Manual-history requests, including inaccessible-`previous_response_id`
@@ -283,24 +405,46 @@ fields are blank or the user clears the location, the request omits
 
 ## Persisted Data And Runtime Validation
 
-The persisted workspace owns `Session[]`, `AppSettings`, and
-`SystemInstruction[]`. Sessions own messages, chat configuration, timestamps,
-and optional `pendingRequest` records. Persisted assistant messages carry the
+The persisted workspace owns `Session[]`, `AppSettings`,
+`SystemInstruction[]`, `Project[]`, and `ProjectRemoteState`. Sessions own
+messages, chat configuration, timestamps, and optional `pendingRequest`
+records. Persisted assistant messages carry the
 static model name used for historical labels and may carry an ordered
 `outputMessages` list containing content plus an optional `commentary` or
 `final_answer` phase. The legacy aggregate `content` remains required so older
 workspaces and partial/error handling stay compatible; `outputMessages` is an
 additive schema-version-1 field.
 
-Attachments and cached generated files use `LocalBlobReference` records with a
+`Session.projectId` is an optional reference into `Project[]`. Project records
+own inline instructions, normalized defaults without `systemInstructionId`,
+globally unique project/source IDs, fixed icon/capability enums,
+timestamps, and local source blob references. A project contains at most 40
+sources.
+
+Local schema v5 is the strict color-free project format. On first load, a
+schema-v4 generation is validated with its retired project field removed and
+immediately republished as schema v5; current writes, runtime parsing, and
+portable archive parsing do not accept that field. Schema-v3 workspaces remain
+readable for the existing no-project migration path.
+
+`ProjectRemoteState` is a separate nonportable registry of project vector-store
+IDs, project-exclusive OpenAI File IDs, transient status/error/usage, SHA-256 API
+key fingerprints, and cleanup tombstones. Fingerprints detect key/account
+mismatch and never replace or preserve the plaintext key. Live indexes must
+reference existing projects and sources; tombstones may intentionally reference
+already deleted local objects.
+
+Attachments, project sources, and cached generated files use
+`LocalBlobReference` records with a
 lowercase SHA-256 digest, byte size, and optional MIME type. Runtime-only object
 URLs are not persisted. Legacy attachment IDs and data URLs are migration
 inputs, not the current storage representation.
 
 `services/workspaceSchema.ts` rejects unknown keys, unsupported enum values,
 invalid or duplicate IDs, oversized collections or text, malformed local-blob
-metadata, invalid pending-request links, and dangling session or instruction
-references. TypeScript types alone are not a persistence boundary.
+metadata, invalid pending-request links, and dangling session, instruction,
+project, source, or live remote-registry references. TypeScript types alone are
+not a persistence boundary.
 
 A persisted-field change must deliberately update the TypeScript type,
 configuration normalization when relevant, every affected runtime parser, and
@@ -327,10 +471,11 @@ writer resolves the choice. Reader tabs cannot make that decision. Migration
 copies and byte-verifies the complete source before switching identity and
 rolls back an incomplete OPFS copy.
 
-Local storage schema v3 uses alternating `workspace_manifest_a.json` and
+Local storage schema v5 uses alternating `workspace_manifest_a.json` and
 `workspace_manifest_b.json` records. Each manifest references immutable
-SHA-256 JSON objects under `objects/` and attachment or generated-file bytes
-under `blobs/`.
+SHA-256 session, settings, instructions, projects, and remote-registry JSON
+objects under `objects/`, plus attachment, project-source, or generated-file
+bytes under `blobs/`.
 
 A generation is usable only when its manifest, every referenced object and
 blob, and all runtime schema and cross-reference checks validate together.
@@ -346,12 +491,20 @@ active `readWorkspaceSnapshot()` until its release callback runs.
 
 Previous `sessions.json`, `settings.json`, `system_instructions.json`, `.bak`,
 snapshot, and `attachments/` records are migration inputs. They remain until a
-v3 generation has been published and read back successfully. Failed migration
+v5 generation has been published and read back successfully. Failed migration
 must not become an empty workspace.
+
+Schema-v3 generations remain readable as project-empty workspaces, and
+schema-v4 project generations follow the bounded migration described above. A
+writer publishes v5 only after the complete prior generation parses, commits,
+and reads back successfully; reader tabs do not migrate. Existing schema-v3
+sessions remain standalone. Project sources participate in the exact declared
+blob union and in object reuse, pinning, fallback, and bounded garbage
+collection.
 
 ## Portable Archive Contract
 
-The portable format is ZIP archive version 2 with a strict `manifest.json`,
+The portable format is ZIP archive version 3 with a strict `manifest.json`,
 separate workspace JSON entries, and raw `blobs/<sha256>` entries. Every
 declared entry includes its canonical path, uncompressed byte length, and
 SHA-256 digest.
@@ -370,13 +523,20 @@ Creation and inspection enforce:
 Portable settings exclude `apiKey`. Destination handles and paths, folder
 permissions, scheduler history, and other device-local state are also excluded.
 Archives are unencrypted and may contain sensitive prompts, responses,
-instructions, attachments, and cached generated files. A missing cached remote
-file is reported in archive metadata without invalidating an otherwise complete
-archive.
+instructions, attachments, original project-source bytes, and cached generated
+files. A missing cached remote file is reported in archive metadata without
+invalidating an otherwise complete archive.
+
+Version 3 contains `workspace/projects.json` and every project source's exact
+canonical `blobs/<sha256>` bytes. It excludes OpenAI File/vector-store IDs,
+key fingerprints, remote statuses/errors/usage, and cleanup tombstones. Version
+2 remains readable as a workspace with no projects. Restore publishes projects
+with no live remote indexes so automatic sources need indexing under the current
+key. Existing device indexes displaced by a portable replacement become local
+cleanup tombstones rather than being silently orphaned.
 
 Per-chat Web Search options are part of the session JSON and round-trip exactly,
-including an explicit cleared location, without changing portable archive
-version 2 or workspace schema version 1.
+including an explicit cleared location.
 
 Legacy JSON exports receive a specific unsupported-format error. Unknown archive
 versions or non-OpenAI-Studio ZIPs are rejected before a restore or merge source
@@ -397,6 +557,15 @@ is newest-first, with current-workspace chats ahead of imported chats when
 timestamps tie. The merged result must still satisfy normal workspace limits
 and strict reference validation.
 
+Imported projects reuse semantically identical local projects. Project-ID,
+source-ID, and case-insensitive name collisions are remapped; the first name
+collision gains ` (merged)` and further duplicates gain a numeric merged
+suffix. Imported chat memberships and file-citation `projectSourceId` values
+follow those maps. An identical skipped chat retains its current local project
+membership. Project instructions are independent of reusable-global-instruction
+collision logic, and blobs for accepted imported project sources are staged by
+the same hash-verified selection rules.
+
 ### Restore, Merge, And Undo Atomicity
 
 Restore and merge validate the input, pin the current generation, create and
@@ -409,6 +578,11 @@ previous valid undo point remains available.
 Undo validates and restores the recovery archive as a new generation, then
 removes the recovery point. Consequently only the latest successful mutation
 is undoable once.
+
+Permanent project deletion is deliberately outside this undo contract. It
+clears the current recovery archive and writes the deletion twice so neither
+alternating manifest can restore the project. External ZIP files are not
+modified.
 
 ## Automatic Backup Contract
 
@@ -457,9 +631,10 @@ remain network-dependent. `__APP_VERSION__` is read from `package.json` at
 build time.
 
 The responsive breakpoint owned by `App.tsx` is 768 px. Desktop keeps fixed
-sidebar/configuration controls; mobile uses drawers and modals. Layout changes
-must preserve keyboard send behavior, scrolling, overflow, and light/dark
-themes at both sizes.
+sidebar/configuration controls; mobile uses drawers and modals, while the
+project home and its project settings use the full main sheet. Layout changes
+must preserve hierarchy/search usability, keyboard send behavior, scrolling,
+overflow, and light/dark themes at both sizes.
 
 Electron is a frameless, single-instance window. `nodeIntegration` is off and
 `contextIsolation` is on. The preload bridge is limited to window controls,
@@ -477,13 +652,18 @@ filename validation, and strict navigation policy are especially important.
 - This is a direct client for user-owned API keys. Prompts, instructions, and
   attachments are sent to OpenAI, and requests intentionally use server-side
   response storage.
+- Searchable and analysis project sources are also uploaded to OpenAI as
+  persistent Files; searchable sources are attached to persistent vector
+  stores. OpenAI's current data-retention policy, linked from `README.md`,
+  governs service-side retention and post-deletion handling.
 - The Settings key is stored locally without application-level encryption. It
   is excluded from portable archives, and restore preserves the current local
   key.
 - Development and Electron Vite modes may inline `OPENAI_API_KEY` from local
   environment files into renderer JavaScript. Production web mode excludes it.
   Never package, publish, or distribute a developer key.
-- Portable archives are not encrypted. Treat them as sensitive user data.
+- Portable archives are not encrypted and contain original project-source
+  bytes. Treat them as sensitive user data.
 - Local `.env*` files, real API keys, real workspace data, and workspace exports
   must not be committed or used as test fixtures.
 - Browser persistence is origin-scoped. Changing scheme, host, or port selects
@@ -504,6 +684,11 @@ must change whenever these behaviors change.
 | Response is stopped or stream fails | Retain useful partial output, clear request ownership at the correct boundary, and ignore late events. |
 | Persisted request is interrupted by restart | Mark it failed and retryable in the writer tab while preserving its historical model name. |
 | Optional API capability is rejected | Retry only the explicitly supported safe fallback; do not retry ambiguous failures. |
+| Expected project source context is unavailable | Block the request unless the user explicitly overrides one request; keep project instructions. |
+| Source upload/index is interrupted or fails | Persist a retryable or terminal source state, reconcile on project open, and never report uncommitted local bytes as ready. |
+| Source/project remote deletion fails | Retain the cleanup tombstone and visible Retry state; treat `404` as confirmed deletion. |
+| API-key cleanup cannot authenticate | Keep the old key active, block the switch, and show dashboard-cleanup guidance plus resource IDs. |
+| Indexed usage crosses 900 MiB | Delete the newly uploaded underlying File and reject that searchable index. |
 | Generated-file caching fails | Keep remote metadata and the completed answer. |
 | New local generation is incomplete | Continue with the newest older complete generation as a unit. |
 | Archive validation, recovery creation, staging, or commit fails | Publish no partial restore or merge and preserve the prior valid undo point. |
@@ -516,14 +701,16 @@ The following tests are the executable contracts for this specification:
 
 | Area | Primary contracts |
 | --- | --- |
-| App startup, request routing, stop/failure, pending recovery, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
-| Responses payloads, model/tool normalization, attachments, streaming terminal output, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
+| App startup, request routing, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
+| Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
 | Backend selection and migration decisions | [services/storageBackend.test.ts](../services/storageBackend.test.ts) |
-| Immutable generations, legacy migration, whole-generation fallback, stale writers, pinning, blobs, replacement, recovery/undo, and OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
-| ZIP creation, binary round trip, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
-| Chat ordering, identical-chat skipping, collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
+| Immutable generations, v3/v4-to-v5 and legacy migration, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
+| ZIP creation, project/source binary round trip, v2 compatibility, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
+| Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
+| Project source routing/limits and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts) and [services/projectSourceService.test.ts](../services/projectSourceService.test.ts) |
+| Project home source/status/destructive UI, sidebar hierarchy/icons/search/staged key controls, and project chat breadcrumbs | [components/ProjectHome.test.tsx](../components/ProjectHome.test.tsx), [components/Sidebar.test.tsx](../components/Sidebar.test.tsx), and [components/ChatArea.test.tsx](../components/ChatArea.test.tsx) |
 | Daily eligibility, destination read-back, close failure, corruption handling, and three-valid-file retention | [services/backupScheduler.test.ts](../services/backupScheduler.test.ts) |
 | Save versioning, retry, flush, cross-tab coordination, operation ownership, and destructive serialization | [saveQueue.test.ts](../services/saveQueue.test.ts), [workspaceSync.test.ts](../services/workspaceSync.test.ts), [operationRegistry.test.ts](../services/operationRegistry.test.ts), and [serializedOperationQueue.test.ts](../services/serializedOperationQueue.test.ts) |
 | Electron navigation, window isolation, close coordination, managed IPC, streamed file publication, and partial cleanup | [urlPolicy.test.js](../electron/urlPolicy.test.js), [main.test.js](../electron/main.test.js), and [backupFiles.test.js](../electron/backupFiles.test.js) |
@@ -545,9 +732,15 @@ flows that unit tests cannot fully exercise.
 - Browser workspaces are origin-scoped, and automatic folder backup depends on
   File System Access support and renewed permission.
 - Remote generated files can expire before local caching succeeds.
+- Project source indexing and cleanup require the matching API key and network;
+  unresolved cleanup can continue to incur OpenAI storage cost until confirmed.
+- The 900 MiB app-managed ceiling is not an account quota or a free-tier
+  guarantee because other vector stores also count toward OpenAI billing.
 - Legacy JSON exports are deliberately unsupported.
 - Chat deletion has no undo, and workspace mutation undo is single-use and
   limited to the latest successful restore or merge.
+- Project deletion has no undo and does not erase previously exported ZIP
+  backups.
 
 No other unfinished or approved-but-unimplemented behavior is represented in
 this specification.

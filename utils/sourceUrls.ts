@@ -1,4 +1,4 @@
-import { Source } from '../types';
+import { Source, WebCitationSource } from '../types';
 
 const CLICKABLE_PROTOCOLS = new Set(['http:', 'https:']);
 
@@ -23,7 +23,7 @@ export const createSourceRecord = (
   title: string | undefined,
   url: string | undefined | null,
   context?: string
-): Source | null => {
+): WebCitationSource | null => {
   const normalizedUrl = normalizeSourceUrl(url);
   if (!normalizedUrl) return null;
 
@@ -35,6 +35,7 @@ export const createSourceRecord = (
   const normalizedTitle = title?.trim();
 
   return {
+    kind: 'web',
     title: normalizedTitle || parsedUrl?.hostname || normalizedUrl,
     url: normalizedUrl
   };
@@ -46,6 +47,14 @@ export const getSourcePresentation = (source: Source): {
   label: string;
   rawUrl: string;
 } => {
+  if (source.kind === 'file') {
+    return {
+      href: null,
+      hostname: null,
+      label: source.filename,
+      rawUrl: source.fileId
+    };
+  }
   const rawUrl = source.url.trim();
   const parsedUrl = parseSourceUrl(rawUrl);
   const normalizedTitle = source.title?.trim();

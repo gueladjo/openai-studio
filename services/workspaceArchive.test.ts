@@ -4,7 +4,12 @@ import {
   TextReader,
   ZipWriter
 } from '@zip.js/zip.js';
-import { DEFAULT_CONFIG, type FileAttachment, type Session } from '../types';
+import {
+  DEFAULT_CONFIG,
+  type FileAttachment,
+  type Project,
+  type Session
+} from '../types';
 import { encodeUtf8, sha256Blob, sha256Text } from './contentAddressing';
 import {
   BackupArchiveError,
@@ -23,6 +28,8 @@ const generatedBlob = new Blob(['cached generated output'], {
   type: 'text/plain'
 });
 const generatedHash = await sha256Blob(generatedBlob);
+const projectBlob = new Blob(['project knowledge'], { type: 'text/plain' });
+const projectHash = await sha256Blob(projectBlob);
 
 const sessions: Session[] = [{
   id: 'session-1',
@@ -211,6 +218,80 @@ describe('portable workspace archive', () => {
     expect(await inspected.replacement.blobs.get(generatedHash)!.text())
       .toBe('cached generated output');
     expect(await archive.text()).not.toContain('must-not-leave-device');
+  });
+
+  it('round-trips portable projects and excludes the remote source registry', async () => {
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const projects: Project[] = [{
+      id: 'project-archive',
+      name: 'Archive project',
+      icon: 'book',
+      instructions: 'Use the saved source.',
+      defaultConfig,
+      sources: [{
+        id: 'source-archive',
+        name: 'knowledge.txt',
+        mimeType: 'text/plain',
+        byteSize: projectBlob.size,
+        localBlob: {
+          sha256: projectHash,
+          byteSize: projectBlob.size,
+          mimeType: 'text/plain'
+        },
+        capability: 'file_search',
+        addedAt: 2
+      }],
+      createdAt: 1,
+      updatedAt: 2
+    }];
+    const projectSnapshot: WorkspaceSnapshot = {
+      ...snapshot,
+      sessions: snapshot.sessions.map(session => ({
+        ...session,
+        projectId: projects[0].id
+      })),
+      projects,
+      projectRemoteState: {
+        indexes: {
+          [projects[0].id]: {
+            projectId: projects[0].id,
+            apiKeyFingerprint: 'c'.repeat(64),
+            vectorStoreId: 'vs-must-not-export',
+            status: 'ready',
+            usageBytes: 100,
+            files: {
+              [projects[0].sources[0].id]: {
+                projectSourceId: projects[0].sources[0].id,
+                openaiFileId: 'file-must-not-export',
+                status: 'ready'
+              }
+            }
+          }
+        },
+        cleanupTombstones: []
+      },
+      readBlob: async reference => {
+        if (reference.sha256 === projectHash) return projectBlob;
+        return snapshot.readBlob(reference);
+      }
+    };
+
+    const inspected = await inspectWorkspaceArchive(
+      await createWorkspaceArchive(projectSnapshot, { reason: 'manual' })
+    );
+
+    expect(inspected.manifest.version).toBe(3);
+    expect(inspected.preview.counts).toMatchObject({
+      projects: 1,
+      projectSources: 1
+    });
+    expect(inspected.replacement.projects).toEqual(projects);
+    expect(inspected.replacement.sessions[0].projectId).toBe(projects[0].id);
+    expect(await inspected.replacement.blobs.get(projectHash)?.text())
+      .toBe('project knowledge');
+    expect(inspected.replacement.projectRemoteState).toBeUndefined();
+    expect(inspected.manifest.entries.map(entry => entry.path))
+      .not.toContain('workspace/project_remote_state.json');
   });
 
   it('round-trips metadata-only attachments without inventing blob entries', async () => {
