@@ -56,6 +56,7 @@ interface CapturedProjectHomeProps {
   sessions: Session[];
   onUpdate: (project: Project) => void;
   onNewChat: () => void;
+  onAddSources: (files: File[]) => void;
   onDeleteProject: () => void;
 }
 
@@ -93,6 +94,7 @@ const createDeferred = <T,>() => {
 
 const mocks = vi.hoisted(() => ({
   apiKey: 'workspace-key',
+  bundledApiKey: '',
   chatAreaProps: null as CapturedChatAreaProps | null,
   confirmChatDeletion: vi.fn(),
   coordinator: {
@@ -124,6 +126,10 @@ const mocks = vi.hoisted(() => ({
   loadedSessions: [] as Session[],
   mergeWorkspaceArchive: vi.fn(),
   parseWorkspaceBackup: vi.fn(),
+  projectSourceIngest: vi.fn(),
+  projectSourceReconcile: vi.fn(),
+  projectSourceRunCleanup: vi.fn(),
+  projectSourceServiceKeys: [] as string[],
   readJsonFile: vi.fn(),
   readLocalBlob: vi.fn(),
   readSessions: vi.fn(),
@@ -181,8 +187,35 @@ vi.mock('./components/TitleBar', () => ({
 vi.mock('./services/openaiService', () => ({
   fetchGeneratedFileContent: mocks.fetchGeneratedFileContent,
   generateChatTitle: mocks.generateChatTitle,
-  generateResponse: mocks.generateResponse
+  generateResponse: mocks.generateResponse,
+  resolveOpenAIApiKey: (providedApiKey?: string) => (
+    providedApiKey || mocks.bundledApiKey || ''
+  )
 }));
+
+vi.mock('./services/projectSourceService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./services/projectSourceService')>();
+  return {
+    ...actual,
+    ProjectSourceService: class ProjectSourceService {
+      constructor(apiKey: string) {
+        mocks.projectSourceServiceKeys.push(apiKey);
+      }
+
+      ingestSource(...args: unknown[]) {
+        return mocks.projectSourceIngest(...args);
+      }
+
+      reconcile(...args: unknown[]) {
+        return mocks.projectSourceReconcile(...args);
+      }
+
+      runCleanup(...args: unknown[]) {
+        return mocks.projectSourceRunCleanup(...args);
+      }
+    }
+  };
+});
 
 vi.mock('./services/workspaceSync', () => ({
   WorkspaceCoordinator: {
@@ -308,6 +341,7 @@ describe('App workspace and request lifecycle', () => {
     root = null;
 
     mocks.apiKey = 'workspace-key';
+    mocks.bundledApiKey = '';
     mocks.chatAreaProps = null;
     mocks.sidebarProps = null;
     mocks.projectHomeProps = null;
@@ -323,6 +357,16 @@ describe('App workspace and request lifecycle', () => {
       indexes: {},
       cleanupTombstones: []
     };
+    mocks.projectSourceServiceKeys.length = 0;
+    mocks.projectSourceIngest.mockReset().mockImplementation(
+      async ({ state }: { state: ProjectRemoteState }) => state
+    );
+    mocks.projectSourceReconcile.mockReset().mockImplementation(
+      async (_projects: Project[], state: ProjectRemoteState) => state
+    );
+    mocks.projectSourceRunCleanup.mockReset().mockImplementation(
+      async (state: ProjectRemoteState) => state
+    );
 
     mocks.confirmChatDeletion.mockReset().mockReturnValue(true);
     mocks.coordinator.canWrite = true;
@@ -753,6 +797,36 @@ describe('App workspace and request lifecycle', () => {
     ));
     expect(standaloneChat?.config.reasoningEffort)
       .toBe(DEFAULT_CONFIG.reasoningEffort);
+  });
+
+  it('uses the bundled Electron key when indexing a project source', async () => {
+    const project = createProject();
+    mocks.apiKey = '';
+    mocks.bundledApiKey = 'bundled-electron-key';
+    mocks.loadedProjects = [project];
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      getSidebarProps().onSelectProject(project.id);
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      getProjectHomeProps().onAddSources([
+        new File(['project notes'], 'notes.txt', { type: 'text/plain' })
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await flushMicrotasks(24);
+
+    expect(mocks.projectSourceIngest).toHaveBeenCalledWith(expect.objectContaining({
+      apiKeyFingerprint: expect.any(String),
+      project: expect.objectContaining({ id: project.id }),
+      source: expect.objectContaining({ name: 'notes.txt' })
+    }));
+    expect(mocks.projectSourceServiceKeys).toContain('bundled-electron-key');
   });
 
   it('snapshots live project instructions for each future request', async () => {

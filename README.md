@@ -86,7 +86,14 @@ For local development or Electron development, an ignored `.env.local` file can 
 OPENAI_API_KEY=sk-...
 ```
 
-Development and Electron modes compile this value into renderer JavaScript. Do not use this mechanism for a build that will be packaged, published, or shared. Production web mode intentionally excludes `OPENAI_API_KEY`; users must enter it in the UI. Generated files are cached locally after a response when possible; cached copies remain downloadable without a key, while an uncached download requires the key in Settings.
+Development and Electron modes compile this value into renderer JavaScript. It
+is used for normal chats and project-source upload, indexing, reconciliation,
+and cleanup whenever Settings does not contain a key. Do not use this mechanism
+for a build that will be packaged, published, or shared. Production web mode
+intentionally excludes `OPENAI_API_KEY`; users must enter it in the UI.
+Generated files are cached locally after a response when possible; cached
+copies remain downloadable without a key, while an uncached download requires
+either the Settings key or the compiled local key.
 
 ## Commands
 

@@ -49,7 +49,8 @@ import {
   cancelBackgroundResponse,
   fetchGeneratedFileContent,
   generateChatTitle,
-  generateResponse
+  generateResponse,
+  resolveOpenAIApiKey
 } from './openaiService';
 
 const userMessage: Message = {
@@ -110,6 +111,18 @@ describe('OpenAI request contracts', () => {
     createResponseMock.mockReset();
     openAIConstructorMock.mockReset();
     retrieveContainerFileMock.mockReset();
+  });
+
+  it('resolves a bundled environment key when Settings has no key', () => {
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'bundled-key';
+    try {
+      expect(resolveOpenAIApiKey()).toBe('bundled-key');
+      expect(resolveOpenAIApiKey('settings-key')).toBe('settings-key');
+    } finally {
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+    }
   });
 
   it('builds the complete stored streaming payload for enabled tools', async () => {

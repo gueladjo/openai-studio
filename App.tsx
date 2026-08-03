@@ -24,7 +24,8 @@ import {
 import {
   fetchGeneratedFileContent,
   generateResponse,
-  generateChatTitle
+  generateChatTitle,
+  resolveOpenAIApiKey
 } from './services/openaiService';
 import {
   getStorageHandle,
@@ -1325,7 +1326,7 @@ function App() {
   ): Promise<void> => {
     if (source.capability === 'direct_attachment') return;
     const project = projectsRef.current.find(item => item.id === projectId);
-    const requestApiKey = settingsRef.current.apiKey;
+    const requestApiKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
     if (!project || !requestApiKey) {
       setProjectActionError('Add an API key in Settings to index project sources.');
       return;
@@ -1500,8 +1501,9 @@ function App() {
       skipNextRemoteStateEffectSaveRef.current = true;
       setRemoteState(nextRemoteState);
       workspaceCoordinatorRef.current?.publishUpdate(revision);
-      if (tombstone && settingsRef.current.apiKey) {
-        const service = new ProjectSourceService(settingsRef.current.apiKey);
+      const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
+      if (tombstone && cleanupKey) {
+        const service = new ProjectSourceService(cleanupKey);
         await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
       }
     }, { blocksInteractions: false }).catch(error => {
@@ -1567,8 +1569,9 @@ function App() {
         updateCurrentSessionId(nextSessions[0]?.id || null);
       }
       workspaceCoordinatorRef.current?.publishUpdate(revision);
-      if (tombstone && settingsRef.current.apiKey) {
-        const service = new ProjectSourceService(settingsRef.current.apiKey);
+      const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
+      if (tombstone && cleanupKey) {
+        const service = new ProjectSourceService(cleanupKey);
         try {
           await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
         } catch (error) {
@@ -1583,7 +1586,7 @@ function App() {
       setProjectActionError('Wait for project source work to finish before retrying cleanup.');
       return;
     }
-    const cleanupKey = settingsRef.current.apiKey;
+    const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
     if (!cleanupKey) {
       setProjectActionError('The API key used to create these resources is required for cleanup.');
       return;
@@ -1621,8 +1624,15 @@ function App() {
       setProjectActionError('Wait for project source uploads to finish before changing API keys.');
       return;
     }
-    const oldApiKey = settingsRef.current.apiKey;
-    if (nextApiKey === oldApiKey) return;
+    const storedApiKey = settingsRef.current.apiKey;
+    if (nextApiKey === storedApiKey) return;
+    const oldApiKey = resolveOpenAIApiKey(storedApiKey);
+    const nextEffectiveApiKey = resolveOpenAIApiKey(nextApiKey);
+    if (nextEffectiveApiKey === oldApiKey) {
+      setApiKey(nextApiKey);
+      setProjectActionError(null);
+      return;
+    }
     const oldFingerprint = oldApiKey ? fingerprintApiKey(oldApiKey) : '';
     const ownedIndexes = Object.values(projectRemoteStateRef.current.indexes)
       .filter(index => index.apiKeyFingerprint === oldFingerprint);
@@ -1718,17 +1728,19 @@ function App() {
     setProjectActionError(null);
   };
 
+  const effectiveApiKey = resolveOpenAIApiKey(apiKey);
+
   useEffect(() => {
     const project = projectsRef.current.find(item => item.id === selectedProjectId);
     const handle = dirHandleRef.current;
     if (
       !project ||
       !handle ||
-      !apiKey ||
+      !effectiveApiKey ||
       !isWorkspaceLoaded ||
       !workspaceCanWriteRef.current
     ) return;
-    const fingerprint = fingerprintApiKey(apiKey);
+    const fingerprint = fingerprintApiKey(effectiveApiKey);
     const reconciliationKey = `${project.id}:${fingerprint}`;
     if (projectOpenReconciliationRef.current === reconciliationKey) return;
     projectOpenReconciliationRef.current = reconciliationKey;
@@ -1736,7 +1748,7 @@ function App() {
 
     void (async () => {
       try {
-        const service = new ProjectSourceService(apiKey);
+        const service = new ProjectSourceService(effectiveApiKey);
         const reconciled = await service.reconcile(
           [project],
           projectRemoteStateRef.current,
@@ -1762,7 +1774,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiKey, draftWorkspaceEpoch, isWorkspaceLoaded, selectedProjectId]);
+  }, [effectiveApiKey, draftWorkspaceEpoch, isWorkspaceLoaded, selectedProjectId]);
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -2310,7 +2322,7 @@ function App() {
       setProjectActionError('This chat references a project that is no longer available.');
       return null;
     }
-    const requestApiKey = settingsRef.current.apiKey;
+    const requestApiKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
     const availability = getProjectSourceAvailability(
       project,
       projectRemoteStateRef.current,

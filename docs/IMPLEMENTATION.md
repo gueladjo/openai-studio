@@ -322,8 +322,11 @@ API-key switching cannot race queued source work.
 
 `services/openaiService.ts` constructs the OpenAI client in the renderer with
 `dangerouslyAllowBrowser: true`. A key supplied in Settings takes precedence
-over `process.env.OPENAI_API_KEY`. The project uses OpenAI JavaScript SDK v7,
-whose development and build tooling requires Node.js 22 or newer; Responses API
+over `process.env.OPENAI_API_KEY`. The same resolver supplies project-source
+upload, indexing, reconciliation, request-context availability, deletion, and
+retry cleanup, while the Settings field continues to display and persist only
+the user-entered value. The project uses OpenAI JavaScript SDK v7, whose
+development and build tooling requires Node.js 22 or newer; Responses API
 request, response, usage, and stream-event types remain direct SDK aliases.
 
 Streamed generation and background-response cancellation both set SDK

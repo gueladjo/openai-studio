@@ -1216,6 +1216,10 @@ const withoutReasoningSummary = (
   };
 };
 
+export const resolveOpenAIApiKey = (providedApiKey?: string): string => (
+  providedApiKey || process.env.OPENAI_API_KEY || ''
+);
+
 export const generateResponse = async (
   messages: Message[],
   config: ChatConfig,
@@ -1223,7 +1227,7 @@ export const generateResponse = async (
   systemInstruction?: string,
   options: GenerateResponseOptions = {}
 ): Promise<GenerateResponseResult> => {
-  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+  const apiKey = resolveOpenAIApiKey(providedApiKey);
 
   if (!apiKey) {
     throw new Error('OpenAI API Key is missing. Please set OPENAI_API_KEY in your environment or enter it in the settings.');
@@ -1496,7 +1500,7 @@ export const cancelBackgroundResponse = async (
   responseId: string,
   providedApiKey?: string
 ): Promise<void> => {
-  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+  const apiKey = resolveOpenAIApiKey(providedApiKey);
 
   if (!apiKey) {
     throw new Error('OpenAI API Key is missing. Please enter it in the settings before cancelling a background response.');
@@ -1516,7 +1520,7 @@ export const fetchGeneratedFileContent = async (
   providedApiKey?: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<Blob> => {
-  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+  const apiKey = resolveOpenAIApiKey(providedApiKey);
 
   if (!apiKey) {
     throw new Error('OpenAI API Key is missing. Please enter it in the settings before downloading generated files.');
@@ -1554,7 +1558,7 @@ export const generateChatTitle = async (
   providedApiKey?: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<string> => {
-  const apiKey = providedApiKey || process.env.OPENAI_API_KEY || '';
+  const apiKey = resolveOpenAIApiKey(providedApiKey);
   if (!apiKey) return 'New Chat';
 
   const openai = new OpenAI({
