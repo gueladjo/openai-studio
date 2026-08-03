@@ -226,14 +226,14 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         {(status === 'failed' || status === 'needs indexing') && source.capability !== 'direct_attachment' && (
-                          <button type="button" onClick={() => onRetrySource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Retry ${source.name}`} className="rounded p-2 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800">
+                          <button type="button" onClick={() => onRetrySource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Retry indexing ${source.name}`} title={`Retry indexing ${source.name}`} className="rounded p-2 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800">
                             {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                           </button>
                         )}
-                        <button type="button" onClick={() => onDownloadSource(source)} aria-label={`Download ${source.name}`} className="rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800">
+                        <button type="button" onClick={() => onDownloadSource(source)} aria-label={`Download ${source.name}`} title={`Download ${source.name}`} className="rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800">
                           <Download size={14} />
                         </button>
-                        <button type="button" onClick={() => onDeleteSource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Delete ${source.name}`} className="rounded p-2 text-red-500 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950/30">
+                        <button type="button" onClick={() => onDeleteSource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Delete ${source.name}`} title={`Delete ${source.name}`} className="rounded p-2 text-red-500 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950/30">
                           <Trash2 size={14} />
                         </button>
                       </div>

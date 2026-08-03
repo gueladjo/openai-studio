@@ -109,8 +109,15 @@ describe('ProjectHome', () => {
     expect(container.textContent).toContain('1.0 KiB / 900 MiB');
     expect(container.querySelector('[role="alert"]')?.textContent)
       .toContain('Project deletion pending.');
-    expect(container.querySelector('button[aria-label="Retry evidence.txt"]'))
-      .not.toBeNull();
+    expect(container.querySelector(
+      'button[aria-label="Retry indexing evidence.txt"][title="Retry indexing evidence.txt"]'
+    )).not.toBeNull();
+    expect(container.querySelector(
+      'button[aria-label="Download evidence.txt"][title="Download evidence.txt"]'
+    )).not.toBeNull();
+    expect(container.querySelector(
+      'button[aria-label="Delete evidence.txt"][title="Delete evidence.txt"]'
+    )).not.toBeNull();
     expect(container.querySelector('option[value="health"]')?.textContent)
       .toBe('Health');
     const deleteButton = Array.from(container.querySelectorAll('button')).find(
