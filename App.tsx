@@ -538,7 +538,7 @@ function App() {
       workspaceCoordinatorRef.current?.publishUpdate(revision);
       void backupSchedulerRef.current?.evaluate().catch(() => undefined);
     } catch (error) {
-      if (error instanceof WorkspaceRevisionConflictError) {
+      if (error instanceof WorkspaceRevisionConflictError && !window.electronAPI) {
         workspaceCanWriteRef.current = false;
         setIsWorkspaceReadOnly(true);
         workspaceCoordinatorRef.current?.relinquishWriter();

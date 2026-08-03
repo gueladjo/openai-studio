@@ -93,6 +93,7 @@ const createDeferred = <T,>() => {
 };
 
 const mocks = vi.hoisted(() => ({
+  WorkspaceRevisionConflictError: class WorkspaceRevisionConflictError extends Error {},
   apiKey: 'workspace-key',
   bundledApiKey: '',
   chatAreaProps: null as CapturedChatAreaProps | null,
@@ -232,7 +233,7 @@ vi.mock('./services/storage', () => ({
     PROJECTS: 'projects.json',
     PROJECT_REMOTE_STATE: 'project_remote_state.json'
   },
-  WorkspaceRevisionConflictError: class WorkspaceRevisionConflictError extends Error {},
+  WorkspaceRevisionConflictError: mocks.WorkspaceRevisionConflictError,
   getActiveStorageBackend: mocks.getActiveStorageBackend,
   getAttachmentDataUrl: mocks.getAttachmentDataUrl,
   getStorageHandle: mocks.getStorageHandle,
@@ -1459,6 +1460,46 @@ describe('App workspace and request lifecycle', () => {
       ));
     });
     expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
+  });
+
+  it('keeps Electron writable and allows retry after a revision conflict', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {}
+    });
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    mocks.writeJsonFile
+      .mockRejectedValueOnce(
+        new mocks.WorkspaceRevisionConflictError('Simulated local write collision.')
+      )
+      .mockImplementation(async () => ++mocks.currentRevision);
+
+    await act(async () => {
+      getSidebarProps().onNewProject();
+    });
+    await flushMicrotasks();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    await flushMicrotasks();
+
+    expect(container.textContent).not.toContain(
+      'This workspace is open for editing in another tab.'
+    );
+    expect(mocks.coordinator.relinquishWriter).not.toHaveBeenCalled();
+    const retry = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent?.includes('Retry now')
+    );
+    expect(retry?.disabled).toBe(false);
+
+    await act(async () => retry?.click());
+    await flushMicrotasks();
+
+    expect(container.textContent).not.toContain('Workspace changes are not saved:');
+    expect(mocks.writeJsonFile).toHaveBeenCalledTimes(2);
   });
 
   it('checkpoints partial output and saves it before confirming Electron close', async () => {

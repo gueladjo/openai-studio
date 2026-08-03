@@ -46,6 +46,7 @@ import {
   LOCAL_WORKSPACE_SCHEMA_VERSION,
   WORKSPACE_MANIFEST_SLOTS
 } from './workspaceGeneration';
+import { SerializedOperationQueue } from './serializedOperationQueue';
 
 export type {
   StorageBackend,
@@ -79,6 +80,7 @@ let idbDatabase: IDBDatabase | null = null;
 let workspaceRevision: number | null = null;
 let workspaceGenerationCache: ValidWorkspaceGeneration | null = null;
 let workspaceStorageReadOnly = false;
+const workspaceWriteQueue = new SerializedOperationQueue();
 
 const IDB_NAME = 'openai-studio-storage';
 const IDB_STORE = 'files';
@@ -1664,7 +1666,7 @@ const getWorkspaceDataKey = (filename: string): WorkspaceDataKey => {
   throw new Error(`Unsupported workspace data file: ${filename}`);
 };
 
-export const writeJsonFile = async (
+const writeJsonFileNow = async (
   dirHandle: FileSystemDirectoryHandle,
   filename: WorkspaceDataFilename,
   data: unknown
@@ -1713,6 +1715,15 @@ export const writeJsonFile = async (
   workspaceRevision = committed.manifest.revision;
   return committed.manifest.revision;
 };
+
+export const writeJsonFile = (
+  dirHandle: FileSystemDirectoryHandle,
+  filename: WorkspaceDataFilename,
+  data: unknown
+): Promise<number> => workspaceWriteQueue.enqueue(
+  () => writeJsonFileNow(dirHandle, filename, data),
+  { blocksInteractions: false }
+);
 
 export function readJsonFile(
   dirHandle: FileSystemDirectoryHandle,
@@ -1946,7 +1957,7 @@ export const writeProjectRemoteState = async (
   state
 );
 
-export const writeWorkspaceState = async (
+const writeWorkspaceStateNow = async (
   dirHandle: FileSystemDirectoryHandle,
   changes: Partial<Pick<
     WorkspaceGenerationData,
@@ -2002,6 +2013,18 @@ export const writeWorkspaceState = async (
   workspaceRevision = committed.manifest.revision;
   return committed.manifest.revision;
 };
+
+export const writeWorkspaceState = (
+  dirHandle: FileSystemDirectoryHandle,
+  changes: Partial<Pick<
+    WorkspaceGenerationData,
+    'sessions' | 'settings' | 'instructions' | 'projects' | 'projectRemoteState'
+  >>,
+  options: { publishTwice?: boolean } = {}
+): Promise<number> => workspaceWriteQueue.enqueue(
+  () => writeWorkspaceStateNow(dirHandle, changes, options),
+  { blocksInteractions: false }
+);
 
 export const readSessions = async (
   dirHandle: FileSystemDirectoryHandle,
@@ -2150,7 +2173,7 @@ const createPortableReplacementRemoteState = (
   return { indexes: {}, cleanupTombstones };
 };
 
-export const replaceWorkspaceSnapshot = async (
+const replaceWorkspaceSnapshotNow = async (
   dirHandle: FileSystemDirectoryHandle,
   replacement: WorkspaceReplacement
 ): Promise<number> => {
@@ -2213,6 +2236,14 @@ export const replaceWorkspaceSnapshot = async (
   workspaceRevision = committed.manifest.revision;
   return committed.manifest.revision;
 };
+
+export const replaceWorkspaceSnapshot = (
+  dirHandle: FileSystemDirectoryHandle,
+  replacement: WorkspaceReplacement
+): Promise<number> => workspaceWriteQueue.enqueue(
+  () => replaceWorkspaceSnapshotNow(dirHandle, replacement),
+  { blocksInteractions: false }
+);
 
 export class LegacyWorkspaceBackupUnsupportedError extends Error {
   constructor() {

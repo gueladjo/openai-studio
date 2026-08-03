@@ -294,6 +294,14 @@ published revisions and do not write. Writer acquisition reloads before writes
 resume. A stale writer is rejected by revision checks rather than overwriting a
 newer generation.
 
+Within one renderer, the storage facade serializes single-object saves, atomic
+multi-object publications, and whole-workspace replacements through one
+nonblocking write queue. Project metadata edits therefore cannot race source
+upload/index status persistence on the same workspace revision. A browser
+revision conflict still relinquishes writer ownership; the single-instance
+Electron renderer remains writer and allows the save queue to retry instead of
+entering an unrecoverable reader state.
+
 Session changes use a one-second trailing save and a five-second maximum wait
 during streaming. Request boundaries save immediately. Settings, custom
 instructions, and project metadata/defaults use a 500 ms trailing save. The

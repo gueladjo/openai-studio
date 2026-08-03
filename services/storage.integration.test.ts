@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG,
   type FileAttachment,
   type Project,
+  type ProjectRemoteState,
   type Session,
   type SystemInstruction
 } from '../types';
@@ -413,6 +414,86 @@ describe('storage public contracts', () => {
       apiKey: 'first-key'
     });
     expect(storage.getWorkspaceRevision()).toBe(2);
+  });
+
+  it('serializes project edits with concurrent source-state persistence', async () => {
+    await seedWorkspace();
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-concurrent-write',
+      name: 'Concurrent writes',
+      icon: 'folder',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: 1,
+      updatedAt: 1
+    };
+    await storage.writeWorkspaceState(handle, { projects: [project] });
+
+    const updatedProject = {
+      ...project,
+      instructions: 'Instructions edited during an upload.',
+      updatedAt: 2
+    };
+    const remoteState: ProjectRemoteState = {
+      indexes: {
+        [project.id]: {
+          projectId: project.id,
+          apiKeyFingerprint: 'a'.repeat(64),
+          status: 'creating',
+          usageBytes: 0,
+          files: {}
+        }
+      },
+      cleanupTombstones: []
+    };
+
+    await expect(Promise.all([
+      storage.writeJsonFile(
+        handle,
+        storage.STORAGE_FILES.PROJECTS,
+        [updatedProject]
+      ),
+      storage.writeWorkspaceState(handle, { projectRemoteState: remoteState })
+    ])).resolves.toHaveLength(2);
+
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.PROJECTS
+    )).resolves.toEqual([updatedProject]);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.PROJECT_REMOTE_STATE
+    )).resolves.toEqual(remoteState);
+  });
+
+  it('serializes whole-workspace replacement after an already queued save', async () => {
+    await seedWorkspace();
+    const replacementSession = createSession('Replacement after queued save');
+
+    await expect(Promise.all([
+      storage.writeJsonFile(handle, storage.STORAGE_FILES.SETTINGS, {
+        theme: 'light',
+        apiKey: 'queued-key'
+      }),
+      storage.replaceWorkspaceSnapshot(handle, {
+        sessions: [replacementSession],
+        settings: { theme: 'dark' },
+        instructions: [],
+        projects: [],
+        blobs: new Map()
+      })
+    ])).resolves.toHaveLength(2);
+
+    await expect(storage.readSessions(handle)).resolves.toEqual([replacementSession]);
+    await expect(storage.readJsonFile(
+      handle,
+      storage.STORAGE_FILES.SETTINGS
+    )).resolves.toEqual({
+      theme: 'dark',
+      apiKey: 'queued-key'
+    });
   });
 
   it('migrates schema-v4 project objects into the strict schema-v5 format', async () => {
