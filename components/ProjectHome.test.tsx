@@ -161,6 +161,9 @@ describe('ProjectHome', () => {
     )).not.toBeNull();
     expect(container.querySelector('option[value="health"]')?.textContent)
       .toBe('Health');
+    expect(Array.from(container.querySelectorAll('h2')).filter(
+      heading => heading.textContent === 'Configuration'
+    )).toHaveLength(1);
     const deleteButton = Array.from(container.querySelectorAll('button')).find(
       button => button.textContent?.includes('Delete permanently')
     );

@@ -135,6 +135,10 @@ const mocks = vi.hoisted(() => ({
   readWorkspaceSnapshot: vi.fn(),
   restoreWorkspaceArchive: vi.fn(),
   sidebarProps: null as CapturedSidebarProps | null,
+  sidebarMountCount: 0,
+  sidebarUnmountCount: 0,
+  configPanelMountCount: 0,
+  configPanelUnmountCount: 0,
   projectHomeProps: null as CapturedProjectHomeProps | null,
   storeAttachment: vi.fn(),
   storeLocalBlob: vi.fn(),
@@ -158,12 +162,26 @@ vi.mock('./components/ChatArea', () => ({
 vi.mock('./components/Sidebar', () => ({
   Sidebar: (props: CapturedSidebarProps) => {
     mocks.sidebarProps = props;
+    React.useEffect(() => {
+      mocks.sidebarMountCount += 1;
+      return () => {
+        mocks.sidebarUnmountCount += 1;
+      };
+    }, []);
     return null;
   }
 }));
 
 vi.mock('./components/ConfigPanel', () => ({
-  ConfigPanel: () => null
+  ConfigPanel: () => {
+    React.useEffect(() => {
+      mocks.configPanelMountCount += 1;
+      return () => {
+        mocks.configPanelUnmountCount += 1;
+      };
+    }, []);
+    return null;
+  }
 }));
 
 vi.mock('./components/ProjectHome', () => ({
@@ -334,6 +352,10 @@ describe('App workspace and request lifecycle', () => {
     mocks.chatAreaProps = null;
     mocks.sidebarProps = null;
     mocks.projectHomeProps = null;
+    mocks.sidebarMountCount = 0;
+    mocks.sidebarUnmountCount = 0;
+    mocks.configPanelMountCount = 0;
+    mocks.configPanelUnmountCount = 0;
     mocks.currentRevision = 0;
     mocks.loadedSessions = [
       createSession('session-a', 'Session A'),
@@ -552,6 +574,35 @@ describe('App workspace and request lifecycle', () => {
       await backupStatus.promise;
     });
     await flushMicrotasks();
+  });
+
+  it('keeps responsive panels mounted while crossing the mobile breakpoint', async () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 600
+    });
+    await renderApp();
+    await finishInitialization();
+
+    expect(mocks.sidebarMountCount).toBe(1);
+    expect(mocks.configPanelMountCount).toBe(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open menu"]')?.click();
+      container.querySelector<HTMLButtonElement>('[aria-label="Open settings"]')?.click();
+    });
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1024
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+
+    expect(mocks.sidebarMountCount).toBe(1);
+    expect(mocks.sidebarUnmountCount).toBe(0);
+    expect(mocks.configPanelMountCount).toBe(1);
+    expect(mocks.configPanelUnmountCount).toBe(0);
   });
 
   it('does not write defaults when workspace loading fails', async () => {

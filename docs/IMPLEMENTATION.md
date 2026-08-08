@@ -653,11 +653,13 @@ Google Fonts remain external and are runtime-cached by Workbox. OpenAI requests
 remain network-dependent. `__APP_VERSION__` is read from `package.json` at
 build time.
 
-The responsive breakpoint owned by `App.tsx` is 768 px. Desktop keeps fixed
-sidebar/configuration controls; mobile uses drawers and modals, while the
-project home and its project settings use the full main sheet. Layout changes
-must preserve hierarchy/search usability, keyboard send behavior, scrolling,
-overflow, and light/dark themes at both sizes.
+The responsive breakpoint is Tailwind's 768 px `md` boundary. A single mounted
+sidebar and configuration panel adapt between fixed desktop controls and
+mobile drawer/sheet presentation through responsive classes, so crossing the
+breakpoint must not discard their local drafts or disclosure state. The project
+home and its single project-settings panel similarly adapt within the full main
+sheet. Layout changes must preserve hierarchy/search usability, keyboard send
+behavior, scrolling, overflow, and light/dark themes at both sizes.
 
 Electron is a frameless, single-instance window. `nodeIntegration` is off and
 `contextIsolation` is on. The preload bridge is limited to window controls,

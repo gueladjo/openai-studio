@@ -34,7 +34,6 @@ interface ProjectHomeProps {
   busySourceIds?: ReadonlySet<string>;
   error?: string | null;
   readOnly?: boolean;
-  isMobile?: boolean;
   onUpdate: (project: Project) => void;
   onNewChat: () => void;
   onAddSources: (files: File[]) => void;
@@ -64,7 +63,6 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
   busySourceIds = new Set(),
   error,
   readOnly = false,
-  isMobile = false,
   onUpdate,
   onNewChat,
   onAddSources,
@@ -92,8 +90,9 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
   const sourceWorkBusy = busySourceIds.size > 0;
 
   return (
-    <div className={`flex min-w-0 flex-1 overflow-hidden bg-white dark:bg-[#0d1117] ${isMobile ? 'flex-col' : ''}`}>
-      <div className="min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+    <div className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-white md:flex-row md:overflow-hidden dark:bg-[#0d1117]">
+      <div className="contents md:block md:min-w-0 md:flex-1 md:overflow-y-auto">
+      <div className="order-1 min-w-0 px-4 pt-6 sm:px-8 md:pb-0">
         <div className="mx-auto max-w-4xl space-y-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1">
@@ -252,22 +251,10 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
             )}
           </section>
 
-          {isMobile && (
-            <section className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
-              <ConfigPanel
-                config={{ ...project.defaultConfig, systemInstructionId: undefined }}
-                onChange={updateConfig}
-                systemInstructions={[]}
-                onUpdateSystemInstruction={() => undefined}
-                onCreateSystemInstruction={() => undefined}
-                onDeleteSystemInstruction={() => undefined}
-                hideSystemInstructions
-                isMobile
-                readOnly={readOnly}
-              />
-            </section>
-          )}
-
+        </div>
+      </div>
+      <div className="order-3 min-w-0 px-4 pb-6 pt-8 sm:px-8">
+        <div className="mx-auto max-w-4xl">
           <section className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
             <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Delete project</h2>
             <p className="mt-1 text-xs text-gray-500">Permanently removes this project, its chats, instructions, and local sources. Existing external backups are not erased.</p>
@@ -278,18 +265,20 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
           </section>
         </div>
       </div>
+      </div>
 
-      {!isMobile && <ConfigPanel
-        config={{ ...project.defaultConfig, systemInstructionId: undefined }}
-        onChange={updateConfig}
-        systemInstructions={[]}
-        onUpdateSystemInstruction={() => undefined}
-        onCreateSystemInstruction={() => undefined}
-        onDeleteSystemInstruction={() => undefined}
-        hideSystemInstructions
-        isMobile={isMobile}
-        readOnly={readOnly}
-      />}
+      <section className="order-2 mx-4 mt-8 overflow-hidden rounded-xl border border-gray-200 sm:mx-8 md:order-none md:m-0 md:h-full md:rounded-none md:border-0 dark:border-gray-700">
+        <ConfigPanel
+          config={{ ...project.defaultConfig, systemInstructionId: undefined }}
+          onChange={updateConfig}
+          systemInstructions={[]}
+          onUpdateSystemInstruction={() => undefined}
+          onCreateSystemInstruction={() => undefined}
+          onDeleteSystemInstruction={() => undefined}
+          hideSystemInstructions
+          readOnly={readOnly}
+        />
+      </section>
     </div>
   );
 };

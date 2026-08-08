@@ -38,8 +38,7 @@ describe('Sidebar workspace merge controls', () => {
     onApiKeySave,
     onNewSession = vi.fn(),
     onRefreshManagedBackups = vi.fn(),
-    automaticBackupsSupported = false,
-    isMobile = false
+    automaticBackupsSupported = false
   }: {
     onMergeData?: (file: File) => void;
     mergeDisabled?: boolean;
@@ -50,7 +49,6 @@ describe('Sidebar workspace merge controls', () => {
     onNewSession?: (projectId?: string) => void;
     onRefreshManagedBackups?: () => void;
     automaticBackupsSupported?: boolean;
-    isMobile?: boolean;
   } = {}) => {
     await act(async () => {
       root.render(
@@ -87,7 +85,6 @@ describe('Sidebar workspace merge controls', () => {
           onDeleteManagedBackup={() => undefined}
           undoWorkspaceAction={undoWorkspaceAction}
           onUndoWorkspaceMutation={() => undefined}
-          isMobile={isMobile}
         />
       );
     });
@@ -269,7 +266,7 @@ describe('Sidebar workspace merge controls', () => {
     expect(onNewSession).toHaveBeenNthCalledWith(2);
   });
 
-  it('reveals new-chat shortcuts on desktop hover or focus and keeps them visible on mobile', async () => {
+  it('uses the shared breakpoint to keep shortcuts visible on mobile', async () => {
     const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
     const project: Project = {
       id: 'project-1',
@@ -283,25 +280,16 @@ describe('Sidebar workspace merge controls', () => {
     };
     await renderSidebar({ projects: [project] });
 
-    const desktopShortcuts = [
+    const shortcuts = [
       container.querySelector<HTMLButtonElement>('button[aria-label="New chat in Client Alpha"]')!,
       container.querySelector<HTMLButtonElement>('button[aria-label="New standalone chat"]')!
     ];
-    desktopShortcuts.forEach(shortcut => {
-      expect(shortcut.classList).toContain('opacity-0');
-      expect(shortcut.classList).toContain('group-hover:opacity-100');
-      expect(shortcut.classList).toContain('focus:opacity-100');
-      expect(shortcut.parentElement?.classList).toContain('group');
-    });
-
-    await renderSidebar({ projects: [project], isMobile: true });
-    const mobileShortcuts = [
-      container.querySelector<HTMLButtonElement>('button[aria-label="New chat in Client Alpha"]')!,
-      container.querySelector<HTMLButtonElement>('button[aria-label="New standalone chat"]')!
-    ];
-    mobileShortcuts.forEach(shortcut => {
+    shortcuts.forEach(shortcut => {
       expect(shortcut.classList).toContain('opacity-100');
-      expect(shortcut.classList).not.toContain('opacity-0');
+      expect(shortcut.classList).toContain('md:opacity-0');
+      expect(shortcut.classList).toContain('md:group-hover:opacity-100');
+      expect(shortcut.classList).toContain('md:focus:opacity-100');
+      expect(shortcut.parentElement?.classList).toContain('group');
     });
   });
 });

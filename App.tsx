@@ -109,20 +109,8 @@ import {
 } from './services/projectSourceService';
 import { validateProjectSourceFiles } from './utils/projectSources';
 
-// Hook for detecting mobile viewport
-const useIsMobile = (breakpoint = 768) => {
-  const [isMobile, setIsMobile] = useState(
-    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false
-  );
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < breakpoint);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [breakpoint]);
-
-  return isMobile;
-};
+const MOBILE_BREAKPOINT_PX = 768;
+const isMobileViewport = (): boolean => window.innerWidth < MOBILE_BREAKPOINT_PX;
 
 // Add global declaration for Electron API
 declare global {
@@ -428,18 +416,18 @@ function App() {
     apiKey: ''
   });
 
-  // Mobile responsive state
-  const isMobile = useIsMobile();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
 
-  // Close mobile panels when switching to desktop
   useEffect(() => {
-    if (!isMobile) {
+    const closeMobilePanelsOnDesktop = () => {
+      if (isMobileViewport()) return;
       setIsSidebarOpen(false);
       setIsConfigOpen(false);
-    }
-  }, [isMobile]);
+    };
+    window.addEventListener('resize', closeMobilePanelsOnDesktop);
+    return () => window.removeEventListener('resize', closeMobilePanelsOnDesktop);
+  }, []);
 
   useLayoutEffect(() => {
     sessionsRef.current = sessions;
@@ -490,17 +478,16 @@ function App() {
     };
   }, [isDarkMode, apiKey, currentSessionId]);
 
-  // Close sidebar when selecting a session on mobile
   const handleSelectSession = useCallback((id: string) => {
     setSelectedProjectId(null);
     updateCurrentSessionId(id);
-    if (isMobile) setIsSidebarOpen(false);
-  }, [isMobile, updateCurrentSessionId]);
+    setIsSidebarOpen(false);
+  }, [updateCurrentSessionId]);
 
   const handleSelectProject = useCallback((id: string) => {
     setSelectedProjectId(id);
-    if (isMobile) setIsSidebarOpen(false);
-  }, [isMobile]);
+    setIsSidebarOpen(false);
+  }, []);
 
   const forceImmediateSessionSaveRef = useRef(false);
   const skipNextSessionEffectSaveRef = useRef(false);
@@ -2880,11 +2867,12 @@ function App() {
   // Data Import/Export Handlers
   const handleExportData = async () => {
     if (!dirHandle) return;
+    const mobileViewport = isMobileViewport();
     const controller = new AbortController();
     archiveAbortRef.current?.abort();
     archiveAbortRef.current = controller;
     try {
-      const showSaveFilePicker = !isMobile && !window.electronAPI
+      const showSaveFilePicker = !mobileViewport && !window.electronAPI
         ? (window as typeof window & {
             showSaveFilePicker?: PortableBackupSavePicker;
           }).showSaveFilePicker
@@ -2925,7 +2913,7 @@ function App() {
         const writable = await fileHandle.createWritable();
         await writable.write(archive);
         await writable.close();
-      } else if (isMobile) {
+      } else if (mobileViewport) {
         setPreparedPortableBackup({
           file: portableFile,
           canShare: (
@@ -3284,7 +3272,11 @@ function App() {
     return (
       <div className={isDarkMode ? 'dark' : ''}>
         <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
-          {!isMobile && window.electronAPI && <TitleBar isDarkMode={isDarkMode} />}
+          {window.electronAPI && (
+            <div className="hidden md:block">
+              <TitleBar isDarkMode={isDarkMode} />
+            </div>
+          )}
           <div className="flex flex-1 items-center justify-center px-6">
             <div className="w-full max-w-lg rounded-lg border border-red-200 bg-red-50 p-6 shadow-sm dark:border-red-900/60 dark:bg-red-950/20">
               <div className="flex items-start gap-3">
@@ -3317,7 +3309,11 @@ function App() {
     <div className={isDarkMode ? 'dark' : ''}>
       <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
         {/* Custom Title Bar - Electron desktop only */}
-        {!isMobile && window.electronAPI && <TitleBar isDarkMode={isDarkMode} />}
+        {window.electronAPI && (
+          <div className="hidden md:block">
+            <TitleBar isDarkMode={isDarkMode} />
+          </div>
+        )}
 
         {isWorkspaceReadOnly && (
           <div
@@ -3364,8 +3360,7 @@ function App() {
         )}
 
         {/* Mobile Header */}
-        {isMobile && (
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0d1117] safe-area-top">
+          <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:hidden dark:border-gray-800 dark:bg-[#0d1117]">
             <button
               onClick={() => setIsSidebarOpen(true)}
               className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -3385,152 +3380,92 @@ function App() {
               <Settings size={24} className={!currentSession ? 'opacity-40' : ''} />
             </button>
           </div>
-        )}
 
         {/* Main App Content */}
         <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
           {/* Sidebar - Desktop: always visible, Mobile: slide-out drawer */}
-          {!isMobile ? (
-            <Sidebar
-              sessions={sessions}
-              projects={projects}
-              currentSessionId={currentSessionId}
-              selectedProjectId={selectedProjectId}
-              onSelectSession={handleSelectSession}
-              onSelectProject={handleSelectProject}
-              onNewProject={createNewProject}
-              onNewSession={createSession}
-              onDeleteSession={deleteSession}
-              isDarkMode={isDarkMode}
-              toggleTheme={() => {
-                if (
-                  workspaceCanWriteRef.current &&
-                  !workspaceMutationBlockedRef.current
-                ) {
-                  setIsDarkMode(!isDarkMode);
-                }
-              }}
-              apiKey={apiKey}
-              onApiKeySave={saveApiKey}
-              pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
-              remoteCleanupError={projectActionError}
-              onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
-              onApiKeyChange={key => {
-                if (
-                  workspaceCanWriteRef.current &&
-                  !workspaceMutationBlockedRef.current
-                ) {
-                  setApiKey(key);
-                }
-              }}
-              onExportData={handleExportData}
-              onImportData={handleImportData}
-              onMergeData={handleMergeData}
-              mergeDisabled={
-                isWorkspaceInteractionReadOnly ||
-                processingSessionIds.size > 0 ||
-                busyProjectSourceIds.size > 0
-              }
-              backupState={backupState}
-              backupActionError={backupActionError}
-              onToggleAutomaticBackups={handleToggleAutomaticBackups}
-              onChooseBackupFolder={handleChooseBackupFolder}
-              onReconnectBackupFolder={handleReconnectBackupFolder}
-              onRefreshManagedBackups={handleRefreshManagedBackups}
-              onBackUpNow={handleBackUpNow}
-              onRestoreManagedBackup={handleManagedBackupRestore}
-              onExportManagedBackup={handleManagedBackupExport}
-              onDeleteManagedBackup={handleManagedBackupDelete}
-              undoWorkspaceAction={undoWorkspaceAction}
-              onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
-              processingSessionIds={processingSessionIds}
-              readOnly={isWorkspaceInteractionReadOnly}
+          {isSidebarOpen && (
+            <div
+              className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
+              onClick={() => setIsSidebarOpen(false)}
             />
-          ) : (
-            <>
-              {/* Mobile Sidebar Overlay */}
-              {isSidebarOpen && (
-                <div
-                  className="fixed inset-0 bg-black/50 z-40 animate-in fade-in duration-200"
-                  onClick={() => setIsSidebarOpen(false)}
-                />
-              )}
-              {/* Mobile Sidebar Drawer */}
-              <div
-                className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] transform transition-transform duration-300 ease-out ${
-                  isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-                }`}
-              >
-                <div className="h-full flex flex-col bg-gray-50 dark:bg-[#0d1117] safe-area-left">
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800">
-                    <span className="font-semibold text-gray-800 dark:text-gray-200">Chats</span>
-                    <button
-                      onClick={() => setIsSidebarOpen(false)}
-                      className="p-2 -mr-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                    >
-                      <X size={20} />
-                    </button>
-                  </div>
-                  <Sidebar
-                    sessions={sessions}
-                    projects={projects}
-                    currentSessionId={currentSessionId}
-                    selectedProjectId={selectedProjectId}
-                    onSelectSession={handleSelectSession}
-                    onSelectProject={handleSelectProject}
-                    onNewProject={createNewProject}
-                    onNewSession={projectId => { createSession(projectId); setIsSidebarOpen(false); }}
-                    onDeleteSession={deleteSession}
-                    isDarkMode={isDarkMode}
-                    toggleTheme={() => {
-                      if (
-                        workspaceCanWriteRef.current &&
-                        !workspaceMutationBlockedRef.current
-                      ) {
-                        setIsDarkMode(!isDarkMode);
-                      }
-                    }}
-                    apiKey={apiKey}
-                    onApiKeySave={saveApiKey}
-                    pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
-                    remoteCleanupError={projectActionError}
-                    onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
-                    onApiKeyChange={key => {
-                      if (
-                        workspaceCanWriteRef.current &&
-                        !workspaceMutationBlockedRef.current
-                      ) {
-                        setApiKey(key);
-                      }
-                    }}
-                    onExportData={handleExportData}
-                    onImportData={handleImportData}
-                    onMergeData={handleMergeData}
-                    mergeDisabled={
-                      isWorkspaceInteractionReadOnly ||
-                      processingSessionIds.size > 0 ||
-                      busyProjectSourceIds.size > 0
-                    }
-                    backupState={backupState}
-                    backupActionError={backupActionError}
-                    onToggleAutomaticBackups={handleToggleAutomaticBackups}
-                    onChooseBackupFolder={handleChooseBackupFolder}
-                    onReconnectBackupFolder={handleReconnectBackupFolder}
-                    onRefreshManagedBackups={handleRefreshManagedBackups}
-                    onBackUpNow={handleBackUpNow}
-                    onRestoreManagedBackup={handleManagedBackupRestore}
-                    onExportManagedBackup={handleManagedBackupExport}
-                    onDeleteManagedBackup={handleManagedBackupDelete}
-                    undoWorkspaceAction={undoWorkspaceAction}
-                    onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
-                    processingSessionIds={processingSessionIds}
-                    isMobile={true}
-                    readOnly={isWorkspaceInteractionReadOnly}
-                  />
-                </div>
-              </div>
-            </>
           )}
+          <div
+            className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] transform transition-transform duration-300 ease-out md:static md:z-auto md:w-64 md:max-w-none md:flex-shrink-0 md:translate-x-0 md:border-r md:border-gray-200 md:transition-none md:dark:border-gray-800 ${
+              isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
+          >
+            <div className="flex h-full flex-col bg-gray-50 pl-[env(safe-area-inset-left)] md:pl-0 dark:bg-[#0d1117]">
+              <div className="flex items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
+                <span className="font-semibold text-gray-800 dark:text-gray-200">Chats</span>
+                <button
+                  onClick={() => setIsSidebarOpen(false)}
+                  className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                  aria-label="Close menu"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <Sidebar
+                sessions={sessions}
+                projects={projects}
+                currentSessionId={currentSessionId}
+                selectedProjectId={selectedProjectId}
+                onSelectSession={handleSelectSession}
+                onSelectProject={handleSelectProject}
+                onNewProject={createNewProject}
+                onNewSession={projectId => {
+                  createSession(projectId);
+                  setIsSidebarOpen(false);
+                }}
+                onDeleteSession={deleteSession}
+                isDarkMode={isDarkMode}
+                toggleTheme={() => {
+                  if (
+                    workspaceCanWriteRef.current &&
+                    !workspaceMutationBlockedRef.current
+                  ) {
+                    setIsDarkMode(!isDarkMode);
+                  }
+                }}
+                apiKey={apiKey}
+                onApiKeySave={saveApiKey}
+                pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
+                remoteCleanupError={projectActionError}
+                onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
+                onApiKeyChange={key => {
+                  if (
+                    workspaceCanWriteRef.current &&
+                    !workspaceMutationBlockedRef.current
+                  ) {
+                    setApiKey(key);
+                  }
+                }}
+                onExportData={handleExportData}
+                onImportData={handleImportData}
+                onMergeData={handleMergeData}
+                mergeDisabled={
+                  isWorkspaceInteractionReadOnly ||
+                  processingSessionIds.size > 0 ||
+                  busyProjectSourceIds.size > 0
+                }
+                backupState={backupState}
+                backupActionError={backupActionError}
+                onToggleAutomaticBackups={handleToggleAutomaticBackups}
+                onChooseBackupFolder={handleChooseBackupFolder}
+                onReconnectBackupFolder={handleReconnectBackupFolder}
+                onRefreshManagedBackups={handleRefreshManagedBackups}
+                onBackUpNow={handleBackUpNow}
+                onRestoreManagedBackup={handleManagedBackupRestore}
+                onExportManagedBackup={handleManagedBackupExport}
+                onDeleteManagedBackup={handleManagedBackupDelete}
+                undoWorkspaceAction={undoWorkspaceAction}
+                onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
+                processingSessionIds={processingSessionIds}
+                readOnly={isWorkspaceInteractionReadOnly}
+              />
+            </div>
+          </div>
 
           <main className="flex-1 flex min-w-0 w-full overflow-hidden">
             {selectedProject ? (
@@ -3542,7 +3477,6 @@ function App() {
                 busySourceIds={busyProjectSourceIds}
                 error={projectActionError}
                 readOnly={isWorkspaceInteractionReadOnly}
-                isMobile={isMobile}
                 onUpdate={updateProject}
                 onNewChat={() => createProjectSession(selectedProject.id)}
                 onAddSources={files => addProjectSources(selectedProject.id, files)}
@@ -3566,7 +3500,6 @@ function App() {
               onDownloadGeneratedFile={cacheGeneratedFile}
               apiKey={apiKey}
               isLoading={isCurrentSessionProcessing}
-              isMobile={isMobile}
               readOnly={isWorkspaceInteractionReadOnly}
               projectSources={currentSessionProject?.sources.filter(
                 source => source.capability === 'direct_attachment'
@@ -3575,56 +3508,45 @@ function App() {
               project={currentSessionProject || undefined}
             />
 
-            {/* ConfigPanel - Desktop: always visible when session selected, Mobile: modal */}
-            {!isMobile && currentSession && (
-              <ConfigPanel
-                config={currentSession.config}
-                onChange={updateConfig}
-                systemInstructions={systemInstructions}
-                onCreateSystemInstruction={handleCreateSystemInstruction}
-                onUpdateSystemInstruction={handleUpdateSystemInstruction}
-                onDeleteSystemInstruction={handleDeleteSystemInstruction}
-                hideSystemInstructions={Boolean(currentSession.projectId)}
-                readOnly={isWorkspaceInteractionReadOnly}
-              />
+            {currentSession && (
+              <>
+                {isConfigOpen && (
+                  <div
+                    className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
+                    onClick={() => setIsConfigOpen(false)}
+                  />
+                )}
+                <div
+                  className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 max-h-[85vh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
+                >
+                  <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
+                    <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
+                    <button
+                      onClick={() => setIsConfigOpen(false)}
+                      className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                      aria-label="Close configuration"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-hidden md:contents">
+                    <ConfigPanel
+                      config={currentSession.config}
+                      onChange={updateConfig}
+                      systemInstructions={systemInstructions}
+                      onCreateSystemInstruction={handleCreateSystemInstruction}
+                      onUpdateSystemInstruction={handleUpdateSystemInstruction}
+                      onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                      hideSystemInstructions={Boolean(currentSession.projectId)}
+                      readOnly={isWorkspaceInteractionReadOnly}
+                    />
+                  </div>
+                </div>
+              </>
             )}
             </>}
           </main>
         </div>
-
-        {/* Mobile Config Modal */}
-        {isMobile && isConfigOpen && currentSession && !selectedProject && (
-          <>
-            <div
-              className="fixed inset-0 bg-black/50 z-40 animate-in fade-in duration-200"
-              onClick={() => setIsConfigOpen(false)}
-            />
-            <div className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] bg-gray-50 dark:bg-[#0d1117] rounded-t-2xl animate-in slide-in-from-bottom duration-300 safe-area-bottom overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
-                <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
-                <button
-                  onClick={() => setIsConfigOpen(false)}
-                  className="p-2 -mr-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                <ConfigPanel
-                  config={currentSession.config}
-                  onChange={updateConfig}
-                  systemInstructions={systemInstructions}
-                  onCreateSystemInstruction={handleCreateSystemInstruction}
-                  onUpdateSystemInstruction={handleUpdateSystemInstruction}
-                  onDeleteSystemInstruction={handleDeleteSystemInstruction}
-                  hideSystemInstructions={Boolean(currentSession.projectId)}
-                  isMobile={true}
-                  readOnly={isWorkspaceInteractionReadOnly}
-                />
-              </div>
-            </div>
-          </>
-        )}
 
         {archiveProgress && (
           <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 px-4">

@@ -49,7 +49,6 @@ interface ChatAreaProps {
   onDownloadGeneratedFile?: (file: GeneratedFile) => Promise<Blob>;
   apiKey: string;
   isLoading: boolean;
-  isMobile?: boolean;
   readOnly?: boolean;
   projectSources?: ProjectSource[];
   onLoadProjectSource?: (source: ProjectSource) => Promise<File>;
@@ -788,22 +787,16 @@ const GeneratedFilesBlock = ({
 const ConversationHeader = ({
   title,
   project,
-  isMobile,
   canShareConversation,
   onShareConversation
 }: {
   title: string;
   project?: Pick<Project, 'name' | 'icon'>;
-  isMobile: boolean;
   canShareConversation: boolean;
   onShareConversation: () => void;
 }) => {
-  const containerClassName = isMobile
-    ? 'h-14 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-3 px-4 flex-shrink-0 bg-gray-50 dark:bg-[#0d1117] sticky top-0 z-10 transition-colors'
-    : 'h-14 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between gap-4 px-6 flex-shrink-0 bg-white/80 dark:bg-[#0d1117]/80 backdrop-blur-sm sticky top-0 z-10 transition-colors';
-
   return (
-    <div className={containerClassName}>
+    <div className="sticky top-0 z-10 flex h-14 flex-shrink-0 items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 transition-colors md:gap-4 md:bg-white/80 md:px-6 md:backdrop-blur-sm dark:border-gray-800 dark:bg-[#0d1117] md:dark:bg-[#0d1117]/80">
       <div className="flex min-w-0 flex-1 items-center gap-2 select-text">
         {project ? (
           <>
@@ -1175,7 +1168,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onDownloadGeneratedFile,
   apiKey,
   isLoading,
-  isMobile = false,
   readOnly = false,
   projectSources = [],
   onLoadProjectSource,
@@ -1447,7 +1439,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <ConversationHeader
         title={session.title}
         project={project}
-        isMobile={isMobile}
         canShareConversation={canShareConversation}
         onShareConversation={onShareConversation}
       />
@@ -1516,7 +1507,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       </div>
 
       {/* Input Area */}
-      <div className={`w-full min-w-0 p-4 bg-white dark:bg-[#0d1117] transition-colors ${isMobile ? 'safe-area-bottom' : ''}`}>
+      <div className="w-full min-w-0 bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 transition-colors dark:bg-[#0d1117]">
         <div className="w-full min-w-0 max-w-4xl mx-auto">
           {attachments.length > 0 && (
               <div className="flex gap-2 mb-2 overflow-x-auto pb-2 flex-wrap">

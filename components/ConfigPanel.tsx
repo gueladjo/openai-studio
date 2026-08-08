@@ -18,7 +18,6 @@ interface ConfigPanelProps {
   onUpdateSystemInstruction: (instruction: SystemInstruction) => void;
   onCreateSystemInstruction: () => void;
   onDeleteSystemInstruction: (id: string) => void;
-  isMobile?: boolean;
   readOnly?: boolean;
   hideSystemInstructions?: boolean;
 }
@@ -30,7 +29,6 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onUpdateSystemInstruction,
   onCreateSystemInstruction,
   onDeleteSystemInstruction,
-  isMobile = false,
   readOnly = false,
   hideSystemInstructions = false
 }) => {
@@ -87,13 +85,11 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   };
 
   return (
-    <div className={`${isMobile ? 'w-full' : 'w-80 border-l border-gray-200 dark:border-gray-800 flex-shrink-0'} bg-gray-50 dark:bg-[#0d1117] flex flex-col h-full overflow-y-auto transition-colors duration-200`}>
-      {!isMobile && (
-        <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center gap-2 text-gray-700 dark:text-gray-200">
+    <div className="flex h-full w-full flex-col overflow-y-auto bg-gray-50 transition-colors duration-200 md:w-80 md:flex-shrink-0 md:border-l md:border-gray-200 dark:bg-[#0d1117] md:dark:border-gray-800">
+        <div className="hidden items-center gap-2 border-b border-gray-200 p-4 text-gray-700 md:flex dark:border-gray-800 dark:text-gray-200">
           <Sliders size={18} />
           <h2 className="font-semibold text-sm">Configuration</h2>
         </div>
-      )}
 
       <fieldset
         disabled={readOnly}
