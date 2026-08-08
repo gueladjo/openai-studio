@@ -129,9 +129,8 @@ const mocks = vi.hoisted(() => ({
   projectSourceReconcile: vi.fn(),
   projectSourceRunCleanup: vi.fn(),
   projectSourceServiceKeys: [] as string[],
-  readJsonFile: vi.fn(),
   readLocalBlob: vi.fn(),
-  readSessions: vi.fn(),
+  readWorkspaceState: vi.fn(),
   readWorkspaceSnapshot: vi.fn(),
   restoreWorkspaceArchive: vi.fn(),
   sidebarProps: null as CapturedSidebarProps | null,
@@ -146,8 +145,6 @@ const mocks = vi.hoisted(() => ({
   synchronizeWorkspaceRevision: vi.fn(),
   undoLastWorkspaceMutation: vi.fn(),
   validateWorkspaceReferences: vi.fn(),
-  writeJsonFile: vi.fn(),
-  writeSessions: vi.fn(),
   writeWorkspaceState: vi.fn(),
   clearInternalRecoveryArchive: vi.fn()
 }));
@@ -235,13 +232,6 @@ vi.mock('./services/workspaceSync', () => ({
 }));
 
 vi.mock('./services/storage', () => ({
-  STORAGE_FILES: {
-    SESSIONS: 'sessions.json',
-    SETTINGS: 'settings.json',
-    INSTRUCTIONS: 'system_instructions.json',
-    PROJECTS: 'projects.json',
-    PROJECT_REMOTE_STATE: 'project_remote_state.json'
-  },
   WorkspaceRevisionConflictError: mocks.WorkspaceRevisionConflictError,
   getActiveStorageBackend: mocks.getActiveStorageBackend,
   getAttachmentDataUrl: mocks.getAttachmentDataUrl,
@@ -249,16 +239,13 @@ vi.mock('./services/storage', () => ({
   getWorkspaceRevision: () => mocks.currentRevision,
   readWorkspaceSnapshot: mocks.readWorkspaceSnapshot,
   readLocalBlob: mocks.readLocalBlob,
-  readJsonFile: mocks.readJsonFile,
-  readSessions: mocks.readSessions,
+  readWorkspaceState: mocks.readWorkspaceState,
   clearInternalRecoveryArchive: mocks.clearInternalRecoveryArchive,
   storeAttachmentBlob: mocks.storeAttachment,
   storeLocalBlob: mocks.storeLocalBlob,
   subscribeToStorageBackendChanges: mocks.subscribeToStorageBackendChanges,
   synchronizeWorkspaceRevision: mocks.synchronizeWorkspaceRevision,
   validateWorkspaceReferences: mocks.validateWorkspaceReferences,
-  writeJsonFile: mocks.writeJsonFile,
-  writeSessions: mocks.writeSessions,
   writeWorkspaceState: mocks.writeWorkspaceState
 }));
 
@@ -427,27 +414,18 @@ describe('App workspace and request lifecycle', () => {
         divergent: 0
       }
     });
-    mocks.readJsonFile.mockReset().mockImplementation(
-      async (_handle, filename: string) => {
-        if (filename === 'settings.json') {
-          return {
-            theme: 'dark',
-            apiKey: mocks.apiKey,
-            lastActiveSessionId: mocks.loadedSessions[0]?.id
-          };
-        }
-        if (filename === 'projects.json') {
-          return structuredClone(mocks.loadedProjects);
-        }
-        if (filename === 'project_remote_state.json') {
-          return structuredClone(mocks.loadedProjectRemoteState);
-        }
-        return structuredClone(mocks.loadedInstructions);
-      }
-    );
-    mocks.readSessions.mockReset().mockImplementation(
-      async () => structuredClone(mocks.loadedSessions)
-    );
+    mocks.readWorkspaceState.mockReset().mockImplementation(async () => ({
+      revision: mocks.currentRevision,
+      sessions: structuredClone(mocks.loadedSessions),
+      settings: {
+        theme: 'dark',
+        apiKey: mocks.apiKey,
+        lastActiveSessionId: mocks.loadedSessions[0]?.id
+      },
+      instructions: structuredClone(mocks.loadedInstructions),
+      projects: structuredClone(mocks.loadedProjects),
+      projectRemoteState: structuredClone(mocks.loadedProjectRemoteState)
+    }));
     mocks.readWorkspaceSnapshot.mockReset().mockResolvedValue({});
     mocks.readLocalBlob.mockReset().mockResolvedValue(null);
     mocks.restoreWorkspaceArchive.mockReset().mockResolvedValue(undefined);
@@ -463,12 +441,6 @@ describe('App workspace and request lifecycle', () => {
     );
     mocks.undoLastWorkspaceMutation.mockReset().mockResolvedValue({});
     mocks.validateWorkspaceReferences.mockReset();
-    mocks.writeJsonFile.mockReset().mockImplementation(async () => (
-      ++mocks.currentRevision
-    ));
-    mocks.writeSessions.mockReset().mockImplementation(async () => (
-      ++mocks.currentRevision
-    ));
     mocks.writeWorkspaceState.mockReset().mockImplementation(async () => (
       ++mocks.currentRevision
     ));
@@ -520,8 +492,7 @@ describe('App workspace and request lifecycle', () => {
       await vi.advanceTimersByTimeAsync(1200);
     });
     await flushMicrotasks();
-    mocks.writeJsonFile.mockClear();
-    mocks.writeSessions.mockClear();
+    mocks.writeWorkspaceState.mockClear();
     mocks.coordinator.publishUpdate.mockClear();
   };
 
@@ -539,6 +510,13 @@ describe('App workspace and request lifecycle', () => {
     if (!mocks.projectHomeProps) throw new Error('ProjectHome props were not captured.');
     return mocks.projectHomeProps;
   };
+
+  const getPersistedSessionWrites = (): Session[][] => (
+    mocks.writeWorkspaceState.mock.calls.flatMap(call => {
+      const changes = call[1] as { sessions?: Session[] };
+      return changes.sessions ? [changes.sessions] : [];
+    })
+  );
 
   const getGenerateOptions = (): GenerateOptions => {
     const call = mocks.generateResponse.mock.calls.at(-1);
@@ -606,7 +584,7 @@ describe('App workspace and request lifecycle', () => {
   });
 
   it('does not write defaults when workspace loading fails', async () => {
-    mocks.readSessions.mockRejectedValueOnce(
+    mocks.readWorkspaceState.mockRejectedValueOnce(
       new Error('Stored sessions could not be validated.')
     );
 
@@ -619,8 +597,28 @@ describe('App workspace and request lifecycle', () => {
     expect(container.textContent).toContain(
       'Stored sessions could not be validated.'
     );
-    expect(mocks.writeSessions).not.toHaveBeenCalled();
-    expect(mocks.writeJsonFile).not.toHaveBeenCalled();
+    expect(mocks.writeWorkspaceState).not.toHaveBeenCalled();
+  });
+
+  it('does not apply an unconfirmed reader snapshot after three revision races', async () => {
+    mocks.coordinator.canWrite = false;
+    mocks.coordinator.currentRole = 'reader';
+    mocks.synchronizeWorkspaceRevision
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(5)
+      .mockResolvedValueOnce(6);
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(mocks.readWorkspaceState).toHaveBeenCalledTimes(3);
+    expect(container.textContent).toContain(
+      'Workspace kept changing while this tab was loading it.'
+    );
+    expect(mocks.writeWorkspaceState).not.toHaveBeenCalled();
   });
 
   it('does not carry the latest undo control across application restarts', async () => {
@@ -737,8 +735,8 @@ describe('App workspace and request lifecycle', () => {
       status: 'error',
       modelName: 'GPT-5.6 Sol'
     });
-    expect(mocks.writeSessions).toHaveBeenCalled();
-    const persistedSessions = mocks.writeSessions.mock.calls.at(-1)?.[1] as Session[];
+    expect(getPersistedSessionWrites()).not.toHaveLength(0);
+    const persistedSessions = getPersistedSessionWrites().at(-1)!;
     expect(persistedSessions[0].pendingRequest).toBeUndefined();
     expect(persistedSessions[0].messages[1].status).toBe('error');
   });
@@ -812,8 +810,7 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.getStorageHandle).toHaveBeenCalledWith(
       expect.objectContaining({ readOnly: true })
     );
-    expect(mocks.writeSessions).not.toHaveBeenCalled();
-    expect(mocks.writeJsonFile).not.toHaveBeenCalled();
+    expect(mocks.writeWorkspaceState).not.toHaveBeenCalled();
   });
 
   it('creates project chats from defaults without changing standalone defaults', async () => {
@@ -1227,7 +1224,7 @@ describe('App workspace and request lifecycle', () => {
     await renderApp();
     await finishInitialization();
     await drainInitialSaves();
-    mocks.writeSessions.mockReturnValueOnce(deletionSave.promise);
+    mocks.writeWorkspaceState.mockReturnValueOnce(deletionSave.promise);
 
     await act(async () => {
       getSidebarProps().onDeleteSession(
@@ -1241,7 +1238,7 @@ describe('App workspace and request lifecycle', () => {
     expect(
       getSidebarProps().sessions.some(session => session.id === 'session-a')
     ).toBe(false);
-    expect(mocks.writeSessions).toHaveBeenCalledTimes(1);
+    expect(getPersistedSessionWrites()).toHaveLength(1);
     expect(container.textContent).not.toContain('Updating workspace');
 
     let requestStarted = false;
@@ -1536,7 +1533,7 @@ describe('App workspace and request lifecycle', () => {
     await finishInitialization();
     await drainInitialSaves();
 
-    mocks.writeJsonFile
+    mocks.writeWorkspaceState
       .mockRejectedValueOnce(
         new mocks.WorkspaceRevisionConflictError('Simulated local write collision.')
       )
@@ -1564,7 +1561,7 @@ describe('App workspace and request lifecycle', () => {
     await flushMicrotasks();
 
     expect(container.textContent).not.toContain('Workspace changes are not saved:');
-    expect(mocks.writeJsonFile).toHaveBeenCalledTimes(2);
+    expect(mocks.writeWorkspaceState).toHaveBeenCalledTimes(2);
   });
 
   it('checkpoints partial output and saves it before confirming Electron close', async () => {
@@ -1603,7 +1600,7 @@ describe('App workspace and request lifecycle', () => {
     await act(async () => {
       options.onTextDelta?.('Saved before close.');
     });
-    mocks.writeSessions.mockImplementationOnce(() => save.promise);
+    mocks.writeWorkspaceState.mockImplementationOnce(() => save.promise);
 
     await act(async () => {
       requestClose?.();
@@ -1613,8 +1610,8 @@ describe('App workspace and request lifecycle', () => {
 
     expect(confirmClose).not.toHaveBeenCalled();
     expect(options.signal?.aborted).toBe(true);
-    expect(mocks.writeSessions).toHaveBeenCalledTimes(1);
-    const closingSessions = mocks.writeSessions.mock.calls[0][1] as Session[];
+    expect(getPersistedSessionWrites()).toHaveLength(1);
+    const closingSessions = getPersistedSessionWrites()[0];
     expect(
       closingSessions.find(session => session.id === 'session-a')
         ?.messages.at(-1)

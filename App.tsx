@@ -30,10 +30,7 @@ import {
   getStorageHandle,
   getActiveStorageBackend,
   subscribeToStorageBackendChanges,
-  readJsonFile,
-  writeJsonFile,
-  readSessions,
-  writeSessions,
+  readWorkspaceState,
   writeWorkspaceState,
   storeAttachmentBlob,
   readLocalBlob,
@@ -46,7 +43,7 @@ import {
   WorkspaceRevisionConflictError,
   StorageBackendChoice,
   StorageBackendChoiceRequest,
-  STORAGE_FILES,
+  WorkspaceState,
   AppSettings,
   validateWorkspaceReferences
 } from './services/storage';
@@ -504,23 +501,25 @@ function App() {
     try {
       let revision: number;
       if (key === 'sessions') {
-        revision = await writeSessions(handle, sessionsRef.current);
+        revision = await writeWorkspaceState(handle, {
+          sessions: sessionsRef.current
+        });
       } else if (key === 'instructions') {
-        revision = await writeJsonFile(
-          handle,
-          STORAGE_FILES.INSTRUCTIONS,
-          systemInstructionsRef.current
-        );
+        revision = await writeWorkspaceState(handle, {
+          instructions: systemInstructionsRef.current
+        });
       } else if (key === 'settings') {
-        revision = await writeJsonFile(handle, STORAGE_FILES.SETTINGS, settingsRef.current);
+        revision = await writeWorkspaceState(handle, {
+          settings: settingsRef.current
+        });
       } else if (key === 'projects') {
-        revision = await writeJsonFile(handle, STORAGE_FILES.PROJECTS, projectsRef.current);
+        revision = await writeWorkspaceState(handle, {
+          projects: projectsRef.current
+        });
       } else {
-        revision = await writeJsonFile(
-          handle,
-          STORAGE_FILES.PROJECT_REMOTE_STATE,
-          projectRemoteStateRef.current
-        );
+        revision = await writeWorkspaceState(handle, {
+          projectRemoteState: projectRemoteStateRef.current
+        });
       }
       workspaceCoordinatorRef.current?.publishUpdate(revision);
       void backupSchedulerRef.current?.evaluate().catch(() => undefined);
@@ -842,54 +841,51 @@ function App() {
     role: WorkspaceRole,
     isStillCurrent: () => boolean = () => true
   ) => {
-    let loadedSessions: Session[] = [];
-    let loadedSettings: AppSettings | null = null;
-    let loadedInstructions: SystemInstruction[] | null = null;
-    let loadedProjects: Project[] = [];
-    let loadedProjectRemoteState = createEmptyProjectRemoteState();
+    let loadedWorkspace: WorkspaceState | null = null;
 
     // A reader retries if a broadcast lands while its snapshot is being read.
     // The writer is already protected by the exclusive workspace lock.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revisionBeforeRead = await synchronizeWorkspaceRevision(handle);
       if (!isStillCurrent()) throw createOperationAbortError();
-      [
-        loadedSessions,
-        loadedSettings,
-        loadedInstructions,
-        loadedProjects,
-        loadedProjectRemoteState
-      ] = await Promise.all([
-        readSessions(handle, { readOnly: role === 'reader' }),
-        readJsonFile(handle, STORAGE_FILES.SETTINGS),
-        readJsonFile(handle, STORAGE_FILES.INSTRUCTIONS),
-        readJsonFile(handle, STORAGE_FILES.PROJECTS).then(value => value || []),
-        readJsonFile(handle, STORAGE_FILES.PROJECT_REMOTE_STATE).then(
-          value => value || createEmptyProjectRemoteState()
-        )
-      ]);
+      const loaded = await readWorkspaceState(handle);
       if (!isStillCurrent()) throw createOperationAbortError();
       validateWorkspaceReferences({
-        sessions: loadedSessions,
-        settings: loadedSettings,
-        instructions: loadedInstructions || [],
-        projects: loadedProjects
+        sessions: loaded.sessions,
+        settings: loaded.settings,
+        instructions: loaded.instructions,
+        projects: loaded.projects
       }, {
         allowDanglingSelections: true
       });
       const revisionAfterRead = await synchronizeWorkspaceRevision(handle);
       if (!isStillCurrent()) throw createOperationAbortError();
 
-      if (role === 'writer' || revisionBeforeRead === revisionAfterRead) break;
+      if (role === 'writer' || revisionBeforeRead === revisionAfterRead) {
+        loadedWorkspace = loaded;
+        break;
+      }
     }
+
+    if (!loadedWorkspace) {
+      throw new Error('Workspace kept changing while this tab was loading it.');
+    }
+
+    const {
+      sessions: loadedSessions,
+      settings: loadedSettings,
+      instructions: loadedInstructions,
+      projects: loadedProjects,
+      projectRemoteState: loadedProjectRemoteState
+    } = loadedWorkspace;
 
     const normalizedSessions = normalizeSessionConfigs(loadedSessions);
     const cleanedSessions = role === 'writer'
       ? markPendingRequestsFailed(normalizedSessions)
       : normalizedSessions;
-    const nextInstructions = loadedInstructions || [];
+    const nextInstructions = loadedInstructions;
     const nextCurrentSessionId = (
-      loadedSettings?.lastActiveSessionId &&
+      loadedSettings.lastActiveSessionId &&
       cleanedSessions.some(session => session.id === loadedSettings.lastActiveSessionId)
     )
       ? loadedSettings.lastActiveSessionId

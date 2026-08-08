@@ -53,14 +53,6 @@ export type {
 } from './workspaceSchema';
 export { validateWorkspaceReferences } from './workspaceSchema';
 
-export const STORAGE_FILES = {
-  SESSIONS: 'sessions.json',
-  SETTINGS: 'settings.json',
-  INSTRUCTIONS: 'system_instructions.json',
-  PROJECTS: 'projects.json',
-  PROJECT_REMOTE_STATE: 'project_remote_state.json'
-} as const;
-
 // Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
 let storageBackend: StorageBackend | null = null;
 let idbDatabase: IDBDatabase | null = null;
@@ -80,28 +72,6 @@ interface StoredFileRecord {
   data: string | Blob;
   updatedAt?: number;
 }
-
-type WorkspaceDataKey =
-  | 'sessions'
-  | 'settings'
-  | 'instructions'
-  | 'projects'
-  | 'projectRemoteState';
-type WorkspaceDataFilename = (
-  typeof STORAGE_FILES.SESSIONS |
-  typeof STORAGE_FILES.SETTINGS |
-  typeof STORAGE_FILES.INSTRUCTIONS |
-  typeof STORAGE_FILES.PROJECTS |
-  typeof STORAGE_FILES.PROJECT_REMOTE_STATE
-);
-
-const WORKSPACE_DATA_KEY_BY_FILENAME: Record<WorkspaceDataFilename, WorkspaceDataKey> = {
-  [STORAGE_FILES.SESSIONS]: 'sessions',
-  [STORAGE_FILES.SETTINGS]: 'settings',
-  [STORAGE_FILES.INSTRUCTIONS]: 'instructions',
-  [STORAGE_FILES.PROJECTS]: 'projects',
-  [STORAGE_FILES.PROJECT_REMOTE_STATE]: 'projectRemoteState'
-};
 
 interface StorageBackendIdentity {
   version: number;
@@ -1105,120 +1075,6 @@ const ensureWorkspaceGeneration = async (
   return initialized;
 };
 
-// File Operations - automatically uses correct backend
-type WorkspaceDataValue =
-  | Session[]
-  | AppSettings
-  | SystemInstruction[]
-  | Project[]
-  | ProjectRemoteState;
-
-const getWorkspaceDataParser = (
-  filename: WorkspaceDataFilename
-): ((value: unknown) => WorkspaceDataValue) => {
-  if (filename === STORAGE_FILES.SESSIONS) return parseStoredSessions;
-  if (filename === STORAGE_FILES.SETTINGS) {
-    return value => parseAppSettings(value) as AppSettings;
-  }
-  if (filename === STORAGE_FILES.INSTRUCTIONS) return parseSystemInstructions;
-  if (filename === STORAGE_FILES.PROJECTS) return parseProjects;
-  return parseProjectRemoteState;
-};
-
-const getWorkspaceDataKey = (filename: string): WorkspaceDataKey => {
-  if (filename in WORKSPACE_DATA_KEY_BY_FILENAME) {
-    return WORKSPACE_DATA_KEY_BY_FILENAME[filename as WorkspaceDataFilename];
-  }
-  throw new Error(`Unsupported workspace data file: ${filename}`);
-};
-
-const writeJsonFileNow = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: WorkspaceDataFilename,
-  data: unknown
-): Promise<number> => {
-  if (workspaceRevision === null) {
-    throw new Error('Workspace revision has not been initialized.');
-  }
-
-  const key = getWorkspaceDataKey(filename);
-  const parseValue = getWorkspaceDataParser(filename);
-  const parsedData = parseValue(data);
-  const current = await ensureWorkspaceGeneration(dirHandle, true);
-  if (current.manifest.revision !== workspaceRevision) {
-    throw new WorkspaceRevisionConflictError(
-      workspaceRevision,
-      current.manifest.revision
-    );
-  }
-
-  const nextData = normalizeWorkspaceGenerationReferences({
-    sessions: key === 'sessions' ? parsedData as Session[] : current.sessions,
-    settings: key === 'settings'
-      ? parsedData as AppSettings
-      : current.settings,
-    instructions: key === 'instructions'
-      ? parsedData as SystemInstruction[]
-      : current.instructions,
-    projects: key === 'projects'
-      ? parsedData as Project[]
-      : current.projects,
-    projectRemoteState: key === 'projectRemoteState'
-      ? parseProjectRemoteState(parsedData, current.projects)
-      : current.projectRemoteState
-  });
-
-  const committed = await createWorkspaceGenerationStore(dirHandle).commit(
-    workspaceRevision,
-    nextData
-  );
-  workspaceGenerationCache = committed;
-  workspaceRevision = committed.manifest.revision;
-  return committed.manifest.revision;
-};
-
-export const writeJsonFile = (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: WorkspaceDataFilename,
-  data: unknown
-): Promise<number> => workspaceWriteQueue.enqueue(
-  () => writeJsonFileNow(dirHandle, filename, data),
-  { blocksInteractions: false }
-);
-
-export function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: typeof STORAGE_FILES.SESSIONS
-): Promise<Session[] | null>;
-export function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: typeof STORAGE_FILES.SETTINGS
-): Promise<AppSettings | null>;
-export function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: typeof STORAGE_FILES.INSTRUCTIONS
-): Promise<SystemInstruction[] | null>;
-export function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: typeof STORAGE_FILES.PROJECTS
-): Promise<Project[] | null>;
-export function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: typeof STORAGE_FILES.PROJECT_REMOTE_STATE
-): Promise<ProjectRemoteState | null>;
-export async function readJsonFile(
-  dirHandle: FileSystemDirectoryHandle,
-  filename: WorkspaceDataFilename
-): Promise<WorkspaceDataValue | null> {
-  const key = getWorkspaceDataKey(filename);
-  const generation = await ensureWorkspaceGeneration(dirHandle);
-  if (key === 'sessions') return generation.sessions;
-  if (key === 'settings') return generation.settings;
-  if (key === 'instructions') return generation.instructions;
-  if (key === 'projects') return generation.projects;
-  return generation.projectRemoteState;
-}
-
 const settledMap = async <T, R>(
   values: T[],
   mapValue: (value: T) => Promise<R>
@@ -1339,34 +1195,11 @@ export const getAttachmentDataUrl = async (
   return undefined;
 };
 
-export const writeSessions = async (
-  dirHandle: FileSystemDirectoryHandle,
-  sessions: Session[]
-): Promise<number> => {
-  const storedSessions = toStoredSessions(sessions);
-  return writeJsonFile(dirHandle, STORAGE_FILES.SESSIONS, storedSessions);
-};
-
-export const writeProjects = async (
-  dirHandle: FileSystemDirectoryHandle,
-  projects: Project[]
-): Promise<number> => writeJsonFile(dirHandle, STORAGE_FILES.PROJECTS, projects);
-
-export const writeProjectRemoteState = async (
-  dirHandle: FileSystemDirectoryHandle,
-  state: ProjectRemoteState
-): Promise<number> => writeJsonFile(
-  dirHandle,
-  STORAGE_FILES.PROJECT_REMOTE_STATE,
-  state
-);
+export type WorkspaceChanges = Partial<WorkspaceGenerationData>;
 
 const writeWorkspaceStateNow = async (
   dirHandle: FileSystemDirectoryHandle,
-  changes: Partial<Pick<
-    WorkspaceGenerationData,
-    'sessions' | 'settings' | 'instructions' | 'projects' | 'projectRemoteState'
-  >>,
+  changes: WorkspaceChanges,
   options: { publishTwice?: boolean } = {}
 ): Promise<number> => {
   if (workspaceRevision === null) {
@@ -1417,23 +1250,29 @@ const writeWorkspaceStateNow = async (
 
 export const writeWorkspaceState = (
   dirHandle: FileSystemDirectoryHandle,
-  changes: Partial<Pick<
-    WorkspaceGenerationData,
-    'sessions' | 'settings' | 'instructions' | 'projects' | 'projectRemoteState'
-  >>,
+  changes: WorkspaceChanges,
   options: { publishTwice?: boolean } = {}
 ): Promise<number> => workspaceWriteQueue.enqueue(
   () => writeWorkspaceStateNow(dirHandle, changes, options),
   { blocksInteractions: false }
 );
 
-export const readSessions = async (
-  dirHandle: FileSystemDirectoryHandle,
-  options: { readOnly?: boolean } = {}
-): Promise<Session[]> => {
-  const storedSessions = await readJsonFile(dirHandle, STORAGE_FILES.SESSIONS) || [];
-  void options;
-  return addRuntimeAttachmentMetadata(dirHandle, storedSessions);
+export interface WorkspaceState extends WorkspaceGenerationData {
+  revision: number;
+}
+
+export const readWorkspaceState = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<WorkspaceState> => {
+  const generation = await ensureWorkspaceGeneration(dirHandle);
+  return {
+    revision: generation.manifest.revision,
+    sessions: await addRuntimeAttachmentMetadata(dirHandle, generation.sessions),
+    settings: generation.settings,
+    instructions: generation.instructions,
+    projects: generation.projects,
+    projectRemoteState: generation.projectRemoteState
+  };
 };
 
 export interface WorkspaceSnapshot {

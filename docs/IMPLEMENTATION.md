@@ -259,9 +259,10 @@ Primary boundaries are:
   usage refresh, interruption reconciliation, key fingerprints, error classes,
   and durable cleanup execution. `utils/projectSources.ts` owns routing and
   project-source limits.
-- `services/storage.ts`: public persistence facade over backend selection,
-  runtime schema validation, immutable generations, blobs, migration, and
-  workspace replacement.
+- `services/storage.ts`: typed whole-workspace read/partial-write facade over
+  backend selection, runtime schema validation, immutable generations, blobs,
+  migration, and workspace replacement. Persisted filenames remain internal
+  to the generation store rather than acting as public API selectors.
 - `services/workspaceSchema.ts`: strict runtime boundary for persisted sessions,
   settings, instructions, IDs, limits, and cross-references.
 - `services/storageBackend.ts`: OPFS/IndexedDB identity, conflict, migration,
@@ -297,9 +298,12 @@ failure leaves the application in an explicit load-error state.
 `WorkspaceCoordinator` grants one tab writer ownership. Reader tabs reload
 published revisions and do not write. Writer acquisition reloads before writes
 resume. A stale writer is rejected by revision checks rather than overwriting a
-newer generation.
+newer generation. A reader accepts only a coherent generation bracketed by the
+same persisted revision; after three continuously changing reads it reports a
+load failure instead of applying state from a revision it did not confirm.
 
-Within one renderer, the storage facade serializes single-object saves, atomic
+Within one renderer, the storage facade exposes one typed generation read and
+one typed partial-workspace write. It serializes partial saves, atomic
 multi-object publications, and whole-workspace replacements through one
 nonblocking write queue. Project metadata edits therefore cannot race source
 upload/index status persistence on the same workspace revision. A browser

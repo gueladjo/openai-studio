@@ -271,6 +271,25 @@ class MemoryFileReader {
 }
 
 type StorageModule = typeof import('./storage');
+type StoredWorkspaceState = Awaited<ReturnType<StorageModule['readWorkspaceState']>>;
+type StoredWorkspaceKey = Exclude<keyof StoredWorkspaceState, 'revision'>;
+
+const readWorkspaceField = async <Key extends StoredWorkspaceKey>(
+  storage: StorageModule,
+  handle: FileSystemDirectoryHandle,
+  key: Key
+): Promise<StoredWorkspaceState[Key]> => (
+  (await storage.readWorkspaceState(handle))[key]
+);
+
+const writeWorkspaceField = (
+  storage: StorageModule,
+  handle: FileSystemDirectoryHandle,
+  key: StoredWorkspaceKey,
+  value: unknown
+): Promise<number> => storage.writeWorkspaceState(handle, {
+  [key]: value
+} as Partial<Pick<StoredWorkspaceState, StoredWorkspaceKey>>);
 
 const createSession = (
   title: string,
@@ -321,6 +340,19 @@ describe('storage public contracts', () => {
   let storage: StorageModule;
   let handle: FileSystemDirectoryHandle;
 
+  const readField = <Key extends StoredWorkspaceKey>(
+    key: Key
+  ): Promise<StoredWorkspaceState[Key]> => readWorkspaceField(
+    storage,
+    handle,
+    key
+  );
+
+  const writeField = (
+    key: StoredWorkspaceKey,
+    value: unknown
+  ): Promise<number> => writeWorkspaceField(storage, handle, key, value);
+
   beforeEach(async () => {
     fileSystem = new MemoryFileSystem();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -353,35 +385,24 @@ describe('storage public contracts', () => {
   const seedWorkspace = async (
     sessions: Session[] = [createSession('Initial')]
   ): Promise<void> => {
-    await storage.writeSessions(handle, sessions);
-    await storage.writeJsonFile(handle, storage.STORAGE_FILES.SETTINGS, {
+    await writeField('sessions', sessions);
+    await writeField('settings', {
       theme: 'dark',
       apiKey: 'initial-key',
       lastActiveSessionId: sessions[0]?.id
     });
-    await storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.INSTRUCTIONS,
-      instructions
-    );
+    await writeField('instructions', instructions);
   };
 
   it('round-trips writes through alternating immutable generations', async () => {
-    await expect(storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS,
+    await expect(writeField('settings',
       { theme: 'dark', apiKey: 'first-key' }
     )).resolves.toBe(1);
-    await expect(storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS,
+    await expect(writeField('settings',
       { theme: 'light', apiKey: 'second-key' }
     )).resolves.toBe(2);
 
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({
+    await expect(readField('settings')).resolves.toEqual({
       theme: 'light',
       apiKey: 'second-key'
     });
@@ -439,22 +460,14 @@ describe('storage public contracts', () => {
     };
 
     await expect(Promise.all([
-      storage.writeJsonFile(
-        handle,
-        storage.STORAGE_FILES.PROJECTS,
+      writeField('projects',
         [updatedProject]
       ),
       storage.writeWorkspaceState(handle, { projectRemoteState: remoteState })
     ])).resolves.toHaveLength(2);
 
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.PROJECTS
-    )).resolves.toEqual([updatedProject]);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.PROJECT_REMOTE_STATE
-    )).resolves.toEqual(remoteState);
+    await expect(readField('projects')).resolves.toEqual([updatedProject]);
+    await expect(readField('projectRemoteState')).resolves.toEqual(remoteState);
   });
 
   it('serializes whole-workspace replacement after an already queued save', async () => {
@@ -462,7 +475,7 @@ describe('storage public contracts', () => {
     const replacementSession = createSession('Replacement after queued save');
 
     await expect(Promise.all([
-      storage.writeJsonFile(handle, storage.STORAGE_FILES.SETTINGS, {
+      writeField('settings', {
         theme: 'light',
         apiKey: 'queued-key'
       }),
@@ -475,11 +488,8 @@ describe('storage public contracts', () => {
       })
     ])).resolves.toHaveLength(2);
 
-    await expect(storage.readSessions(handle)).resolves.toEqual([replacementSession]);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({
+    await expect(readField('sessions')).resolves.toEqual([replacementSession]);
+    await expect(readField('settings')).resolves.toEqual({
       theme: 'dark',
       apiKey: 'queued-key'
     });
@@ -533,9 +543,9 @@ describe('storage public contracts', () => {
       }
     });
 
-    await storage.writeSessions(handle, [session]);
+    await writeField('sessions', [session]);
 
-    const storedSessions = await storage.readSessions(handle);
+    const storedSessions = await readField('sessions');
     expect(storedSessions[0].messages[1].usage?.input_tokens_details)
       .toEqual({ cache_write_tokens: 1_234, cached_tokens: 567 });
   });
@@ -558,9 +568,9 @@ describe('storage public contracts', () => {
       modelName: 'GPT-5.6 Sol'
     });
 
-    await storage.writeSessions(handle, [session]);
+    await writeField('sessions', [session]);
 
-    const storedSessions = await storage.readSessions(handle);
+    const storedSessions = await readField('sessions');
     expect(storedSessions[0].messages[1].outputMessages).toEqual([{
       content: 'Checking.',
       phase: 'commentary'
@@ -577,9 +587,9 @@ describe('storage public contracts', () => {
       userLocation: null
     };
 
-    await storage.writeSessions(handle, [session]);
+    await writeField('sessions', [session]);
 
-    const storedSessions = await storage.readSessions(handle);
+    const storedSessions = await readField('sessions');
     expect(storedSessions[0].config.tools.webSearchOptions).toEqual({
       searchContextSize: 'low',
       userLocation: null
@@ -609,17 +619,14 @@ describe('storage public contracts', () => {
       updatedAt: 1
     };
 
-    await storage.writeProjects(handle, [project]);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.PROJECTS
-    )).resolves.toEqual([project]);
+    await storage.writeWorkspaceState(handle, { projects: [project] });
+    await expect(readField('projects')).resolves.toEqual([project]);
     await expect(storage.readLocalBlob(handle, localBlob)).resolves.toMatchObject({
       size: bytes.size
     });
 
     const currentRevision = storage.getWorkspaceRevision();
-    await expect(storage.writeProjects(handle, [{
+    await expect(storage.writeWorkspaceState(handle, { projects: [{
       ...project,
       sources: [{
         ...project.sources[0],
@@ -628,7 +635,7 @@ describe('storage public contracts', () => {
           sha256: 'f'.repeat(64)
         }
       }]
-    }])).rejects.toThrow('is missing');
+    }]})).rejects.toThrow('is missing');
     expect(storage.getWorkspaceRevision()).toBe(currentRevision);
   });
 
@@ -734,10 +741,7 @@ describe('storage public contracts', () => {
       blobs: new Map()
     });
 
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.PROJECT_REMOTE_STATE
-    )).resolves.toMatchObject({
+    await expect(readField('projectRemoteState')).resolves.toMatchObject({
       indexes: {},
       cleanupTombstones: [{
         projectId: project.id,
@@ -751,9 +755,7 @@ describe('storage public contracts', () => {
   it('reuses unchanged objects and bounds garbage after repeated saves', async () => {
     await seedWorkspace([createSession('Reusable')]);
     for (let index = 0; index < 8; index += 1) {
-      await storage.writeJsonFile(
-        handle,
-        storage.STORAGE_FILES.SETTINGS,
+      await writeField('settings',
         {
           theme: index % 2 === 0 ? 'dark' : 'light',
           apiKey: `key-${index}`,
@@ -773,9 +775,7 @@ describe('storage public contracts', () => {
   });
 
   it('rejects a stale writer before overwriting workspace data', async () => {
-    await storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS,
+    await writeField('settings',
       { theme: 'dark', apiKey: 'first' }
     );
     const active = JSON.parse(
@@ -786,9 +786,7 @@ describe('storage public contracts', () => {
       JSON.stringify({ ...active, revision: 2, createdAt: active.createdAt + 1 })
     );
 
-    await expect(storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS,
+    await expect(writeField('settings',
       { theme: 'dark', apiKey: 'must-not-write' }
     )).rejects.toMatchObject({
       name: 'WorkspaceRevisionConflictError',
@@ -805,8 +803,7 @@ describe('storage public contracts', () => {
     const initialSessions = [createSession('Initial')];
     const replacementSessions = [createSession('Replacement')];
     await seedWorkspace(initialSessions);
-    await storage.writeSessions(
-      handle,
+    await writeField('sessions',
       replacementSessions
     );
 
@@ -817,10 +814,7 @@ describe('storage public contracts', () => {
     const parsed = manifests.map(text => JSON.parse(text || ''));
     const newest = parsed.sort((left, right) => right.revision - left.revision)[0];
     const previous = parsed[1];
-    expect(await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).toEqual(replacementSessions);
+    expect(await readField('sessions')).toEqual(replacementSessions);
 
     await fileSystem.writeText(
       `data/objects/${newest.sessions[0].sha256}.json`,
@@ -830,10 +824,7 @@ describe('storage public contracts', () => {
     await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(
       previous.revision
     );
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
 
     await fileSystem.writeText(
       `data/objects/${previous.sessions[0].sha256}.json`,
@@ -870,10 +861,7 @@ describe('storage public contracts', () => {
     }])];
     await seedWorkspace(originalSessions);
 
-    const storedSessions = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    );
+    const storedSessions = await readField('sessions');
     const storedAttachment = storedSessions?.[0].messages[0].attachments?.[0];
     expect(storedAttachment).toMatchObject({
       name: 'notes.txt',
@@ -915,7 +903,7 @@ describe('storage public contracts', () => {
       }
     ])]);
 
-    const sessions = await storage.readSessions(handle);
+    const sessions = await readField('sessions');
     const [image, document] = sessions[0].messages[0].attachments!;
     expect(image.size).toBe(imageBlob.byteSize);
     expect(image.previewUrl).toMatch(/^blob:/);
@@ -935,7 +923,7 @@ describe('storage public contracts', () => {
       localBlob: imageBlob
     }])]);
 
-    const sessionsWithRuntimeMetadata = await storage.readSessions(handle);
+    const sessionsWithRuntimeMetadata = await readField('sessions');
     const runtimeAttachment = sessionsWithRuntimeMetadata[0].messages[0].attachments?.[0];
     expect(runtimeAttachment?.previewUrl).toMatch(/^blob:/);
     runtimeAttachment!.content = 'data:image/png;base64,aW1hZ2UgYnl0ZXM=';
@@ -944,16 +932,15 @@ describe('storage public contracts', () => {
       sessions: sessionsWithRuntimeMetadata
     }, { publishTwice: true })).resolves.toBeTypeOf('number');
 
-    const storedSessions = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    );
-    expect(storedSessions?.[0].messages[0].attachments?.[0]).not.toHaveProperty(
-      'previewUrl'
-    );
-    expect(storedSessions?.[0].messages[0].attachments?.[0]).not.toHaveProperty(
-      'content'
-    );
+    const storedSnapshot = await storage.readWorkspaceSnapshot(handle);
+    try {
+      expect(storedSnapshot.sessions[0].messages[0].attachments?.[0])
+        .not.toHaveProperty('previewUrl');
+      expect(storedSnapshot.sessions[0].messages[0].attachments?.[0])
+        .not.toHaveProperty('content');
+    } finally {
+      storedSnapshot.release?.();
+    }
   });
 
   it('keeps blob reference metadata and warns when an image preview is unreadable', async () => {
@@ -970,7 +957,7 @@ describe('storage public contracts', () => {
     await fileSystem.remove(`data/blobs/${imageBlob.sha256}`);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const sessions = await storage.readSessions(handle);
+    const sessions = await readField('sessions');
     const attachment = sessions[0].messages[0].attachments![0];
     expect(attachment.size).toBe(imageBlob.byteSize);
     expect(attachment.previewUrl).toBeUndefined();
@@ -984,20 +971,14 @@ describe('storage public contracts', () => {
     const sessions = ['Alpha', 'Beta', 'Gamma', 'Delta'].map(title => createSession(title));
     await seedWorkspace(sessions);
 
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(sessions);
+    await expect(readField('sessions')).resolves.toEqual(sessions);
     await storage.synchronizeWorkspaceRevision(handle);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(sessions);
+    await expect(readField('sessions')).resolves.toEqual(sessions);
   });
 
   it('warns and falls back when the newest manifest cannot be parsed', async () => {
     await seedWorkspace([createSession('Stable')]);
-    await storage.writeSessions(handle, [createSession('Updated')]);
+    await writeField('sessions', [createSession('Updated')]);
 
     const [manifestA, manifestB] = await Promise.all([
       fileSystem.readText('data/workspace_manifest_a.json'),
@@ -1052,15 +1033,13 @@ describe('storage public contracts', () => {
       new File(['staged bytes'], 'staged.txt', { type: 'text/plain' })
     );
 
-    await storage.writeJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS,
+    await writeField('settings',
       { theme: 'light', apiKey: 'updated-key' }
     );
     expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
       .toBe('staged bytes');
 
-    await storage.writeSessions(handle, [createSession('Staged', [{
+    await writeField('sessions', [createSession('Staged', [{
       name: 'staged.txt',
       type: 'text/plain',
       size: 12,
@@ -1083,15 +1062,15 @@ describe('storage public contracts', () => {
     }])]);
     const snapshot = await storage.readWorkspaceSnapshot(handle);
 
-    await storage.writeSessions(handle, [createSession('Second')]);
-    await storage.writeSessions(handle, [createSession('Third')]);
-    await storage.writeSessions(handle, [createSession('Fourth')]);
+    await writeField('sessions', [createSession('Second')]);
+    await writeField('sessions', [createSession('Third')]);
+    await writeField('sessions', [createSession('Fourth')]);
     await expect(snapshot.readBlob(localBlob)).resolves.toBeInstanceOf(Blob);
     expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`))
       .toBe('pinned bytes');
 
     snapshot.release?.();
-    await storage.writeSessions(handle, [createSession('Fifth')]);
+    await writeField('sessions', [createSession('Fifth')]);
     expect(await fileSystem.readText(`data/blobs/${localBlob.sha256}`)).toBeNull();
   });
 
@@ -1115,10 +1094,7 @@ describe('storage public contracts', () => {
     expect(storage.getWorkspaceRevision()).toBe(revisionBefore);
     expect(await fileSystem.readText('data/workspace_manifest_a.json'))
       .toBe(manifestBefore);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
   });
 
   it('creates a verified recovery point, preserves the local key, and supports undo', async () => {
@@ -1148,28 +1124,16 @@ describe('storage public contracts', () => {
     await restoreWorkspaceArchive(handle, archive, {
       filename: 'replacement.zip'
     });
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(replacementSessions);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toMatchObject({
+    await expect(readField('sessions')).resolves.toEqual(replacementSessions);
+    await expect(readField('settings')).resolves.toMatchObject({
       theme: 'light',
       apiKey: 'initial-key'
     });
     expect(await storage.readInternalRecoveryArchive(handle)).not.toBeNull();
 
     await undoLastWorkspaceRestore(handle);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toMatchObject({
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
+    await expect(readField('settings')).resolves.toMatchObject({
       theme: 'dark',
       apiKey: 'initial-key'
     });
@@ -1195,10 +1159,7 @@ describe('storage public contracts', () => {
 
     await expect(restoreWorkspaceArchive(handle, archive))
       .rejects.toThrow('Simulated disk full');
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
   });
 
   it('merges chats atomically while preserving local settings, selection, and files', async () => {
@@ -1264,18 +1225,12 @@ describe('storage public contracts', () => {
       skipped: 0,
       divergent: 0
     });
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({
+    await expect(readField('settings')).resolves.toEqual({
       theme: 'dark',
       apiKey: 'initial-key',
       lastActiveSessionId: initialSessions[0].id
     });
-    const mergedSessions = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    ) as Session[];
+    const mergedSessions = await readField('sessions') as Session[];
     expect(mergedSessions.map(session => session.id)).toEqual([
       importedSession.id,
       initialSessions[0].id
@@ -1285,10 +1240,7 @@ describe('storage public contracts', () => {
       handle,
       mergedAttachment!.localBlob!
     )).resolves.toBeInstanceOf(Blob);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.INSTRUCTIONS
-    )).resolves.toEqual([...instructions, importedInstruction]);
+    await expect(readField('instructions')).resolves.toEqual([...instructions, importedInstruction]);
     const recoveryArchive = await storage.readInternalRecoveryArchive(handle);
     expect(recoveryArchive).not.toBeNull();
     expect((await inspectWorkspaceArchive(
@@ -1298,10 +1250,7 @@ describe('storage public contracts', () => {
     await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBe('merge');
 
     await undoLastWorkspaceMutation(handle);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
     await expect(storage.readInternalRecoveryArchive(handle)).resolves.toBeNull();
     await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBeNull();
   });
@@ -1326,18 +1275,12 @@ describe('storage public contracts', () => {
     fileSystem.failNextWrite(/recovery\/pre-restore\.zip$/);
     await expect(mergeWorkspaceArchive(handle, archive))
       .rejects.toThrow('Simulated disk full');
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
 
     fileSystem.failNextWrite(/objects\/[a-f0-9]{64}\.json$/);
     await expect(mergeWorkspaceArchive(handle, archive))
       .rejects.toThrow('Simulated disk full');
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
   });
 
   it('keeps only the latest successful workspace mutation undoable', async () => {
@@ -1363,20 +1306,14 @@ describe('storage public contracts', () => {
       handle,
       await createMergeArchive(createSession('First'), 10)
     );
-    const sessionsAfterFirst = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    );
+    const sessionsAfterFirst = await readField('sessions');
     await mergeWorkspaceArchive(
       handle,
       await createMergeArchive(createSession('Second'), 11)
     );
 
     await undoLastWorkspaceMutation(handle);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(sessionsAfterFirst);
+    await expect(readField('sessions')).resolves.toEqual(sessionsAfterFirst);
     await expect(undoLastWorkspaceMutation(handle))
       .rejects.toThrow('No verified workspace recovery point');
   });
@@ -1411,10 +1348,7 @@ describe('storage public contracts', () => {
     )).rejects.toThrow('Simulated disk full');
 
     await undoLastWorkspaceMutation(handle);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual(initialSessions);
+    await expect(readField('sessions')).resolves.toEqual(initialSessions);
   });
 });
 
@@ -1593,11 +1527,11 @@ describe('storage backend migration contracts', () => {
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
     )).toMatchObject({ schemaVersion: 5, revision: 7 });
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({ theme: 'dark', apiKey: 'local-key' });
-    await expect(storage.readSessions(handle)).resolves.toEqual([storedSession]);
+    await expect(readWorkspaceField(storage, handle, 'settings')).resolves.toEqual({
+      theme: 'dark',
+      apiKey: 'local-key'
+    });
+    await expect(readWorkspaceField(storage, handle, 'sessions')).resolves.toEqual([storedSession]);
     expect(await fileSystem.readText(`data/blobs/${storedBlobHash}`))
       .toBe('attachment bytes');
     expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
