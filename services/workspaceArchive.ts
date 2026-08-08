@@ -295,15 +295,6 @@ export const parseBackupArchiveManifest = (
   };
 };
 
-const createBackupId = (): string => {
-  const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
-  if (cryptoWithUuid.randomUUID) return cryptoWithUuid.randomUUID();
-  return Array.from(
-    crypto.getRandomValues(new Uint8Array(16)),
-    byte => byte.toString(16).padStart(2, '0')
-  ).join('');
-};
-
 const getCounts = (sessions: Session[], projects: Project[] = []): {
   counts: BackupArchiveCounts;
   uncachedGeneratedFileCount: number;
@@ -435,7 +426,7 @@ const createWorkspaceArchiveFromSnapshot = async (
   const manifest: BackupArchiveManifest = {
     format: BACKUP_ARCHIVE_FORMAT,
     version: BACKUP_ARCHIVE_VERSION,
-    backupId: createBackupId(),
+    backupId: crypto.randomUUID(),
     reason: options.reason,
     appVersion: APP_VERSION,
     createdAt: Date.now(),

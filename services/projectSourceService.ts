@@ -98,15 +98,6 @@ export const createEmptyProjectRemoteState = (): ProjectRemoteState => ({
   cleanupTombstones: []
 });
 
-const createId = (): string => {
-  const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
-  if (cryptoWithUuid.randomUUID) return cryptoWithUuid.randomUUID();
-  return Array.from(
-    crypto.getRandomValues(new Uint8Array(16)),
-    byte => byte.toString(16).padStart(2, '0')
-  ).join('');
-};
-
 export const createSourceCleanupTombstone = (
   projectId: string,
   projectSourceId: string,
@@ -115,7 +106,7 @@ export const createSourceCleanupTombstone = (
   const remoteFile = index?.files[projectSourceId];
   if (!index || !remoteFile?.openaiFileId) return null;
   return {
-    id: createId(),
+    id: crypto.randomUUID(),
     projectId,
     projectSourceId,
     apiKeyFingerprint: index.apiKeyFingerprint,
@@ -133,7 +124,7 @@ export const createProjectCleanupTombstone = (
     .flatMap(file => file.openaiFileId ? [file.openaiFileId] : []);
   if (openaiFileIds.length === 0 && !index.vectorStoreId) return null;
   return {
-    id: createId(),
+    id: crypto.randomUUID(),
     projectId,
     apiKeyFingerprint: index.apiKeyFingerprint,
     openaiFileIds: [...new Set(openaiFileIds)],

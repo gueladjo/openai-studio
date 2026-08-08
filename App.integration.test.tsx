@@ -141,16 +141,11 @@ const mocks = vi.hoisted(() => ({
   subscribeToStorageBackendChanges: vi.fn(),
   synchronizeWorkspaceRevision: vi.fn(),
   undoLastWorkspaceMutation: vi.fn(),
-  uuidCounter: 0,
   validateWorkspaceReferences: vi.fn(),
   writeJsonFile: vi.fn(),
   writeSessions: vi.fn(),
   writeWorkspaceState: vi.fn(),
   clearInternalRecoveryArchive: vi.fn()
-}));
-
-vi.mock('uuid', () => ({
-  v4: () => `uuid-${++mocks.uuidCounter}`
 }));
 
 vi.mock('./components/ChatArea', () => ({
@@ -339,7 +334,6 @@ describe('App workspace and request lifecycle', () => {
     mocks.chatAreaProps = null;
     mocks.sidebarProps = null;
     mocks.projectHomeProps = null;
-    mocks.uuidCounter = 0;
     mocks.currentRevision = 0;
     mocks.loadedSessions = [
       createSession('session-a', 'Session A'),

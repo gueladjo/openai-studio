@@ -30,13 +30,6 @@ const getWebLockManager = (): LockManager | null => {
   return browserNavigator.locks ?? null;
 };
 
-const createOwnerId = (): string => {
-  if (crypto.randomUUID) return crypto.randomUUID();
-
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-};
-
 const parseLease = (value: string | null): WorkspaceLease | null => {
   if (!value) return null;
 
@@ -59,7 +52,7 @@ const delay = (ms: number): Promise<void> => new Promise(resolve => {
 });
 
 export class WorkspaceCoordinator {
-  private readonly ownerId = createOwnerId();
+  private readonly ownerId = crypto.randomUUID();
   private readonly roleListeners = new Set<(role: WorkspaceRole) => void>();
   private readonly updateListeners = new Set<(revision: number) => void>();
   private channel: BroadcastChannel | null = null;

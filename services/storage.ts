@@ -150,14 +150,7 @@ const isNotFoundError = (error: unknown): boolean => (
 );
 
 const createOpfsProbeName = (): string => {
-  const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
-  const id = cryptoWithUuid.randomUUID
-    ? cryptoWithUuid.randomUUID()
-    : Array.from(
-        crypto.getRandomValues(new Uint8Array(12)),
-        byte => byte.toString(16).padStart(2, '0')
-      ).join('');
-  return `__opfs_test_${id}`;
+  return `__opfs_test_${crypto.randomUUID()}`;
 };
 
 // Check if OPFS is supported without sharing a probe path across tabs.

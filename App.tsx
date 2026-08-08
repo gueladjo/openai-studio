@@ -1,6 +1,5 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
@@ -660,7 +659,7 @@ function App() {
   ): void => {
     files.filter(file => !file.localBlob).forEach(file => {
       const operation = operationRegistryRef.current.begin({
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         kind: 'generated-file-cache',
         sessionId
       });
@@ -784,7 +783,7 @@ function App() {
       const interruptedContent = 'Error: Previous request was interrupted and has been marked as failed. Please retry if needed.';
       const modelSnapshot = getAssistantModelSnapshot(session);
       const failureMessage: Message = {
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         requestId: session.pendingRequest.id,
         role: 'assistant',
         content: interruptedContent,
@@ -1251,7 +1250,7 @@ function App() {
     };
     
     const newSession: Session = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       title: 'New Chat',
       messages: [],
       config: configToUse,
@@ -1271,7 +1270,7 @@ function App() {
     const { systemInstructionId: _systemInstructionId, ...defaultConfig } =
       normalizeChatConfig(currentSession?.config || DEFAULT_CONFIG);
     const project: Project = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       name: 'New Project',
       icon: 'folder',
       instructions: '',
@@ -1375,7 +1374,7 @@ function App() {
       busyProjectSourceIdsRef.current.size > 0
     ) return;
 
-    const batchOperationId = `project-source-batch:${uuidv4()}`;
+    const batchOperationId = `project-source-batch:${crypto.randomUUID()}`;
     setProjectSourceBusy(batchOperationId, true);
     void (async () => {
       try {
@@ -1386,7 +1385,7 @@ function App() {
           const localBlob = await storeLocalBlob(handle, file, formats[index].mimeType);
           additions.push({
             source: {
-              id: uuidv4(),
+              id: crypto.randomUUID(),
               name: file.name,
               mimeType: formats[index].mimeType,
               byteSize: file.size,
@@ -1601,7 +1600,7 @@ function App() {
       return;
     }
     const service = new ProjectSourceService(cleanupKey);
-    const cleanupOperationId = `remote-cleanup:${uuidv4()}`;
+    const cleanupOperationId = `remote-cleanup:${crypto.randomUUID()}`;
     setProjectSourceBusy(cleanupOperationId, true);
     try {
       for (const tombstone of pending) {
@@ -1640,7 +1639,7 @@ function App() {
     const existingCleanup = projectRemoteStateRef.current.cleanupTombstones
       .filter(tombstone => tombstone.apiKeyFingerprint === oldFingerprint);
     if (ownedIndexes.length > 0 || existingCleanup.length > 0) {
-      const keySwitchOperationId = `api-key-switch:${uuidv4()}`;
+      const keySwitchOperationId = `api-key-switch:${crypto.randomUUID()}`;
       setProjectSourceBusy(keySwitchOperationId, true);
       try {
         if (!oldApiKey) {
@@ -1791,7 +1790,7 @@ function App() {
 
     invalidateSessionOperations(id);
     const operation = operationRegistryRef.current.begin({
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       kind: 'delete-session',
       sessionId: id
     });
@@ -1843,7 +1842,7 @@ function App() {
       return;
     }
 
-    const newId = uuidv4();
+    const newId = crypto.randomUUID();
     const newInstruction: SystemInstruction = {
       id: newId,
       title: 'Untitled instruction',
@@ -2371,9 +2370,9 @@ function App() {
     const handle = dirHandleRef.current;
     if (!handle) return false;
 
-    const requestId = uuidv4();
-    const userMessageId = uuidv4();
-    const assistantMessageId = uuidv4();
+    const requestId = crypto.randomUUID();
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
     const requestTimestamp = Date.now();
     const operation = operationRegistryRef.current.begin({
       id: requestId,
@@ -2441,7 +2440,7 @@ function App() {
             : 'New Chat'
         );
         const titleOperation = operationRegistryRef.current.begin({
-          id: uuidv4(),
+          id: crypto.randomUUID(),
           kind: 'title',
           sessionId: targetSessionId
         });
@@ -2472,7 +2471,7 @@ function App() {
       const failedSession = sessionsRef.current.find(s => s.id === targetSessionId);
       if (!failedSession) return false;
       const errorMessage: Message = {
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
         status: 'error',
@@ -2528,9 +2527,9 @@ function App() {
       return;
     }
 
-    const requestId = userMessage.requestId || assistantMessage.requestId || uuidv4();
-    const userMessageId = userMessage.id || uuidv4();
-    const newAssistantMessageId = uuidv4();
+    const requestId = userMessage.requestId || assistantMessage.requestId || crypto.randomUUID();
+    const userMessageId = userMessage.id || crypto.randomUUID();
+    const newAssistantMessageId = crypto.randomUUID();
     const requestTimestamp = Date.now();
     const messagesForApi = session.messages.slice(0, assistantMessageIndex).map((message, index) => (
       index === assistantMessageIndex - 1 && !message.id
@@ -2545,7 +2544,7 @@ function App() {
       requestTimestamp
     );
     const operation = operationRegistryRef.current.begin({
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       kind: 'response',
       sessionId: targetSessionId
     });
@@ -2673,7 +2672,7 @@ function App() {
       const handle = dirHandleRef.current;
       if (!handle) throw new Error('Workspace storage is unavailable.');
       const operation = operationRegistryRef.current.begin({
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         kind: 'attachment-replacement',
         sessionId: targetSessionId
       });
@@ -2993,7 +2992,7 @@ function App() {
     }
 
     const readOperation = operationRegistryRef.current.begin({
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       kind: 'import-read'
     });
     archiveAbortRef.current?.abort();
@@ -3047,7 +3046,7 @@ function App() {
     try {
       await enqueueDestructiveOperation(async () => {
         const operation = operationRegistryRef.current.begin({
-          id: uuidv4(),
+          id: crypto.randomUUID(),
           kind: 'workspace-restore'
         });
         const handle = dirHandleRef.current;
@@ -3112,7 +3111,7 @@ function App() {
         await flushPendingSaves();
         invalidateWorkspaceOperations();
         const operation = operationRegistryRef.current.begin({
-          id: uuidv4(),
+          id: crypto.randomUUID(),
           kind: 'workspace-merge'
         });
         const handle = dirHandleRef.current;

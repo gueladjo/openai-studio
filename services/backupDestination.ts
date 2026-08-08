@@ -147,7 +147,7 @@ class FileSystemAccessBackupDestination implements BackupDestination {
     if (await this.getStatus() !== 'connected') {
       throw new Error('Backup folder permission must be reconnected.');
     }
-    const partialName = `${PARTIAL_PREFIX}${crypto.randomUUID?.() || Date.now()}`;
+    const partialName = `${PARTIAL_PREFIX}${crypto.randomUUID()}`;
     const partialHandle = await this.directory.getFileHandle(partialName, {
       create: true
     });
