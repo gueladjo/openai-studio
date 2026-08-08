@@ -54,9 +54,12 @@ interface CapturedSidebarProps {
 interface CapturedProjectHomeProps {
   project: Project;
   sessions: Session[];
+  busySourceIds: ReadonlySet<string>;
+  sourceWorkBusy: boolean;
   onUpdate: (project: Project) => void;
   onNewChat: () => void;
   onAddSources: (files: File[]) => void;
+  onRetrySource: (source: Project['sources'][number]) => void;
   onDeleteProject: () => void;
 }
 
@@ -890,6 +893,108 @@ describe('App workspace and request lifecycle', () => {
       source: expect.objectContaining({ name: 'notes.txt' })
     }));
     expect(mocks.projectSourceServiceKeys).toContain('bundled-electron-key');
+  });
+
+  it('owns project reconciliation before workspace replacement can start', async () => {
+    const project = createProject();
+    const reconciliation = createDeferred<ProjectRemoteState>();
+    mocks.loadedProjects = [project];
+    mocks.projectSourceReconcile.mockReturnValueOnce(reconciliation.promise);
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      getSidebarProps().onSelectProject(project.id);
+    });
+    await flushMicrotasks();
+
+    expect(getProjectHomeProps().sourceWorkBusy).toBe(true);
+    expect(getSidebarProps().mergeDisabled).toBe(true);
+    await act(async () => {
+      await getSidebarProps().onMergeData(new File(
+        ['verified archive'],
+        'merge.zip',
+        { type: 'application/zip' }
+      ));
+    });
+    expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
+
+    await act(async () => {
+      reconciliation.resolve({ indexes: {}, cleanupTombstones: [] });
+      await reconciliation.promise;
+    });
+    await flushMicrotasks();
+    expect(getProjectHomeProps().sourceWorkBusy).toBe(false);
+    expect(getSidebarProps().mergeDisabled).toBe(false);
+  });
+
+  it('owns source retry while its local blob is still loading', async () => {
+    const project = createProject();
+    const source: Project['sources'][number] = {
+      id: 'source-retry',
+      name: 'retry.txt',
+      mimeType: 'text/plain',
+      byteSize: 5,
+      localBlob: {
+        sha256: 'a'.repeat(64),
+        byteSize: 5,
+        mimeType: 'text/plain'
+      },
+      capability: 'file_search',
+      addedAt: 1
+    };
+    project.sources = [source];
+    mocks.loadedProjects = [project];
+    mocks.loadedProjectRemoteState = {
+      indexes: {
+        [project.id]: {
+          projectId: project.id,
+          apiKeyFingerprint: 'fingerprint',
+          vectorStoreId: 'vector-1',
+          status: 'failed',
+          usageBytes: 0,
+          files: {
+            [source.id]: {
+              projectSourceId: source.id,
+              status: 'failed',
+              lastError: 'Retry me.'
+            }
+          }
+        }
+      },
+      cleanupTombstones: []
+    };
+    const localBlob = createDeferred<Blob | null>();
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    await act(async () => {
+      getSidebarProps().onSelectProject(project.id);
+    });
+    await flushMicrotasks();
+    mocks.readLocalBlob.mockReturnValueOnce(localBlob.promise);
+
+    await act(async () => {
+      getProjectHomeProps().onRetrySource(source);
+    });
+
+    expect(getProjectHomeProps().sourceWorkBusy).toBe(true);
+    expect(getProjectHomeProps().busySourceIds).toEqual(new Set([source.id]));
+    expect(getSidebarProps().mergeDisabled).toBe(true);
+
+    await act(async () => {
+      localBlob.resolve(new Blob(['retry'], { type: 'text/plain' }));
+      await localBlob.promise;
+    });
+    await flushMicrotasks(24);
+    expect(mocks.projectSourceIngest).toHaveBeenCalledWith(expect.objectContaining({
+      project: expect.objectContaining({ id: project.id }),
+      source: expect.objectContaining({ id: source.id })
+    }));
+    expect(getProjectHomeProps().sourceWorkBusy).toBe(false);
   });
 
   it('snapshots live project instructions for each future request', async () => {

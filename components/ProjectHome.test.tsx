@@ -171,6 +171,37 @@ describe('ProjectHome', () => {
     expect(deleteButton?.closest('section')?.className).not.toContain('red');
   });
 
+  it('disables source mutations for global project work without a source ID', async () => {
+    await act(async () => {
+      root.render(<ProjectHome
+        project={createProject()}
+        sessions={[]}
+        totalIndexedUsageBytes={0}
+        busySourceIds={new Set()}
+        sourceWorkBusy
+        onUpdate={() => undefined}
+        onNewChat={() => undefined}
+        onAddSources={() => undefined}
+        onDeleteSource={() => undefined}
+        onRetrySource={() => undefined}
+        onDownloadSource={() => undefined}
+        onDeleteProject={() => undefined}
+      />);
+    });
+
+    const buttons = Array.from(container.querySelectorAll('button'));
+    expect(buttons.find(button => button.textContent?.includes('Add sources'))?.disabled)
+      .toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry indexing evidence.txt"]'
+    )?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete evidence.txt"]'
+    )?.disabled).toBe(true);
+    expect(buttons.find(button => button.textContent?.includes('Delete permanently'))?.disabled)
+      .toBe(true);
+  });
+
   it('commits a nonblank trimmed name on blur and exposes destructive actions', async () => {
     const onUpdate = vi.fn();
     const onDeleteProject = vi.fn();

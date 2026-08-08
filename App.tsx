@@ -110,6 +110,11 @@ import {
   ResponseStreamState,
   responseStreamSnapshotMatchesMessage
 } from './services/responseStreamState';
+import {
+  ProjectOperation,
+  ProjectOperationOwner,
+  ProjectOperationStatus
+} from './services/projectOperationOwner';
 
 const MOBILE_BREAKPOINT_PX = 768;
 const isMobileViewport = (): boolean => window.innerWidth < MOBILE_BREAKPOINT_PX;
@@ -387,13 +392,18 @@ function App() {
     createEmptyProjectRemoteState()
   );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [busyProjectSourceIds, setBusyProjectSourceIds] = useState<Set<string>>(
-    new Set()
-  );
-  const busyProjectSourceIdsRef = useRef<Set<string>>(new Set());
+  const [projectOperationStatus, setProjectOperationStatus] =
+    useState<ProjectOperationStatus>({
+      isBusy: false,
+      busySourceIds: new Set()
+    });
+  const projectOperationOwnerRef = useRef<ProjectOperationOwner | null>(null);
+  if (!projectOperationOwnerRef.current) {
+    projectOperationOwnerRef.current = new ProjectOperationOwner(
+      setProjectOperationStatus
+    );
+  }
   const [projectActionError, setProjectActionError] = useState<string | null>(null);
-  const projectOpenReconciliationRef = useRef<string | null>(null);
-  const projectSourceIngestionChainRef = useRef<Promise<void>>(Promise.resolve());
   const skipNextRemoteStateEffectSaveRef = useRef(false);
   const settingsRef = useRef<AppSettings>({
     theme: 'dark',
@@ -737,6 +747,7 @@ function App() {
 
   const invalidateWorkspaceOperations = (): void => {
     operationRegistryRef.current.invalidateWorkspace();
+    projectOperationOwnerRef.current!.invalidateWorkspace();
     activeRequestsRef.current.forEach((_, sessionId) => {
       abortActiveRequest(sessionId);
     });
@@ -898,7 +909,6 @@ function App() {
     setSystemInstructions(nextInstructions);
     setProjects(loadedProjects);
     setProjectRemoteState(loadedProjectRemoteState);
-    projectOpenReconciliationRef.current = null;
     setSelectedProjectId(current => (
       current && loadedProjects.some(project => project.id === current)
         ? current
@@ -1009,7 +1019,8 @@ function App() {
                 workspaceCanWriteRef.current &&
                 !workspaceMutationBlockedRef.current &&
                 activeRequestsRef.current.size === 0 &&
-                operationRegistryRef.current.getOperations().length === 0
+                operationRegistryRef.current.getOperations().length === 0 &&
+                !projectOperationOwnerRef.current!.isBusy
               ),
               onStateChange: setBackupState
             });
@@ -1242,72 +1253,67 @@ function App() {
     setProjects(next);
   };
 
-  const setRemoteState = (state: ProjectRemoteState): void => {
+  const assertProjectOperationCurrent = (
+    operation: ProjectOperation
+  ): void => {
+    projectOperationOwnerRef.current!.assertCurrent(operation);
+    if (!workspaceCanWriteRef.current) throw createOperationAbortError();
+  };
+
+  const setRemoteStateForOperation = (
+    operation: ProjectOperation,
+    state: ProjectRemoteState
+  ): void => {
+    assertProjectOperationCurrent(operation);
     projectRemoteStateRef.current = state;
     setProjectRemoteState(state);
   };
 
-  const persistRemoteState = async (state: ProjectRemoteState): Promise<void> => {
+  const persistRemoteState = async (
+    operation: ProjectOperation,
+    state: ProjectRemoteState
+  ): Promise<void> => {
+    assertProjectOperationCurrent(operation);
     const handle = dirHandleRef.current;
     if (!handle) throw new Error('Workspace storage is unavailable.');
     const revision = await writeWorkspaceState(handle, {
       projectRemoteState: state
     });
+    assertProjectOperationCurrent(operation);
     projectRemoteStateRef.current = state;
     skipNextRemoteStateEffectSaveRef.current = true;
     setProjectRemoteState(state);
     workspaceCoordinatorRef.current?.publishUpdate(revision);
   };
 
-  const setProjectSourceBusy = (sourceId: string, busy: boolean): void => {
-    const next = new Set(busyProjectSourceIdsRef.current);
-    if (busy) next.add(sourceId); else next.delete(sourceId);
-    busyProjectSourceIdsRef.current = next;
-    setBusyProjectSourceIds(next);
-  };
-
   const indexProjectSourceNow = async (
+    operation: ProjectOperation,
     projectId: string,
     source: ProjectSource,
     blob: Blob
   ): Promise<void> => {
     if (source.capability === 'direct_attachment') return;
+    assertProjectOperationCurrent(operation);
     const project = projectsRef.current.find(item => item.id === projectId);
     const requestApiKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
-    if (!project || !requestApiKey) {
-      setProjectActionError('Add an API key in Settings to index project sources.');
-      return;
+    if (!project?.sources.some(item => item.id === source.id)) {
+      throw createOperationAbortError();
     }
-    try {
-      await flushPendingSaves();
-      const service = new ProjectSourceService(requestApiKey);
-      const state = await service.ingestSource({
-        project,
-        source,
-        blob,
-        state: projectRemoteStateRef.current,
-        apiKeyFingerprint: fingerprintApiKey(requestApiKey),
-        persist: persistRemoteState
-      });
-      setRemoteState(state);
-      setProjectActionError(null);
-    } catch (error) {
-      setProjectActionError(getErrorMessage(error));
+    if (!requestApiKey) {
+      throw new Error('Add an API key in Settings to index project sources.');
     }
-  };
-
-  const indexProjectSource = (
-    projectId: string,
-    source: ProjectSource,
-    blob: Blob
-  ): Promise<void> => {
-    if (source.capability === 'direct_attachment') return Promise.resolve();
-    setProjectSourceBusy(source.id, true);
-    const pending = projectSourceIngestionChainRef.current.then(() => (
-      indexProjectSourceNow(projectId, source, blob)
-    )).finally(() => setProjectSourceBusy(source.id, false));
-    projectSourceIngestionChainRef.current = pending.catch(() => undefined);
-    return pending;
+    await flushPendingSaves();
+    assertProjectOperationCurrent(operation);
+    const service = new ProjectSourceService(requestApiKey);
+    const state = await service.ingestSource({
+      project,
+      source,
+      blob,
+      state: projectRemoteStateRef.current,
+      apiKeyFingerprint: fingerprintApiKey(requestApiKey),
+      persist: state => persistRemoteState(operation, state)
+    });
+    setRemoteStateForOperation(operation, state);
   };
 
   const addProjectSources = (projectId: string, files: File[]) => {
@@ -1318,65 +1324,99 @@ function App() {
       !handle ||
       !workspaceCanWriteRef.current ||
       workspaceMutationBlockedRef.current ||
-      busyProjectSourceIdsRef.current.size > 0
+      projectOperationOwnerRef.current!.isBusy
     ) return;
 
-    const batchOperationId = `project-source-batch:${crypto.randomUUID()}`;
-    setProjectSourceBusy(batchOperationId, true);
-    void (async () => {
-      try {
-        const formats = validateProjectSourceFiles(files, project.sources.length);
-        const additions: Array<{ source: ProjectSource; blob: Blob }> = [];
-        for (let index = 0; index < files.length; index += 1) {
-          const file = files[index];
-          const localBlob = await storeLocalBlob(handle, file, formats[index].mimeType);
-          additions.push({
-            source: {
-              id: crypto.randomUUID(),
-              name: file.name,
-              mimeType: formats[index].mimeType,
-              byteSize: file.size,
-              localBlob,
-              capability: formats[index].capability,
-              addedAt: Date.now()
-            },
-            blob: file
-          });
+    let formats: ReturnType<typeof validateProjectSourceFiles>;
+    try {
+      formats = validateProjectSourceFiles(files, project.sources.length);
+    } catch (error) {
+      setProjectActionError(getErrorMessage(error));
+      return;
+    }
+    const sourceIds = files.map(() => crypto.randomUUID());
+    const pending = projectOperationOwnerRef.current!.enqueue(
+      { kind: 'source-add', sourceIds },
+      async operation => {
+        try {
+          const additions: Array<{ source: ProjectSource; blob: Blob }> = [];
+          for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+            const localBlob = await storeLocalBlob(handle, file, formats[index].mimeType);
+            assertProjectOperationCurrent(operation);
+            additions.push({
+              source: {
+                id: sourceIds[index],
+                name: file.name,
+                mimeType: formats[index].mimeType,
+                byteSize: file.size,
+                localBlob,
+                capability: formats[index].capability,
+                addedAt: Date.now()
+              },
+              blob: file
+            });
+          }
+          const currentProject = projectsRef.current.find(item => item.id === projectId);
+          if (!currentProject) throw createOperationAbortError();
+          const updatedProject = {
+            ...currentProject,
+            sources: [...currentProject.sources, ...additions.map(item => item.source)],
+            updatedAt: Date.now()
+          };
+          const nextProjects = projectsRef.current.map(item => (
+            item.id === projectId ? updatedProject : item
+          ));
+          projectsRef.current = nextProjects;
+          setProjects(nextProjects);
+          scheduleSave('projects', true);
+          await flushPendingSaves(['projects']);
+          assertProjectOperationCurrent(operation);
+          let ingestionError: string | null = null;
+          for (const addition of additions) {
+            try {
+              await indexProjectSourceNow(
+                operation,
+                projectId,
+                addition.source,
+                addition.blob
+              );
+            } catch (error) {
+              if (isAbortError(error)) throw error;
+              ingestionError = getErrorMessage(error);
+            }
+          }
+          setProjectActionError(ingestionError);
+        } catch (error) {
+          if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+          throw error;
         }
-        const currentProject = projectsRef.current.find(item => item.id === projectId);
-        if (!currentProject) return;
-        const updatedProject = {
-          ...currentProject,
-          sources: [...currentProject.sources, ...additions.map(item => item.source)],
-          updatedAt: Date.now()
-        };
-        const nextProjects = projectsRef.current.map(item => (
-          item.id === projectId ? updatedProject : item
-        ));
-        projectsRef.current = nextProjects;
-        setProjects(nextProjects);
-        scheduleSave('projects', true);
-        await flushPendingSaves(['projects']);
-        for (const addition of additions) {
-          await indexProjectSource(projectId, addition.source, addition.blob);
-        }
-      } catch (error) {
-        setProjectActionError(getErrorMessage(error));
-      } finally {
-        setProjectSourceBusy(batchOperationId, false);
       }
-    })();
+    );
+    void pending.catch(() => undefined);
   };
 
   const retryProjectSource = (projectId: string, source: ProjectSource) => {
     const handle = dirHandleRef.current;
-    if (!handle || busyProjectSourceIdsRef.current.size > 0) return;
-    void readLocalBlob(handle, source.localBlob)
-      .then(blob => {
+    if (
+      !handle ||
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current ||
+      projectOperationOwnerRef.current!.isBusy
+    ) return;
+    const pending = projectOperationOwnerRef.current!.enqueue(
+      { kind: 'source-index', sourceIds: [source.id] },
+      async operation => {
+        const blob = await readLocalBlob(handle, source.localBlob);
+        assertProjectOperationCurrent(operation);
         if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
-        return indexProjectSource(projectId, source, blob);
-      })
-      .catch(error => setProjectActionError(getErrorMessage(error)));
+        await indexProjectSourceNow(operation, projectId, source, blob);
+        setProjectActionError(null);
+      }
+    );
+    void pending.catch(error => {
+      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+    });
   };
 
   const downloadProjectSource = (source: ProjectSource) => {
@@ -1401,7 +1441,7 @@ function App() {
   };
 
   const deleteProjectSource = (projectId: string, source: ProjectSource) => {
-    if (busyProjectSourceIdsRef.current.size > 0) {
+    if (projectOperationOwnerRef.current!.isBusy) {
       setProjectActionError('Wait for project source uploads to finish before deleting a source.');
       return;
     }
@@ -1409,60 +1449,81 @@ function App() {
       !window.confirm(`Delete "${source.name}" from this project? This also deletes its OpenAI File.`)
     ) return;
     const handle = dirHandleRef.current;
-    if (!handle || !workspaceCanWriteRef.current) return;
-    void enqueueDestructiveOperation(async () => {
-      await flushPendingSaves();
-      const project = projectsRef.current.find(item => item.id === projectId);
-      if (!project) return;
-      const index = projectRemoteStateRef.current.indexes[projectId];
-      const tombstone = createSourceCleanupTombstone(projectId, source.id, index);
-      const nextProjects = projectsRef.current.map(item => (
-        item.id === projectId
-          ? {
-              ...item,
-              sources: item.sources.filter(value => value.id !== source.id),
-              updatedAt: Date.now()
-            }
-          : item
-      ));
-      const nextRemoteState = createEmptyProjectRemoteState();
-      nextRemoteState.indexes = { ...projectRemoteStateRef.current.indexes };
-      nextRemoteState.cleanupTombstones = [
-        ...projectRemoteStateRef.current.cleanupTombstones,
-        ...(tombstone ? [tombstone] : [])
-      ];
-      if (index) {
-        nextRemoteState.indexes[projectId] = {
-          ...index,
-          files: Object.fromEntries(
-            Object.entries(index.files).filter(([sourceId]) => sourceId !== source.id)
-          )
-        };
-      }
-      const revision = await writeWorkspaceState(handle, {
-        projects: nextProjects,
-        projectRemoteState: nextRemoteState
-      });
-      projectsRef.current = nextProjects;
-      setProjects(nextProjects);
-      skipNextRemoteStateEffectSaveRef.current = true;
-      setRemoteState(nextRemoteState);
-      workspaceCoordinatorRef.current?.publishUpdate(revision);
-      const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
-      if (tombstone && cleanupKey) {
-        const service = new ProjectSourceService(cleanupKey);
-        await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
-      }
-    }, { blocksInteractions: false }).catch(error => {
-      setProjectActionError(getErrorMessage(error));
+    if (
+      !handle ||
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current
+    ) return;
+    const pending = projectOperationOwnerRef.current!.enqueue(
+      { kind: 'source-delete', sourceIds: [source.id] },
+      operation => enqueueDestructiveOperation(async () => {
+        assertProjectOperationCurrent(operation);
+        await flushPendingSaves();
+        assertProjectOperationCurrent(operation);
+        const project = projectsRef.current.find(item => item.id === projectId);
+        if (!project) throw createOperationAbortError();
+        const index = projectRemoteStateRef.current.indexes[projectId];
+        const tombstone = createSourceCleanupTombstone(projectId, source.id, index);
+        const nextProjects = projectsRef.current.map(item => (
+          item.id === projectId
+            ? {
+                ...item,
+                sources: item.sources.filter(value => value.id !== source.id),
+                updatedAt: Date.now()
+              }
+            : item
+        ));
+        const nextRemoteState = createEmptyProjectRemoteState();
+        nextRemoteState.indexes = { ...projectRemoteStateRef.current.indexes };
+        nextRemoteState.cleanupTombstones = [
+          ...projectRemoteStateRef.current.cleanupTombstones,
+          ...(tombstone ? [tombstone] : [])
+        ];
+        if (index) {
+          nextRemoteState.indexes[projectId] = {
+            ...index,
+            files: Object.fromEntries(
+              Object.entries(index.files).filter(([sourceId]) => sourceId !== source.id)
+            )
+          };
+        }
+        const revision = await writeWorkspaceState(handle, {
+          projects: nextProjects,
+          projectRemoteState: nextRemoteState
+        });
+        assertProjectOperationCurrent(operation);
+        projectsRef.current = nextProjects;
+        setProjects(nextProjects);
+        projectRemoteStateRef.current = nextRemoteState;
+        skipNextRemoteStateEffectSaveRef.current = true;
+        setProjectRemoteState(nextRemoteState);
+        workspaceCoordinatorRef.current?.publishUpdate(revision);
+        const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
+        if (tombstone && cleanupKey) {
+          const service = new ProjectSourceService(cleanupKey);
+          await service.runCleanup(
+            nextRemoteState,
+            tombstone.id,
+            state => persistRemoteState(operation, state)
+          );
+        }
+      }, { blocksInteractions: false })
+    );
+    void pending.catch(error => {
+      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
     });
   };
 
   const deleteProject = (projectId: string) => {
     const project = projectsRef.current.find(item => item.id === projectId);
     const handle = dirHandleRef.current;
-    if (!project || !handle) return;
-    if (busyProjectSourceIdsRef.current.size > 0) {
+    if (
+      !project ||
+      !handle ||
+      !workspaceCanWriteRef.current ||
+      workspaceMutationBlockedRef.current
+    ) return;
+    if (projectOperationOwnerRef.current!.isBusy) {
       window.alert('Wait for project source uploads to finish before deleting a project.');
       return;
     }
@@ -1478,58 +1539,79 @@ function App() {
       'External ZIP backups are not erased automatically.'
     ].join('\n'))) return;
 
-    void enqueueDestructiveOperation(async () => {
-      await flushPendingSaves();
-      const index = projectRemoteStateRef.current.indexes[projectId];
-      const tombstone = createProjectCleanupTombstone(projectId, index);
-      const nextSessions = sessionsRef.current.filter(session => session.projectId !== projectId);
-      const nextProjects = projectsRef.current.filter(item => item.id !== projectId);
-      const nextRemoteState: ProjectRemoteState = {
-        indexes: Object.fromEntries(
-          Object.entries(projectRemoteStateRef.current.indexes)
-            .filter(([id]) => id !== projectId)
-        ),
-        cleanupTombstones: [
-          ...projectRemoteStateRef.current.cleanupTombstones,
-          ...(tombstone ? [tombstone] : [])
-        ]
-      };
-      memberSessions.forEach(session => invalidateSessionOperations(session.id));
-      await clearInternalRecoveryArchive(handle);
-      const revision = await writeWorkspaceState(handle, {
-        sessions: nextSessions,
-        projects: nextProjects,
-        projectRemoteState: nextRemoteState
-      }, { publishTwice: true });
-      sessionsRef.current = nextSessions;
-      projectsRef.current = nextProjects;
-      projectRemoteStateRef.current = nextRemoteState;
-      updateSessionsState(nextSessions);
-      setProjects(nextProjects);
-      skipNextRemoteStateEffectSaveRef.current = true;
-      setProjectRemoteState(nextRemoteState);
-      setSelectedProjectId(null);
-      setUndoWorkspaceAction(null);
-      if (currentSessionIdRef.current && memberSessions.some(
-        session => session.id === currentSessionIdRef.current
-      )) {
-        updateCurrentSessionId(nextSessions[0]?.id || null);
-      }
-      workspaceCoordinatorRef.current?.publishUpdate(revision);
-      const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
-      if (tombstone && cleanupKey) {
-        const service = new ProjectSourceService(cleanupKey);
-        try {
-          await service.runCleanup(nextRemoteState, tombstone.id, persistRemoteState);
-        } catch (error) {
-          setProjectActionError(`Project deletion pending: ${getErrorMessage(error)}`);
+    const pending = projectOperationOwnerRef.current!.enqueue(
+      {
+        kind: 'project-delete',
+        sourceIds: project.sources.map(source => source.id)
+      },
+      operation => enqueueDestructiveOperation(async () => {
+        assertProjectOperationCurrent(operation);
+        await flushPendingSaves();
+        assertProjectOperationCurrent(operation);
+        const index = projectRemoteStateRef.current.indexes[projectId];
+        const tombstone = createProjectCleanupTombstone(projectId, index);
+        const nextSessions = sessionsRef.current.filter(
+          session => session.projectId !== projectId
+        );
+        const nextProjects = projectsRef.current.filter(item => item.id !== projectId);
+        const nextRemoteState: ProjectRemoteState = {
+          indexes: Object.fromEntries(
+            Object.entries(projectRemoteStateRef.current.indexes)
+              .filter(([id]) => id !== projectId)
+          ),
+          cleanupTombstones: [
+            ...projectRemoteStateRef.current.cleanupTombstones,
+            ...(tombstone ? [tombstone] : [])
+          ]
+        };
+        memberSessions.forEach(session => invalidateSessionOperations(session.id));
+        await clearInternalRecoveryArchive(handle);
+        assertProjectOperationCurrent(operation);
+        const revision = await writeWorkspaceState(handle, {
+          sessions: nextSessions,
+          projects: nextProjects,
+          projectRemoteState: nextRemoteState
+        }, { publishTwice: true });
+        assertProjectOperationCurrent(operation);
+        sessionsRef.current = nextSessions;
+        projectsRef.current = nextProjects;
+        projectRemoteStateRef.current = nextRemoteState;
+        updateSessionsState(nextSessions);
+        setProjects(nextProjects);
+        skipNextRemoteStateEffectSaveRef.current = true;
+        setProjectRemoteState(nextRemoteState);
+        setSelectedProjectId(null);
+        setUndoWorkspaceAction(null);
+        if (currentSessionIdRef.current && memberSessions.some(
+          session => session.id === currentSessionIdRef.current
+        )) {
+          updateCurrentSessionId(nextSessions[0]?.id || null);
         }
-      }
-    }).catch(error => setProjectActionError(getErrorMessage(error)));
+        workspaceCoordinatorRef.current?.publishUpdate(revision);
+        const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
+        if (tombstone && cleanupKey) {
+          const service = new ProjectSourceService(cleanupKey);
+          try {
+            await service.runCleanup(
+              nextRemoteState,
+              tombstone.id,
+              state => persistRemoteState(operation, state)
+            );
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            setProjectActionError(`Project deletion pending: ${getErrorMessage(error)}`);
+          }
+        }
+      })
+    );
+    void pending.catch(error => {
+      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+    });
   };
 
   const retryRemoteCleanup = async (): Promise<void> => {
-    if (busyProjectSourceIdsRef.current.size > 0) {
+    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    if (projectOperationOwnerRef.current!.isBusy) {
       setProjectActionError('Wait for project source work to finish before retrying cleanup.');
       return;
     }
@@ -1547,27 +1629,30 @@ function App() {
       return;
     }
     const service = new ProjectSourceService(cleanupKey);
-    const cleanupOperationId = `remote-cleanup:${crypto.randomUUID()}`;
-    setProjectSourceBusy(cleanupOperationId, true);
-    try {
-      for (const tombstone of pending) {
-        await service.runCleanup(
-          projectRemoteStateRef.current,
-          tombstone.id,
-          persistRemoteState
-        );
+    const operation = projectOperationOwnerRef.current!.enqueue(
+      { kind: 'remote-cleanup' },
+      async projectOperation => {
+        for (const tombstone of pending) {
+          await service.runCleanup(
+            projectRemoteStateRef.current,
+            tombstone.id,
+            state => persistRemoteState(projectOperation, state)
+          );
+        }
       }
+    );
+    try {
+      await operation;
       setProjectActionError(null);
     } catch (error) {
+      if (isAbortError(error)) return;
       setProjectActionError(`Remote cleanup is still pending: ${getErrorMessage(error)}`);
-    } finally {
-      setProjectSourceBusy(cleanupOperationId, false);
     }
   };
 
   const saveApiKey = async (nextApiKey: string): Promise<void> => {
     if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
-    if (busyProjectSourceIdsRef.current.size > 0) {
+    if (projectOperationOwnerRef.current!.isBusy) {
       setProjectActionError('Wait for project source uploads to finish before changing API keys.');
       return;
     }
@@ -1586,89 +1671,98 @@ function App() {
     const existingCleanup = projectRemoteStateRef.current.cleanupTombstones
       .filter(tombstone => tombstone.apiKeyFingerprint === oldFingerprint);
     if (ownedIndexes.length > 0 || existingCleanup.length > 0) {
-      const keySwitchOperationId = `api-key-switch:${crypto.randomUUID()}`;
-      setProjectSourceBusy(keySwitchOperationId, true);
-      try {
-        if (!oldApiKey) {
-          setProjectActionError(
-            'The old API key is required to delete existing remote project resources before switching keys.'
-          );
-          return;
-        }
-        if (!window.confirm(
-          'Switching API keys must first delete this app’s Files and vector stores under the old key. Continue?'
-        )) return;
-        try {
-          await flushPendingSaves();
-          const generatedTombstones = ownedIndexes.flatMap(index => {
-            const tombstone = createProjectCleanupTombstone(index.projectId, index);
-            return tombstone ? [tombstone] : [];
-          });
-          const state: ProjectRemoteState = {
-            indexes: Object.fromEntries(
-              Object.entries(projectRemoteStateRef.current.indexes)
-                .filter(([, index]) => index.apiKeyFingerprint !== oldFingerprint)
-            ),
-            cleanupTombstones: [
-              ...projectRemoteStateRef.current.cleanupTombstones,
-              ...generatedTombstones
-            ]
-          };
-          await persistRemoteState(state);
-          const service = new ProjectSourceService(oldApiKey);
-          for (const tombstone of state.cleanupTombstones.filter(
-            item => item.apiKeyFingerprint === oldFingerprint
-          )) {
-            await service.runCleanup(
-              projectRemoteStateRef.current,
-              tombstone.id,
-              persistRemoteState
-            );
-          }
-        } catch (error) {
-          const resourceIds = projectRemoteStateRef.current.cleanupTombstones
-            .filter(item => item.apiKeyFingerprint === oldFingerprint)
-            .flatMap(item => [
-              ...item.openaiFileIds,
-              ...(item.vectorStoreId ? [item.vectorStoreId] : [])
-            ]);
-          if (
-            error instanceof ProjectSourceServiceError &&
-            error.kind === 'authentication' &&
-            window.confirm([
-              'The old API key could not authenticate cleanup.',
-              'Delete every listed resource in the OpenAI dashboard first.',
-              resourceIds.length > 0 ? `Resources: ${resourceIds.join(', ')}` : '',
-              '',
-              'Select OK only after confirming those resources are deleted. This will clear the local cleanup records and continue the key switch.'
-            ].filter(Boolean).join('\n'))
-          ) {
-            try {
-              await persistRemoteState({
-                indexes: projectRemoteStateRef.current.indexes,
-                cleanupTombstones: projectRemoteStateRef.current.cleanupTombstones.filter(
-                  item => item.apiKeyFingerprint !== oldFingerprint
-                )
-              });
-            } catch (persistError) {
-              setProjectActionError(
-                `Manual cleanup confirmation could not be saved: ${getErrorMessage(persistError)}`
-              );
-              return;
-            }
-          } else {
+      const operation = projectOperationOwnerRef.current!.enqueue(
+        { kind: 'api-key-switch' },
+        async projectOperation => {
+          if (!oldApiKey) {
             setProjectActionError(
-              [
-                `API key switch blocked until old remote resources are removed: ${getErrorMessage(error)}`,
-                'Retry cleanup with the old key, or delete these resources in the OpenAI dashboard, save the new key again, and explicitly confirm the manual cleanup.',
-                ...(resourceIds.length > 0 ? [`Resources: ${resourceIds.join(', ')}`] : [])
-              ].join(' ')
+              'The old API key is required to delete existing remote project resources before switching keys.'
             );
-            return;
+            return false;
           }
+          if (!window.confirm(
+            'Switching API keys must first delete this app’s Files and vector stores under the old key. Continue?'
+          )) return false;
+          try {
+            await flushPendingSaves();
+            assertProjectOperationCurrent(projectOperation);
+            const generatedTombstones = ownedIndexes.flatMap(index => {
+              const tombstone = createProjectCleanupTombstone(index.projectId, index);
+              return tombstone ? [tombstone] : [];
+            });
+            const state: ProjectRemoteState = {
+              indexes: Object.fromEntries(
+                Object.entries(projectRemoteStateRef.current.indexes)
+                  .filter(([, index]) => index.apiKeyFingerprint !== oldFingerprint)
+              ),
+              cleanupTombstones: [
+                ...projectRemoteStateRef.current.cleanupTombstones,
+                ...generatedTombstones
+              ]
+            };
+            await persistRemoteState(projectOperation, state);
+            const service = new ProjectSourceService(oldApiKey);
+            for (const tombstone of state.cleanupTombstones.filter(
+              item => item.apiKeyFingerprint === oldFingerprint
+            )) {
+              await service.runCleanup(
+                projectRemoteStateRef.current,
+                tombstone.id,
+                nextState => persistRemoteState(projectOperation, nextState)
+              );
+            }
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            const resourceIds = projectRemoteStateRef.current.cleanupTombstones
+              .filter(item => item.apiKeyFingerprint === oldFingerprint)
+              .flatMap(item => [
+                ...item.openaiFileIds,
+                ...(item.vectorStoreId ? [item.vectorStoreId] : [])
+              ]);
+            if (
+              error instanceof ProjectSourceServiceError &&
+              error.kind === 'authentication' &&
+              window.confirm([
+                'The old API key could not authenticate cleanup.',
+                'Delete every listed resource in the OpenAI dashboard first.',
+                resourceIds.length > 0 ? `Resources: ${resourceIds.join(', ')}` : '',
+                '',
+                'Select OK only after confirming those resources are deleted. This will clear the local cleanup records and continue the key switch.'
+              ].filter(Boolean).join('\n'))
+            ) {
+              try {
+                await persistRemoteState(projectOperation, {
+                  indexes: projectRemoteStateRef.current.indexes,
+                  cleanupTombstones: projectRemoteStateRef.current.cleanupTombstones.filter(
+                    item => item.apiKeyFingerprint !== oldFingerprint
+                  )
+                });
+              } catch (persistError) {
+                if (isAbortError(persistError)) throw persistError;
+                setProjectActionError(
+                  `Manual cleanup confirmation could not be saved: ${getErrorMessage(persistError)}`
+                );
+                return false;
+              }
+            } else {
+              setProjectActionError(
+                [
+                  `API key switch blocked until old remote resources are removed: ${getErrorMessage(error)}`,
+                  'Retry cleanup with the old key, or delete these resources in the OpenAI dashboard, save the new key again, and explicitly confirm the manual cleanup.',
+                  ...(resourceIds.length > 0 ? [`Resources: ${resourceIds.join(', ')}`] : [])
+                ].join(' ')
+              );
+              return false;
+            }
+          }
+          return true;
         }
-      } finally {
-        setProjectSourceBusy(keySwitchOperationId, false);
+      );
+      try {
+        if (!(await operation)) return;
+      } catch (error) {
+        if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+        return;
       }
     }
     setApiKey(nextApiKey);
@@ -1685,43 +1779,57 @@ function App() {
       !handle ||
       !effectiveApiKey ||
       !isWorkspaceLoaded ||
-      !workspaceCanWriteRef.current
+      !workspaceCanWriteRef.current ||
+      isWorkspaceMutating
     ) return;
     const fingerprint = fingerprintApiKey(effectiveApiKey);
     const reconciliationKey = `${project.id}:${fingerprint}`;
-    if (projectOpenReconciliationRef.current === reconciliationKey) return;
-    projectOpenReconciliationRef.current = reconciliationKey;
-    let cancelled = false;
-
-    void (async () => {
-      try {
+    const pending = projectOperationOwnerRef.current!.enqueue(
+      {
+        kind: 'reconcile',
+        sourceIds: project.sources
+          .filter(source => source.capability !== 'direct_attachment')
+          .map(source => source.id),
+        dedupeKey: reconciliationKey
+      },
+      async operation => {
         const service = new ProjectSourceService(effectiveApiKey);
         const reconciled = await service.reconcile(
           [project],
           projectRemoteStateRef.current,
           fingerprint,
-          persistRemoteState
+          state => persistRemoteState(operation, state)
         );
-        if (cancelled) return;
-        setRemoteState(reconciled);
+        setRemoteStateForOperation(operation, reconciled);
+        let reconciliationError: string | null = null;
         for (const source of project.sources) {
-          if (cancelled || source.capability === 'direct_attachment') continue;
+          if (source.capability === 'direct_attachment') continue;
           if (projectRemoteStateRef.current.indexes[project.id]?.files[source.id]) {
             continue;
           }
           const blob = await readLocalBlob(handle, source.localBlob);
+          assertProjectOperationCurrent(operation);
           if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
-          await indexProjectSource(project.id, source, blob);
+          try {
+            await indexProjectSourceNow(operation, project.id, source, blob);
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            reconciliationError = getErrorMessage(error);
+          }
         }
-      } catch (error) {
-        if (!cancelled) setProjectActionError(getErrorMessage(error));
+        setProjectActionError(reconciliationError);
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [effectiveApiKey, draftWorkspaceEpoch, isWorkspaceLoaded, selectedProjectId]);
+    );
+    void pending?.catch(error => {
+      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+    });
+  }, [
+    effectiveApiKey,
+    draftWorkspaceEpoch,
+    isWorkspaceLoaded,
+    isWorkspaceMutating,
+    selectedProjectId
+  ]);
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -2883,16 +2991,19 @@ function App() {
   const confirmWorkspaceRestore = async () => {
     const pending = pendingRestore;
     if (!pending || !dirHandleRef.current) return;
-    if (busyProjectSourceIdsRef.current.size > 0) {
+    if (projectOperationOwnerRef.current!.isBusy) {
       alert('Wait for project source uploads to finish before restoring a workspace.');
       return;
     }
     setPendingRestore(null);
-    await flushPendingSaves();
-    invalidateWorkspaceOperations();
 
     try {
       await enqueueDestructiveOperation(async () => {
+        if (projectOperationOwnerRef.current!.isBusy) {
+          throw new Error('Wait for project source work to finish before restoring a workspace.');
+        }
+        await flushPendingSaves();
+        invalidateWorkspaceOperations();
         const operation = operationRegistryRef.current.begin({
           id: crypto.randomUUID(),
           kind: 'workspace-restore'
@@ -2940,7 +3051,7 @@ function App() {
       workspaceMutationBlockedRef.current ||
       activeRequestsRef.current.size > 0 ||
       processingSessionIdsRef.current.size > 0 ||
-      busyProjectSourceIdsRef.current.size > 0 ||
+      projectOperationOwnerRef.current!.isBusy ||
       !dirHandleRef.current
     ) {
       return;
@@ -2952,7 +3063,7 @@ function App() {
           !workspaceCanWriteRef.current ||
           activeRequestsRef.current.size > 0 ||
           processingSessionIdsRef.current.size > 0 ||
-          busyProjectSourceIdsRef.current.size > 0
+          projectOperationOwnerRef.current!.isBusy
         ) {
           throw new Error('Finish active responses before merging a backup.');
         }
@@ -3006,13 +3117,16 @@ function App() {
     if (
       !handle ||
       !workspaceCanWriteRef.current ||
-      busyProjectSourceIdsRef.current.size > 0
+      projectOperationOwnerRef.current!.isBusy
     ) return;
     const action = undoWorkspaceAction;
-    await flushPendingSaves();
-    invalidateWorkspaceOperations();
     try {
       await enqueueDestructiveOperation(async () => {
+        if (projectOperationOwnerRef.current!.isBusy) {
+          throw new Error('Wait for project source work to finish before undoing a workspace change.');
+        }
+        await flushPendingSaves();
+        invalidateWorkspaceOperations();
         await undoLastWorkspaceMutation(handle);
         workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
         await loadWorkspaceData(handle, 'writer');
@@ -3307,7 +3421,7 @@ function App() {
                 mergeDisabled={
                   isWorkspaceInteractionReadOnly ||
                   processingSessionIds.size > 0 ||
-                  busyProjectSourceIds.size > 0
+                  projectOperationStatus.isBusy
                 }
                 backupState={backupState}
                 backupActionError={backupActionError}
@@ -3334,7 +3448,8 @@ function App() {
                 sessions={sessions.filter(session => session.projectId === selectedProject.id)}
                 remoteIndex={projectRemoteState.indexes[selectedProject.id]}
                 totalIndexedUsageBytes={totalIndexedUsageBytes}
-                busySourceIds={busyProjectSourceIds}
+                busySourceIds={projectOperationStatus.busySourceIds}
+                sourceWorkBusy={projectOperationStatus.isBusy}
                 error={projectActionError}
                 readOnly={isWorkspaceInteractionReadOnly}
                 onUpdate={updateProject}

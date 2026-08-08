@@ -158,11 +158,14 @@ files are `direct_attachment` and must be selected explicitly in the composer.
 
 One lazily created vector store belongs exclusively to each project. OpenAI File
 objects are never shared across projects, even when local content-addressed bytes
-deduplicate. Upload/index work is serialized. The UI exposes uploading,
-indexing, ready, failed, removing, and needs-indexing states, error/retry,
-canonical local download, capability, type, size, and workspace indexed usage.
-Opening a project reconciles interrupted remote state and indexes sources that
-have no remote record under the current key.
+deduplicate. One project-operation owner serializes local source acquisition,
+reconciliation, upload/index, deletion, remote cleanup, and API-key switching.
+Ownership begins when work is enqueued, before an asynchronous local blob read,
+and UI busy state is derived from unique operation tokens rather than source IDs.
+Opening a project reconciles interrupted remote state once per project/key pair;
+a failed reconciliation remains retryable. The UI exposes uploading, indexing,
+ready, failed, removing, and needs-indexing states, error/retry, canonical local
+download, capability, type, size, and workspace indexed usage.
 
 If any configured automatic source is pending, failed, disconnected, or bound
 to another key, request construction blocks. A confirmation may override that
@@ -260,6 +263,8 @@ Primary boundaries are:
   retrieval.
 - `services/responseStreamState.ts`: per-request partial text, phased output,
   and reasoning accumulation plus atomic message checkpoints.
+- `services/projectOperationOwner.ts`: tokenized project-source busy state,
+  serialized work, reconciliation deduplication, and workspace-epoch invalidation.
 - `services/projectSourceService.ts`: OpenAI File and vector-store lifecycle,
   usage refresh, interruption reconciliation, key fingerprints, error classes,
   and durable cleanup execution. `utils/projectSources.ts` owns routing and
@@ -332,13 +337,16 @@ The operation registry owns response, title, archive-read, caching, and
 workspace-mutation lifetimes. Session deletion and workspace replacement
 invalidate affected operations so late work cannot restore removed state.
 Destructive and workspace-wide changes pass through a serialized operation
-queue.
+queue. The separate project-operation owner serializes every project-source
+mutation and rejects persistence from an invalidated workspace epoch. Restore
+and undo acquire the workspace-mutation barrier before their first asynchronous
+flush, so new project work cannot enter between a busy check and replacement.
 
 Source-library additions/removals, permanent project deletion, and remote
 cleanup-journal transitions save immediately. A project deletion uses an
 atomic multi-object write and two verified publications. Source ingestion is
-serialized separately and source/project deletion, restore, merge, undo, and
-API-key switching cannot race queued source work.
+serialized with reconciliation, source/project deletion, remote cleanup, and
+API-key switching. Restore, merge, and undo cannot race owned project work.
 
 ## Responses API Contract
 
@@ -750,7 +758,7 @@ The following tests are the executable contracts for this specification:
 | Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and current-format OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
 | ZIP creation, project/source binary round trip, v3-only validation, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
 | Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
-| Project source routing/limits and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts) and [services/projectSourceService.test.ts](../services/projectSourceService.test.ts) |
+| Project source routing/limits, operation ownership, pre-read busy state, workspace replacement exclusion, and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts), [services/projectOperationOwner.test.ts](../services/projectOperationOwner.test.ts), [services/projectSourceService.test.ts](../services/projectSourceService.test.ts), and [App.integration.test.tsx](../App.integration.test.tsx) |
 | Project home source/status/destructive UI, sidebar hierarchy/icons/search/staged key controls, and project chat breadcrumbs | [components/ProjectHome.test.tsx](../components/ProjectHome.test.tsx), [components/Sidebar.test.tsx](../components/Sidebar.test.tsx), and [components/ChatArea.test.tsx](../components/ChatArea.test.tsx) |
 | Daily eligibility, destination read-back, close failure, corruption handling, and three-valid-file retention | [services/backupScheduler.test.ts](../services/backupScheduler.test.ts) |
 | Save versioning, retry, flush, cross-tab coordination, operation ownership, and destructive serialization | [saveQueue.test.ts](../services/saveQueue.test.ts), [workspaceSync.test.ts](../services/workspaceSync.test.ts), [operationRegistry.test.ts](../services/operationRegistry.test.ts), and [serializedOperationQueue.test.ts](../services/serializedOperationQueue.test.ts) |

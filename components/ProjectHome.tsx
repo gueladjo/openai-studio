@@ -32,6 +32,7 @@ interface ProjectHomeProps {
   remoteIndex?: ProjectRemoteIndex;
   totalIndexedUsageBytes: number;
   busySourceIds?: ReadonlySet<string>;
+  sourceWorkBusy?: boolean;
   error?: string | null;
   readOnly?: boolean;
   onUpdate: (project: Project) => void;
@@ -61,6 +62,7 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
   remoteIndex,
   totalIndexedUsageBytes,
   busySourceIds = new Set(),
+  sourceWorkBusy = busySourceIds.size > 0,
   error,
   readOnly = false,
   onUpdate,
@@ -87,7 +89,6 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
     100,
     totalIndexedUsageBytes / MAX_INDEXED_USAGE_BYTES * 100
   );
-  const sourceWorkBusy = busySourceIds.size > 0;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-white md:flex-row md:overflow-hidden dark:bg-[#0d1117]">
