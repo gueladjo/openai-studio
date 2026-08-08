@@ -28,7 +28,6 @@ import {
   getBlobPath,
   getObjectPath,
   LOCAL_WORKSPACE_SCHEMA_VERSION,
-  PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION,
   parseWorkspaceGenerationManifest,
   SessionObjectReference,
   WorkspaceGenerationError,
@@ -144,17 +143,6 @@ const verifyText = (
   if (sha256Bytes(bytes) !== reference.sha256) {
     throw new WorkspaceGenerationError(`${path} failed its SHA-256 check.`);
   }
-};
-
-const migrateSchemaV4Projects = (value: unknown): Project[] => {
-  if (!Array.isArray(value)) return parseProjects(value);
-  return parseProjects(value.map(project => {
-    if (typeof project !== 'object' || project === null || Array.isArray(project)) {
-      return project;
-    }
-    const { color: _retiredColor, ...currentProject } = project as Record<string, unknown>;
-    return currentProject;
-  }));
 };
 
 export class WorkspaceGenerationStore {
@@ -423,10 +411,8 @@ export class WorkspaceGenerationStore {
   ): Promise<ValidWorkspaceGeneration> {
     const settingsPath = getObjectPath(manifest.settings);
     const instructionsPath = getObjectPath(manifest.instructions);
-    const projectsPath = manifest.projects ? getObjectPath(manifest.projects) : null;
-    const projectRemoteStatePath = manifest.projectRemoteState
-      ? getObjectPath(manifest.projectRemoteState)
-      : null;
+    const projectsPath = getObjectPath(manifest.projects);
+    const projectRemoteStatePath = getObjectPath(manifest.projectRemoteState);
     const [
       sessions,
       settingsText,
@@ -454,10 +440,8 @@ export class WorkspaceGenerationStore {
       })),
       this.adapter.readText(settingsPath),
       this.adapter.readText(instructionsPath),
-      projectsPath ? this.adapter.readText(projectsPath) : Promise.resolve(null),
-      projectRemoteStatePath
-        ? this.adapter.readText(projectRemoteStatePath)
-        : Promise.resolve(null)
+      this.adapter.readText(projectsPath),
+      this.adapter.readText(projectRemoteStatePath)
     ]);
 
     if (settingsText === null) {
@@ -480,41 +464,21 @@ export class WorkspaceGenerationStore {
       parseSystemInstructions
     );
 
-    let projects: Project[] = [];
-    let projectRemoteState: ProjectRemoteState = {
-      indexes: {},
-      cleanupTombstones: []
-    };
-    if (manifest.projects || manifest.projectRemoteState) {
-      if (
-        !manifest.projects ||
-        !manifest.projectRemoteState ||
-        !projectsPath ||
-        !projectRemoteStatePath ||
-        projectsText === null ||
-        projectRemoteStateText === null
-      ) {
-        throw new WorkspaceGenerationError('The project workspace objects are missing.');
-      }
-      verifyText(projectsPath, projectsText, manifest.projects);
-      projects = parseJsonText(
-        projectsPath,
-        projectsText,
-        manifest.schemaVersion === PREVIOUS_LOCAL_WORKSPACE_SCHEMA_VERSION
-          ? migrateSchemaV4Projects
-          : parseProjects
-      );
-      verifyText(
-        projectRemoteStatePath,
-        projectRemoteStateText,
-        manifest.projectRemoteState
-      );
-      projectRemoteState = parseJsonText(
-        projectRemoteStatePath,
-        projectRemoteStateText,
-        value => parseProjectRemoteState(value, projects)
-      );
+    if (projectsText === null || projectRemoteStateText === null) {
+      throw new WorkspaceGenerationError('The project workspace objects are missing.');
     }
+    verifyText(projectsPath, projectsText, manifest.projects);
+    const projects = parseJsonText(projectsPath, projectsText, parseProjects);
+    verifyText(
+      projectRemoteStatePath,
+      projectRemoteStateText,
+      manifest.projectRemoteState
+    );
+    const projectRemoteState = parseJsonText(
+      projectRemoteStatePath,
+      projectRemoteStateText,
+      value => parseProjectRemoteState(value, projects)
+    );
 
     validateWorkspaceReferences({ sessions, settings, instructions, projects });
     const declaredBlobs = new Map(

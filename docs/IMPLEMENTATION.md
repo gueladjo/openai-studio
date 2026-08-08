@@ -437,11 +437,9 @@ globally unique project/source IDs, fixed icon/capability enums,
 timestamps, and local source blob references. A project contains at most 40
 sources.
 
-Local schema v5 is the strict color-free project format. On first load, a
-schema-v4 generation is validated with its retired project field removed and
-immediately republished as schema v5; current writes, runtime parsing, and
-portable archive parsing do not accept that field. Schema-v3 workspaces remain
-readable for the existing no-project migration path.
+Local schema v5 is the only supported persisted format and uses the strict
+color-free project shape. Earlier generation versions are rejected without
+republishing or changing their records.
 
 `ProjectRemoteState` is a separate nonportable registry of project vector-store
 IDs, project-exclusive OpenAI File IDs, transient status/error/usage, SHA-256 API
@@ -505,18 +503,15 @@ Unchanged content-addressed objects are reused. Garbage collection retains both
 valid manifests, staged bytes awaiting publication, and content pinned by an
 active `readWorkspaceSnapshot()` until its release callback runs.
 
-Previous `sessions.json`, `settings.json`, `system_instructions.json`, `.bak`,
-snapshot, and `attachments/` records are migration inputs. They remain until a
-v5 generation has been published and read back successfully. Failed migration
-must not become an empty workspace.
+On a genuinely empty store, the writer publishes an empty schema-v5 generation;
+a reader cannot initialize it. Earlier canonical files, `.bak` records,
+snapshots, attachment directories, and schema-v3/v4 manifests are unsupported.
+They are never converted into an empty workspace or overwritten during load.
 
-Schema-v3 generations remain readable as project-empty workspaces, and
-schema-v4 project generations follow the bounded migration described above. A
-writer publishes v5 only after the complete prior generation parses, commits,
-and reads back successfully; reader tabs do not migrate. Existing schema-v3
-sessions remain standalone. Project sources participate in the exact declared
-blob union and in object reuse, pinning, fallback, and bounded garbage
-collection.
+Project sources participate in the exact declared blob union and in object
+reuse, pinning, fallback, and bounded garbage collection. Backend migration is
+independent of schema migration: it copies and byte-verifies complete current
+schema-v5 records between IndexedDB and OPFS without republishing them.
 
 ## Portable Archive Contract
 
@@ -740,7 +735,7 @@ The following tests are the executable contracts for this specification:
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
 | Backend selection and migration decisions | [services/storageBackend.test.ts](../services/storageBackend.test.ts) |
-| Immutable generations, v3/v4-to-v5 and legacy migration, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
+| Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and current-format OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
 | ZIP creation, project/source binary round trip, v3-only validation, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
 | Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
 | Project source routing/limits and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts) and [services/projectSourceService.test.ts](../services/projectSourceService.test.ts) |

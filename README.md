@@ -40,6 +40,9 @@ OpenAI Studio is a direct client, not a local-only inference application:
 - A portable ZIP includes conversations, projects, project instructions, original project-source bytes, system instructions, attachments, and locally cached generated files, but never the API key, OpenAI File/vector-store IDs, key fingerprints, cleanup records, or device-local backup preferences. Restoring keeps the current device's key. Archives are not encrypted and can contain sensitive content.
 - OpenAI documents Files and vector stores as retained until deleted, with abuse-monitoring and post-deletion behavior governed by its current [API data-retention policy](https://developers.openai.com/api/docs/guides/your-data#storage-requirements-and-retention-controls-per-endpoint).
 - Browser storage is scoped to the origin. Clearing site data, removing the desktop app's user data, or changing origins can make the workspace unavailable.
+- Local workspace schema v5 and portable ZIP format v3 are the only supported
+  data formats. Earlier local formats are left untouched but cannot be opened,
+  and earlier ZIP versions are rejected.
 
 Do not put a shared or production API key into a publicly deployed build. Each user should enter their own key in Settings.
 

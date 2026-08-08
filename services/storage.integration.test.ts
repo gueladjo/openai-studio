@@ -485,68 +485,31 @@ describe('storage public contracts', () => {
     });
   });
 
-  it('migrates schema-v4 project objects into the strict schema-v5 format', async () => {
+  it('rejects unsupported generation versions without republishing them', async () => {
     await seedWorkspace();
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const projectsText = JSON.stringify([{
-      id: 'project-schema-v4',
-      name: 'Migrated project',
-      icon: 'folder',
-      color: 'blue',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    }]);
-    const projectsReference = {
-      sha256: sha256Text(projectsText),
-      byteLength: encodeUtf8(projectsText).byteLength
-    };
-    await fileSystem.writeText(
-      `data/objects/${projectsReference.sha256}.json`,
-      projectsText
-    );
-
-    let latestRevision = -1;
+    const originalManifests = new Map<string, string>();
     for (const slot of ['a', 'b']) {
       const path = `data/workspace_manifest_${slot}.json`;
-      const manifest = JSON.parse(await fileSystem.readText(path) || '');
+      const original = await fileSystem.readText(path) || '';
+      originalManifests.set(path, original);
+      const manifest = JSON.parse(original);
       manifest.schemaVersion = 4;
-      manifest.projects = projectsReference;
-      latestRevision = Math.max(latestRevision, manifest.revision);
       await fileSystem.writeText(path, JSON.stringify(manifest));
     }
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.resetModules();
     storage = await import('./storage');
     handle = await storage.getStorageHandle();
     await expect(storage.synchronizeWorkspaceRevision(handle))
-      .resolves.toBe(latestRevision + 1);
-
-    const projects = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.PROJECTS
-    );
-    expect(projects).toEqual([{
-      id: 'project-schema-v4',
-      name: 'Migrated project',
-      icon: 'folder',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    }]);
-
-    const manifests = await Promise.all(['a', 'b'].map(async slot => JSON.parse(
-      await fileSystem.readText(`data/workspace_manifest_${slot}.json`) || ''
-    )));
-    const current = manifests.sort((left, right) => right.revision - left.revision)[0];
-    expect(current.schemaVersion).toBe(5);
-    expect(JSON.parse(
-      await fileSystem.readText(`data/objects/${current.projects.sha256}.json`) || ''
-    )[0]).not.toHaveProperty('color');
+      .rejects.toThrow('No complete local workspace generation');
+    for (const [path, original] of originalManifests) {
+      expect(JSON.parse(await fileSystem.readText(path) || '')).toEqual({
+        ...JSON.parse(original),
+        schemaVersion: 4
+      });
+    }
+    warn.mockRestore();
   });
 
   it('persists cache-write token usage on assistant messages', async () => {
@@ -1451,12 +1414,18 @@ describe('storage public contracts', () => {
   });
 });
 
-describe('legacy workspace migration contracts', () => {
-  let fileSystem: MemoryFileSystem;
-  let storage: StorageModule;
-  let handle: FileSystemDirectoryHandle;
+describe('unsupported local workspace contract', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
 
-  const loadElectronWorkspace = async (): Promise<number> => {
+  it('rejects canonical-file data without publishing an empty v5 workspace', async () => {
+    const fileSystem = new MemoryFileSystem();
+    const legacySessions = [createSession('Legacy')];
+    await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
+    const originalSessions = await fileSystem.readText('data/sessions.json');
     const localStorage = new MemoryStorage();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.stubGlobal('window', {
@@ -1474,174 +1443,14 @@ describe('legacy workspace migration contracts', () => {
     vi.stubGlobal('FileReader', MemoryFileReader);
     vi.resetModules();
 
-    storage = await import('./storage');
-    handle = await storage.getStorageHandle();
-    return storage.synchronizeWorkspaceRevision(handle);
-  };
-
-  beforeEach(() => {
-    fileSystem = new MemoryFileSystem();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-    vi.resetModules();
-  });
-
-  it('falls back to a complete legacy backup when the active attachment is missing', async () => {
-    const activeSessions = [createSession('Active', [{
-      id: 'missing-active-attachment',
-      name: 'dx12user.settings',
-      type: 'application/octet-stream',
-      size: 19
-    }])];
-    const backupSessions = [createSession('Backup', [{
-      id: 'backup-attachment',
-      name: 'notes.txt',
-      type: 'text/plain',
-      size: 12
-    }])];
-    await seedLegacyWorkspaceFiles(fileSystem, activeSessions);
-    await fileSystem.writeText(
-      'data/sessions.json.bak',
-      JSON.stringify(backupSessions)
+    const storage = await import('./storage');
+    const handle = await storage.getStorageHandle();
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'unsupported storage format'
     );
-    await fileSystem.writeText(
-      'data/settings.json.bak',
-      JSON.stringify({
-        theme: 'light',
-        apiKey: 'backup-key',
-        lastActiveSessionId: backupSessions[0].id
-      })
-    );
-    await fileSystem.writeText(
-      'data/system_instructions.json.bak',
-      JSON.stringify(instructions)
-    );
-    await fileSystem.writeText(
-      'data/attachments/backup-attachment',
-      'backup bytes'
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    await expect(loadElectronWorkspace()).resolves.toBe(6);
-
-    const sessions = await storage.readSessions(handle);
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].title).toBe('Backup');
-    expect(sessions[0].messages[0].attachments?.[0]).toEqual({
-      name: 'notes.txt',
-      type: 'text/plain',
-      size: 12,
-      localBlob: {
-        sha256: await sha256Blob(new Blob(['backup bytes'])),
-        byteSize: 12,
-        mimeType: 'text/plain'
-      }
-    });
-    expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest_a.json') || ''
-    )).toMatchObject({
-      schemaVersion: 5,
-      revision: 6
-    });
-    expect(warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('retrying with missing legacy attachment recovery'),
-      expect.anything()
-    );
-  });
-
-  it('preserves metadata and removes a dead legacy ID when no complete backup exists', async () => {
-    const legacySessions = [createSession('Legacy', [{
-      id: 'missing-legacy-attachment',
-      name: 'dx12user.settings',
-      type: 'application/octet-stream',
-      size: 19
-    }])];
-    await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    await expect(loadElectronWorkspace()).resolves.toBe(7);
-
-    const sessions = await storage.readSessions(handle);
-    expect(sessions[0].messages[0].attachments?.[0]).toEqual({
-      name: 'dx12user.settings',
-      type: 'application/octet-stream',
-      size: 19
-    });
-    await expect(storage.writeSessions(handle, sessions)).resolves.toBe(8);
-    const { createWorkspaceArchive, inspectWorkspaceArchive } = await import(
-      './workspaceArchive'
-    );
-    const archive = await createWorkspaceArchive(
-      await storage.readWorkspaceSnapshot(handle),
-      { reason: 'manual' }
-    );
-    const inspected = await inspectWorkspaceArchive(archive);
-    expect(
-      inspected.replacement.sessions[0].messages[0].attachments?.[0]
-    ).toEqual({
-      name: 'dx12user.settings',
-      type: 'application/octet-stream',
-      size: 19
-    });
-    expect(JSON.parse(
-      await fileSystem.readText('data/sessions.json') || ''
-    )[0].messages[0].attachments[0]).toMatchObject({
-      id: 'missing-legacy-attachment',
-      name: 'dx12user.settings'
-    });
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('retrying with missing legacy attachment recovery'),
-      expect.anything()
-    );
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Legacy attachment missing-legacy-attachment')
-    );
-  });
-
-  it('repairs dangling legacy selections before publishing a strict generation', async () => {
-    const legacySessions = Array.from(
-      { length: 20 },
-      (_value, index) => createSession(`Legacy ${index}`)
-    );
-    legacySessions[18] = {
-      ...legacySessions[18],
-      config: {
-        ...legacySessions[18].config,
-        systemInstructionId: instructions[0].id
-      }
-    };
-    legacySessions[19] = {
-      ...legacySessions[19],
-      config: {
-        ...legacySessions[19].config,
-        systemInstructionId: 'missing-instruction'
-      }
-    };
-    await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
-    await fileSystem.writeText('data/settings.json', JSON.stringify({
-      theme: 'dark',
-      apiKey: 'legacy-key',
-      lastActiveSessionId: 'missing-session'
-    }));
-
-    await expect(loadElectronWorkspace()).resolves.toBe(7);
-
-    const sessions = await storage.readSessions(handle);
-    const settings = await storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SETTINGS
-    );
-    expect(sessions).toHaveLength(20);
-    expect(sessions[18].config.systemInstructionId).toBe(instructions[0].id);
-    expect(sessions[19].config).not.toHaveProperty('systemInstructionId');
-    expect(settings).toEqual({
-      theme: 'dark',
-      apiKey: 'legacy-key',
-      lastActiveSessionId: legacySessions[0].id
-    });
+    expect(await fileSystem.readText('data/workspace_manifest_a.json')).toBeNull();
+    expect(await fileSystem.readText('data/workspace_manifest_b.json')).toBeNull();
+    expect(await fileSystem.readText('data/sessions.json')).toBe(originalSessions);
   });
 });
 
@@ -1649,44 +1458,77 @@ describe('storage backend migration contracts', () => {
   let database: IDBDatabase;
   let fileSystem: MemoryFileSystem;
   let indexedDb: IDBFactory;
+  let indexedDbRecords: IndexedDbRecord[];
   let localStorage: MemoryStorage;
+  let storedSession: Session;
+  let storedBlobHash: string;
   let storage: StorageModule;
 
   const backendIdentityKey = 'openai-studio-storage-backend-v1';
-  const indexedDbRecords: IndexedDbRecord[] = [
-    {
-      filename: 'sessions.json',
-      data: '[]',
-      updatedAt: 1
-    },
-    {
-      filename: 'settings.json',
-      data: JSON.stringify({
-        theme: 'dark',
-        apiKey: 'local-key'
-      }),
-      updatedAt: 1
-    },
-    {
-      filename: 'system_instructions.json',
-      data: '[]',
-      updatedAt: 1
-    },
-    {
-      filename: 'workspace_revision.json',
-      data: JSON.stringify({ revision: 7 }),
-      updatedAt: 1
-    },
-    {
-      filename: 'attachments/attachment-1',
-      data: new Blob(['attachment bytes'], { type: 'text/plain' }),
-      updatedAt: 1
-    }
-  ];
+
+  const createCurrentIndexedDbRecords = async (): Promise<IndexedDbRecord[]> => {
+    const blob = new Blob(['attachment bytes'], { type: 'text/plain' });
+    storedBlobHash = await sha256Blob(blob);
+    storedSession = createSession('IndexedDB', [{
+      name: 'attachment.txt',
+      type: 'text/plain',
+      size: blob.size,
+      localBlob: {
+        sha256: storedBlobHash,
+        byteSize: blob.size,
+        mimeType: 'text/plain'
+      }
+    }]);
+    const sessionText = JSON.stringify(storedSession);
+    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'local-key' });
+    const instructionsText = JSON.stringify(instructions);
+    const projectsText = '[]';
+    const remoteStateText = JSON.stringify({ indexes: {}, cleanupTombstones: [] });
+    const objectReference = (text: string) => ({
+      sha256: sha256Text(text),
+      byteLength: encodeUtf8(text).byteLength
+    });
+    const manifest = {
+      schemaVersion: 5,
+      revision: 7,
+      createdAt: 1,
+      sessions: [{ id: storedSession.id, ...objectReference(sessionText) }],
+      settings: objectReference(settingsText),
+      instructions: objectReference(instructionsText),
+      projects: objectReference(projectsText),
+      projectRemoteState: objectReference(remoteStateText),
+      blobs: [{ sha256: storedBlobHash, byteLength: blob.size }]
+    };
+
+    return [
+      {
+        filename: 'workspace_manifest_a.json',
+        data: JSON.stringify(manifest),
+        updatedAt: 2
+      },
+      ...[
+        [manifest.sessions[0].sha256, sessionText],
+        [manifest.settings.sha256, settingsText],
+        [manifest.instructions.sha256, instructionsText],
+        [manifest.projects.sha256, projectsText],
+        [manifest.projectRemoteState.sha256, remoteStateText]
+      ].map(([sha256, text]) => ({
+        filename: `objects/${sha256}.json`,
+        data: text as string,
+        updatedAt: 2
+      })),
+      {
+        filename: `blobs/${storedBlobHash}`,
+        data: blob,
+        updatedAt: 2
+      }
+    ];
+  };
 
   beforeEach(async () => {
     fileSystem = new MemoryFileSystem();
     indexedDb = new IDBFactory();
+    indexedDbRecords = await createCurrentIndexedDbRecords();
     localStorage = new MemoryStorage();
     localStorage.setItem(
       backendIdentityKey,
@@ -1718,12 +1560,10 @@ describe('storage backend migration contracts', () => {
     vi.resetModules();
   });
 
-  it('copies and byte-verifies an IndexedDB workspace before switching to OPFS', async () => {
+  it('copies a current workspace and reports its manifest revision before switching', async () => {
     const resolveBackendChoice = vi.fn().mockResolvedValue('migrate-to-opfs');
 
-    const handle = await storage.getStorageHandle({
-      resolveBackendChoice
-    });
+    const handle = await storage.getStorageHandle({ resolveBackendChoice });
     await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(7);
 
     expect(resolveBackendChoice).toHaveBeenCalledWith(
@@ -1746,112 +1586,22 @@ describe('storage backend migration contracts', () => {
       version: 1,
       backend: 'opfs'
     });
-    expect(await fileSystem.readText('data/settings.json')).toBe(
-      indexedDbRecords[1].data
-    );
     expect(JSON.parse(
       await fileSystem.readText('data/workspace_manifest_a.json') || ''
-    )).toMatchObject({
-      schemaVersion: 5,
-      revision: 7
-    });
+    )).toMatchObject({ schemaVersion: 5, revision: 7 });
     await expect(storage.readJsonFile(
       handle,
       storage.STORAGE_FILES.SETTINGS
-    )).resolves.toEqual({
-      theme: 'dark',
-      apiKey: 'local-key'
-    });
-    expect(await fileSystem.readText(
-      'data/attachments/attachment-1'
-    )).toBe('attachment bytes');
-    expect(await readIndexedDbRecord(database, 'settings.json')).toMatchObject({
-      data: indexedDbRecords[1].data
-    });
-  });
-
-  it('copies and byte-verifies a v3 IndexedDB workspace with objects and blobs', async () => {
-    const blobBytes = new Blob(['migrated attachment'], { type: 'text/plain' });
-    const blobSha256 = await sha256Blob(blobBytes);
-    const migratedSession = createSession('Migrated', [{
-      name: 'migrated.txt',
-      type: 'text/plain',
-      size: blobBytes.size,
-      localBlob: {
-        sha256: blobSha256,
-        byteSize: blobBytes.size,
-        mimeType: 'text/plain'
-      }
-    }]);
-    const sessionText = JSON.stringify(migratedSession);
-    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'v3-key' });
-    const instructionsText = JSON.stringify(instructions);
-    const objectReference = (text: string) => ({
-      sha256: sha256Text(text),
-      byteLength: encodeUtf8(text).byteLength
-    });
-    const manifest = {
-      schemaVersion: 3,
-      revision: 7,
-      createdAt: 1,
-      sessions: [{ id: migratedSession.id, ...objectReference(sessionText) }],
-      settings: objectReference(settingsText),
-      instructions: objectReference(instructionsText),
-      blobs: [{ sha256: blobSha256, byteLength: blobBytes.size }]
-    };
-    const v3Records: IndexedDbRecord[] = [
-      {
-        filename: 'workspace_manifest_a.json',
-        data: JSON.stringify(manifest),
-        updatedAt: 2
-      },
-      ...[
-        [manifest.sessions[0].sha256, sessionText],
-        [manifest.settings.sha256, settingsText],
-        [manifest.instructions.sha256, instructionsText]
-      ].map(([sha256, text]) => ({
-        filename: `objects/${sha256}.json`,
-        data: text as string,
-        updatedAt: 2
-      })),
-      {
-        filename: `blobs/${blobSha256}`,
-        data: blobBytes,
-        updatedAt: 2
-      }
-    ];
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(['files'], 'readwrite');
-      const store = transaction.objectStore('files');
-      v3Records.forEach(record => store.put(record));
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-
-    await storage.getStorageHandle({
-      resolveBackendChoice: async () => 'migrate-to-opfs' as const
-    });
-    const handle = await storage.getStorageHandle();
-
-    expect(storage.getActiveStorageBackend()).toBe('opfs');
-    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(8);
-    await expect(storage.readJsonFile(
-      handle,
-      storage.STORAGE_FILES.SESSIONS
-    )).resolves.toEqual([migratedSession]);
-    expect(await fileSystem.readText(`data/blobs/${blobSha256}`)).toBe(
-      'migrated attachment'
-    );
-    expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest_b.json') || ''
-    )).toMatchObject({ schemaVersion: 5, revision: 8 });
+    )).resolves.toEqual({ theme: 'dark', apiKey: 'local-key' });
+    await expect(storage.readSessions(handle)).resolves.toEqual([storedSession]);
+    expect(await fileSystem.readText(`data/blobs/${storedBlobHash}`))
+      .toBe('attachment bytes');
     expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
-      .toMatchObject({ data: JSON.stringify(manifest) });
+      .toMatchObject({ data: indexedDbRecords[0].data });
   });
 
   it('rolls back every attempted OPFS record when migration copying fails', async () => {
-    fileSystem.failNextWrite(/data\/settings\.json$/);
+    fileSystem.failNextWrite(/data\/objects\/[a-f0-9]{64}\.json$/);
 
     await expect(storage.getStorageHandle({
       resolveBackendChoice: async () => 'migrate-to-opfs' as const
@@ -1864,9 +1614,8 @@ describe('storage backend migration contracts', () => {
     });
     const dataDirectory = await fileSystem.getDirectory('data');
     expect(dataDirectory.names()).toEqual([]);
-    expect(await readIndexedDbRecord(database, 'settings.json')).toMatchObject({
-      data: indexedDbRecords[1].data
-    });
+    expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
+      .toMatchObject({ data: indexedDbRecords[0].data });
   });
 
   it('refuses an IndexedDB fallback when Electron cannot use OPFS', async () => {

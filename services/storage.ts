@@ -21,9 +21,7 @@ import {
 import {
   AppSettings,
   BackupSettings,
-  WORKSPACE_SCHEMA_VERSION,
   parseAppSettings,
-  parseJsonText,
   parseProjectRemoteState,
   parseProjects,
   parseStoredSessions,
@@ -40,7 +38,7 @@ import {
   sha256Text
 } from './contentAddressing';
 import {
-  LOCAL_WORKSPACE_SCHEMA_VERSION,
+  parseWorkspaceGenerationManifest,
   WORKSPACE_MANIFEST_SLOTS
 } from './workspaceGeneration';
 import { SerializedOperationQueue } from './serializedOperationQueue';
@@ -61,9 +59,7 @@ export const STORAGE_FILES = {
   SETTINGS: 'settings.json',
   INSTRUCTIONS: 'system_instructions.json',
   PROJECTS: 'projects.json',
-  PROJECT_REMOTE_STATE: 'project_remote_state.json',
-  MANIFEST: 'workspace_manifest.json',
-  REVISION: 'workspace_revision.json'
+  PROJECT_REMOTE_STATE: 'project_remote_state.json'
 } as const;
 
 // Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
@@ -79,7 +75,6 @@ const IDB_STORE = 'files';
 const IDB_VERSION = 1;
 const BACKEND_IDENTITY_KEY = 'openai-studio-storage-backend-v1';
 const BACKEND_IDENTITY_VERSION = 1;
-const BACKUP_SUFFIX = '.bak';
 const ATTACHMENTS_DIRECTORY = 'attachments';
 const ATTACHMENT_KEY_PREFIX = `${ATTACHMENTS_DIRECTORY}/`;
 
@@ -89,13 +84,10 @@ interface StoredFileRecord {
   updatedAt?: number;
 }
 
-interface LegacyWorkspaceRevisionRecord {
-  revision: number;
-}
-
-type LegacyWorkspaceDataKey = 'sessions' | 'settings' | 'instructions';
 type WorkspaceDataKey =
-  | LegacyWorkspaceDataKey
+  | 'sessions'
+  | 'settings'
+  | 'instructions'
   | 'projects'
   | 'projectRemoteState';
 type WorkspaceDataFilename = (
@@ -106,25 +98,6 @@ type WorkspaceDataFilename = (
   typeof STORAGE_FILES.PROJECT_REMOTE_STATE
 );
 
-// The manifest is the single active-snapshot pointer. Workspaces created before
-// schema version 1 continue through the canonical filenames and legacy revision.
-interface WorkspaceManifest {
-  schemaVersion: typeof WORKSPACE_SCHEMA_VERSION;
-  revision: number;
-  files: Record<LegacyWorkspaceDataKey, string>;
-}
-
-interface WorkspaceManifestState {
-  active: WorkspaceManifest;
-  backup: WorkspaceManifest | null;
-}
-
-const DEFAULT_WORKSPACE_FILES: Record<LegacyWorkspaceDataKey, string> = {
-  sessions: STORAGE_FILES.SESSIONS,
-  settings: STORAGE_FILES.SETTINGS,
-  instructions: STORAGE_FILES.INSTRUCTIONS
-};
-
 const WORKSPACE_DATA_KEY_BY_FILENAME: Record<WorkspaceDataFilename, WorkspaceDataKey> = {
   [STORAGE_FILES.SESSIONS]: 'sessions',
   [STORAGE_FILES.SETTINGS]: 'settings',
@@ -132,8 +105,6 @@ const WORKSPACE_DATA_KEY_BY_FILENAME: Record<WorkspaceDataFilename, WorkspaceDat
   [STORAGE_FILES.PROJECTS]: 'projects',
   [STORAGE_FILES.PROJECT_REMOTE_STATE]: 'projectRemoteState'
 };
-
-const SNAPSHOT_FILE_PREFIX = 'workspace_snapshot_';
 
 interface StorageBackendIdentity {
   version: number;
@@ -173,8 +144,6 @@ export class WorkspaceRevisionConflictError extends Error {
   }
 }
 
-const getBackupFilename = (filename: string): string => `${filename}${BACKUP_SUFFIX}`;
-
 const isElectronDesktop = (): boolean => (
   typeof window !== 'undefined' && Boolean((window as any).electronAPI)
 );
@@ -182,14 +151,6 @@ const isElectronDesktop = (): boolean => (
 const isNotFoundError = (error: unknown): boolean => (
   typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotFoundError'
 );
-
-const parseStoredJson = <T>(filename: string, text: string): T => {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error(`Stored file ${filename} is not valid JSON.`);
-  }
-};
 
 const createOpfsProbeName = (): string => {
   const cryptoWithUuid = crypto as Crypto & { randomUUID?: () => string };
@@ -373,22 +334,6 @@ export const getStorageHandle = async (
   const root = await navigator.storage.getDirectory();
   opfsDataDir = await root.getDirectoryHandle('data', { create: true });
   return opfsDataDir;
-};
-
-const readOpfsTextFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string
-): Promise<string | null> => {
-  try {
-    const fileHandle = await dirHandle.getFileHandle(filename);
-    const file = await fileHandle.getFile();
-    return file.text();
-  } catch (e) {
-    if (isNotFoundError(e)) {
-      return null;
-    }
-    throw e;
-  }
 };
 
 const writeOpfsTextFile = async (
@@ -703,15 +648,7 @@ const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
     const record = records.find(candidate => candidate.filename === slot);
     if (!record || typeof record.data !== 'string') return [];
     try {
-      const value = JSON.parse(record.data) as {
-        schemaVersion?: unknown;
-        revision?: unknown;
-      };
-      return value.schemaVersion === 2 &&
-        Number.isSafeInteger(value.revision) &&
-        (value.revision as number) >= 0
-        ? [value.revision as number]
-        : [];
+      return [parseWorkspaceGenerationManifest(record.data, slot).revision];
     } catch {
       return [];
     }
@@ -719,40 +656,7 @@ const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
   if (generationRevisions.length > 0) {
     return Math.max(...generationRevisions);
   }
-
-  const manifestRecord = records.find(record => record.filename === STORAGE_FILES.MANIFEST);
-  if (manifestRecord && typeof manifestRecord.data === 'string') {
-    try {
-      return parseWorkspaceManifestText(
-        STORAGE_FILES.MANIFEST,
-        manifestRecord.data
-      ).revision;
-    } catch {
-      const backupManifest = records.find(
-        record => record.filename === getBackupFilename(STORAGE_FILES.MANIFEST)
-      );
-      if (backupManifest && typeof backupManifest.data === 'string') {
-        try {
-          return parseWorkspaceManifestText(
-            getBackupFilename(STORAGE_FILES.MANIFEST),
-            backupManifest.data
-          ).revision;
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }
-  }
-
-  const revisionRecord = records.find(record => record.filename === STORAGE_FILES.REVISION);
-  if (!revisionRecord || typeof revisionRecord.data !== 'string') return null;
-
-  try {
-    return parseLegacyWorkspaceRevision(revisionRecord.data);
-  } catch {
-    return null;
-  }
+  return null;
 };
 
 const createSnapshot = (
@@ -1075,158 +979,40 @@ async function initializeStorageBackend(
   return selectedBackend;
 }
 
-const isWorkspaceDataPhysicalFilename = (
-  key: LegacyWorkspaceDataKey,
-  filename: unknown
-): filename is string => {
-  if (filename === DEFAULT_WORKSPACE_FILES[key]) return true;
-  if (typeof filename !== 'string' || filename.length > 255) return false;
-  const expectedSuffix = `_${DEFAULT_WORKSPACE_FILES[key]}`;
-  const snapshotId = filename.startsWith(SNAPSHOT_FILE_PREFIX) &&
-    filename.endsWith(expectedSuffix)
-    ? filename.slice(SNAPSHOT_FILE_PREFIX.length, -expectedSuffix.length)
-    : '';
-  return /^[A-Za-z0-9_-]{1,128}$/.test(snapshotId);
-};
+const UNSUPPORTED_LOCAL_WORKSPACE_FILES = new Set([
+  'sessions.json',
+  'settings.json',
+  'system_instructions.json',
+  'workspace_manifest.json',
+  'workspace_revision.json'
+]);
 
-function parseWorkspaceManifestText(
-  filename: string,
-  text: string
-): WorkspaceManifest {
-  return parseJsonText(filename, text, value => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      throw new Error('workspace manifest must be an object.');
-    }
-    const manifest = value as Record<string, unknown>;
-    const keys = Object.keys(manifest);
-    if (
-      keys.some(key => !['schemaVersion', 'revision', 'files'].includes(key))
-    ) {
-      throw new Error('workspace manifest contains unsupported fields.');
-    }
-    if (manifest.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
-      throw new Error(
-        `workspace manifest schemaVersion must be ${WORKSPACE_SCHEMA_VERSION}.`
-      );
-    }
-    if (
-      !Number.isSafeInteger(manifest.revision) ||
-      (manifest.revision as number) < 0
-    ) {
-      throw new Error('workspace manifest revision is invalid.');
-    }
-    if (
-      typeof manifest.files !== 'object' ||
-      manifest.files === null ||
-      Array.isArray(manifest.files)
-    ) {
-      throw new Error('workspace manifest files must be an object.');
-    }
+const isUnsupportedLocalWorkspacePath = (path: string): boolean => (
+  UNSUPPORTED_LOCAL_WORKSPACE_FILES.has(path) ||
+  path.endsWith('.bak') ||
+  path.startsWith('workspace_snapshot_') ||
+  path.startsWith('attachments/')
+);
 
-    const files = manifest.files as Record<string, unknown>;
-    if (
-      Object.keys(files).length !== 3 ||
-      !isWorkspaceDataPhysicalFilename('sessions', files.sessions) ||
-      !isWorkspaceDataPhysicalFilename('settings', files.settings) ||
-      !isWorkspaceDataPhysicalFilename('instructions', files.instructions)
-    ) {
-      throw new Error('workspace manifest file references are invalid.');
-    }
-
-    return {
-      schemaVersion: WORKSPACE_SCHEMA_VERSION,
-      revision: manifest.revision as number,
-      files: {
-        sessions: files.sessions,
-        settings: files.settings,
-        instructions: files.instructions
-      }
-    };
-  });
-}
-
-function parseLegacyWorkspaceRevision(text: string | null): number {
-  if (text === null) return 0;
-
-  const value = parseStoredJson<LegacyWorkspaceRevisionRecord>(
-    STORAGE_FILES.REVISION,
-    text
-  );
-  if (!Number.isSafeInteger(value.revision) || value.revision < 0) {
-    throw new Error(`Stored file ${STORAGE_FILES.REVISION} has an invalid revision.`);
-  }
-  return value.revision;
-}
-
-const createLegacyWorkspaceManifest = (revision: number): WorkspaceManifest => ({
-  schemaVersion: WORKSPACE_SCHEMA_VERSION,
-  revision,
-  files: { ...DEFAULT_WORKSPACE_FILES }
-});
-
-const readBackendTextFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string
-): Promise<string | null> => {
-  const backend = await getStorageBackend();
-  return backend === 'indexeddb'
-    ? idbReadRawFile(filename)
-    : readOpfsTextFile(dirHandle, filename);
-};
-
-const readOptionalWorkspaceManifest = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string
-): Promise<WorkspaceManifest | null> => {
-  const text = await readBackendTextFile(dirHandle, filename);
-  if (text === null) return null;
-  return parseWorkspaceManifestText(filename, text);
-};
-
-const readWorkspaceManifestState = async (
+const hasUnsupportedLocalWorkspace = async (
   dirHandle: FileSystemDirectoryHandle
-): Promise<WorkspaceManifestState> => {
-  const manifestText = await readBackendTextFile(dirHandle, STORAGE_FILES.MANIFEST);
-  if (manifestText !== null) {
-    try {
-      const active = parseWorkspaceManifestText(STORAGE_FILES.MANIFEST, manifestText);
-      let backup: WorkspaceManifest | null = null;
-      try {
-        backup = await readOptionalWorkspaceManifest(
-          dirHandle,
-          getBackupFilename(STORAGE_FILES.MANIFEST)
-        );
-      } catch (error) {
-        console.warn('Ignored an invalid workspace manifest backup.', error);
-      }
-      return { active, backup };
-    } catch (primaryError) {
-      try {
-        const backup = await readOptionalWorkspaceManifest(
-          dirHandle,
-          getBackupFilename(STORAGE_FILES.MANIFEST)
-        );
-        if (backup) {
-          console.warn('Failed to validate the workspace manifest; loaded its backup.');
-          return { active: backup, backup: null };
-        }
-      } catch (backupError) {
-        console.warn('Failed to load the workspace manifest backup.', backupError);
-      }
-      throw primaryError;
-    }
+): Promise<boolean> => {
+  const backend = await getStorageBackend();
+  if (backend === 'indexeddb') {
+    return (await idbListRawFiles('')).some(record => (
+      isUnsupportedLocalWorkspacePath(record.filename)
+    ));
   }
 
-  const legacyRevisionText = await readBackendTextFile(
-    dirHandle,
-    STORAGE_FILES.REVISION
-  );
-  return {
-    active: createLegacyWorkspaceManifest(
-      parseLegacyWorkspaceRevision(legacyRevisionText)
-    ),
-    backup: null
-  };
+  for await (const [name, entry] of (dirHandle as any).entries()) {
+    if (
+      (entry.kind === 'file' && isUnsupportedLocalWorkspacePath(name)) ||
+      (entry.kind === 'directory' && name === ATTACHMENTS_DIRECTORY)
+    ) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const readPersistedWorkspaceRevision = async (
@@ -1315,125 +1101,6 @@ const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, rej
 const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
   type && blob.type !== type ? blob.slice(0, blob.size, type) : blob
 );
-
-const readLegacyWorkspaceData = async (
-  dirHandle: FileSystemDirectoryHandle,
-  migrateSessions: (sessions: Session[]) => Promise<Session[]>
-): Promise<{ revision: number; data: WorkspaceGenerationData }> => {
-  const state = await readWorkspaceManifestState(dirHandle);
-  const candidates = [
-    state.active,
-    ...(state.backup ? [state.backup] : [])
-  ];
-  let firstError: unknown = null;
-
-  for (const manifest of candidates) {
-    try {
-      const sessionText = await readBackendTextFile(
-        dirHandle,
-        manifest.files.sessions
-      );
-      const settingsText = await readBackendTextFile(
-        dirHandle,
-        manifest.files.settings
-      );
-      const instructionsText = await readBackendTextFile(
-        dirHandle,
-        manifest.files.instructions
-      );
-      const parsedSessions = sessionText === null
-        ? []
-        : parseJsonText(manifest.files.sessions, sessionText, parseStoredSessions);
-      const settings = settingsText === null
-        ? { theme: 'dark' as const, apiKey: '' }
-        : parseJsonText(
-            manifest.files.settings,
-            settingsText,
-            value => parseAppSettings(value) as AppSettings
-          );
-      const instructions = instructionsText === null
-        ? []
-        : parseJsonText(
-            manifest.files.instructions,
-            instructionsText,
-            parseSystemInstructions
-          );
-      validateWorkspaceReferences(
-        { sessions: parsedSessions, settings, instructions },
-        { allowDanglingSelections: true }
-      );
-      const sessions = await migrateSessions(parsedSessions);
-      validateWorkspaceReferences(
-        { sessions, settings, instructions },
-        { allowDanglingSelections: true }
-      );
-      return {
-        revision: manifest.revision,
-        data: {
-          sessions,
-          settings,
-          instructions,
-          projects: [],
-          projectRemoteState: { indexes: {}, cleanupTombstones: [] }
-        }
-      };
-    } catch (error) {
-      firstError ||= error;
-    }
-  }
-
-  const backupFiles = {
-    sessions: getBackupFilename(state.active.files.sessions),
-    settings: getBackupFilename(state.active.files.settings),
-    instructions: getBackupFilename(state.active.files.instructions)
-  };
-  try {
-    const [sessionText, settingsText, instructionsText] = await Promise.all([
-      readBackendTextFile(dirHandle, backupFiles.sessions),
-      readBackendTextFile(dirHandle, backupFiles.settings),
-      readBackendTextFile(dirHandle, backupFiles.instructions)
-    ]);
-    if (sessionText === null || settingsText === null || instructionsText === null) {
-      throw firstError || new Error('The legacy workspace is incomplete.');
-    }
-    const parsedSessions = parseJsonText(
-      backupFiles.sessions,
-      sessionText,
-      parseStoredSessions
-    );
-    const settings = parseJsonText(
-      backupFiles.settings,
-      settingsText,
-      value => parseAppSettings(value) as AppSettings
-    );
-    const instructions = parseJsonText(
-      backupFiles.instructions,
-      instructionsText,
-      parseSystemInstructions
-    );
-    validateWorkspaceReferences(
-      { sessions: parsedSessions, settings, instructions },
-      { allowDanglingSelections: true }
-    );
-    const sessions = await migrateSessions(parsedSessions);
-    validateWorkspaceReferences(
-      { sessions, settings, instructions },
-      { allowDanglingSelections: true }
-    );
-    return {
-      revision: Math.max(0, state.active.revision - 1),
-      data: {
-        sessions,
-        settings,
-        instructions,
-        projects: [],
-        projectRemoteState: { indexes: {}, cleanupTombstones: [] }
-      }
-    };
-  } catch {
-    throw firstError || new Error('The legacy workspace could not be validated.');
-  }
-};
 
 const migrateSessionsToContentBlobs = async (
   dirHandle: FileSystemDirectoryHandle,
@@ -1553,28 +1220,6 @@ const ensureWorkspaceGeneration = async (
   const store = createWorkspaceGenerationStore(dirHandle);
   const current = await store.readCurrent();
   if (current) {
-    if (
-      !workspaceStorageReadOnly &&
-      current.manifest.schemaVersion < LOCAL_WORKSPACE_SCHEMA_VERSION
-    ) {
-      const migrated = await store.commit(current.manifest.revision, {
-        sessions: current.sessions,
-        settings: current.settings,
-        instructions: current.instructions,
-        projects: current.projects,
-        projectRemoteState: current.projectRemoteState
-      });
-      const verified = await store.readCurrent();
-      if (
-        !verified ||
-        verified.manifest.revision !== migrated.manifest.revision ||
-        verified.manifest.schemaVersion !== LOCAL_WORKSPACE_SCHEMA_VERSION
-      ) {
-        throw new Error('The local workspace schema migration failed read-back verification.');
-      }
-      workspaceGenerationCache = verified;
-      return verified;
-    }
     workspaceGenerationCache = current;
     return current;
   }
@@ -1583,39 +1228,24 @@ const ensureWorkspaceGeneration = async (
       'No complete local workspace generation could be validated. The active workspace was not changed.'
     );
   }
-
-  let legacy: { revision: number; data: WorkspaceGenerationData };
-  try {
-    legacy = await readLegacyWorkspaceData(
-      dirHandle,
-      sessions => migrateSessionsToContentBlobs(dirHandle, sessions)
-    );
-  } catch (error) {
-    console.warn(
-      'No complete legacy workspace generation was found; retrying with missing legacy attachment recovery.',
-      error
-    );
-    legacy = await readLegacyWorkspaceData(
-      dirHandle,
-      sessions => migrateSessionsToContentBlobs(dirHandle, sessions, true)
-    );
-  }
-  const migrated = await store.commit(
-    null,
-    normalizeWorkspaceGenerationReferences(legacy.data),
-    {
-      revision: legacy.revision,
-      createdAt: Date.now()
-    }
-  );
-  const verified = await store.readCurrent();
-  if (!verified || verified.manifest.revision !== migrated.manifest.revision) {
+  if (await hasUnsupportedLocalWorkspace(dirHandle)) {
     throw new Error(
-      'The migrated workspace generation could not be read back. Legacy data was retained.'
+      'This local workspace uses an unsupported storage format. Its data was not changed.'
     );
   }
-  workspaceGenerationCache = verified;
-  return verified;
+  if (workspaceStorageReadOnly) {
+    throw new Error('An empty workspace must be initialized by the writer tab.');
+  }
+
+  const initialized = await store.commit(null, {
+    sessions: [],
+    settings: { theme: 'dark', apiKey: '' },
+    instructions: [],
+    projects: [],
+    projectRemoteState: { indexes: {}, cleanupTombstones: [] }
+  });
+  workspaceGenerationCache = initialized;
+  return initialized;
 };
 
 // File Operations - automatically uses correct backend
