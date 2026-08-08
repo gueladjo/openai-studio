@@ -923,7 +923,7 @@ describe('storage public contracts', () => {
     expect(document.previewUrl).toBeUndefined();
   });
 
-  it('strips runtime attachment previews before an atomic workspace write', async () => {
+  it('strips transient attachment fields before an atomic workspace write', async () => {
     const imageBlob = await storage.storeAttachmentBlob(
       handle,
       new File(['image bytes'], 'image.png', { type: 'image/png' })
@@ -936,8 +936,9 @@ describe('storage public contracts', () => {
     }])]);
 
     const sessionsWithRuntimeMetadata = await storage.readSessions(handle);
-    expect(sessionsWithRuntimeMetadata[0].messages[0].attachments?.[0].previewUrl)
-      .toMatch(/^blob:/);
+    const runtimeAttachment = sessionsWithRuntimeMetadata[0].messages[0].attachments?.[0];
+    expect(runtimeAttachment?.previewUrl).toMatch(/^blob:/);
+    runtimeAttachment!.content = 'data:image/png;base64,aW1hZ2UgYnl0ZXM=';
 
     await expect(storage.writeWorkspaceState(handle, {
       sessions: sessionsWithRuntimeMetadata
@@ -947,8 +948,12 @@ describe('storage public contracts', () => {
       handle,
       storage.STORAGE_FILES.SESSIONS
     );
-    expect(storedSessions?.[0].messages[0].attachments?.[0].previewUrl)
-      .toBeUndefined();
+    expect(storedSessions?.[0].messages[0].attachments?.[0]).not.toHaveProperty(
+      'previewUrl'
+    );
+    expect(storedSessions?.[0].messages[0].attachments?.[0]).not.toHaveProperty(
+      'content'
+    );
   });
 
   it('keeps blob reference metadata and warns when an image preview is unreadable', async () => {
@@ -1020,7 +1025,7 @@ describe('storage public contracts', () => {
     warn.mockRestore();
   });
 
-  it('does not downgrade a missing v2 blob to metadata-only attachment data', async () => {
+  it('does not downgrade a missing blob to metadata-only attachment data', async () => {
     const localBlob = await storage.storeAttachmentBlob(
       handle,
       new File(['protected bytes'], 'protected.txt', { type: 'text/plain' })
@@ -1214,7 +1219,6 @@ describe('storage public contracts', () => {
     };
     const importedSession = {
       ...createSession('Imported', [{
-        id: 'attachment-imported',
         name: 'imported.txt',
         type: 'text/plain',
         size: importedBlob.size,

@@ -449,10 +449,11 @@ reference existing projects and sources; tombstones may intentionally reference
 already deleted local objects.
 
 Attachments, project sources, and cached generated files use
-`LocalBlobReference` records with a
-lowercase SHA-256 digest, byte size, and optional MIME type. Runtime-only object
-URLs are not persisted. Legacy attachment IDs and data URLs are migration
-inputs, not the current storage representation.
+`LocalBlobReference` records with a lowercase SHA-256 digest, byte size, and
+optional MIME type. Persisted attachment records contain only their name, MIME
+type, optional size, and optional local-blob reference; metadata-only
+attachments remain valid. Transient API-input data URLs and runtime object URLs
+are never persisted and are rejected if found in stored sessions or archives.
 
 `services/workspaceSchema.ts` rejects unknown keys, unsupported enum values,
 invalid or duplicate IDs, oversized collections or text, malformed local-blob
@@ -558,7 +559,7 @@ is exposed.
 Merge preserves every current setting, the active chat selection, current
 chats, and current custom instructions. Identical archived chats are skipped. A
 different chat with the same session ID is retained as a separate copy after
-remapping local session, message, request, pending-request, and attachment IDs.
+remapping local session, message, request, and pending-request IDs.
 External OpenAI response IDs and generated-file IDs are retained.
 
 Referenced instructions are reused when their content is identical and are

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, Project, Session } from '../types';
+import { DEFAULT_CONFIG, FileAttachment, Project, Session } from '../types';
 import {
   parseAppSettings,
   parseJsonText,
@@ -79,7 +79,7 @@ const createBackup = () => ({
 });
 
 const parseWorkspace = (workspace: ReturnType<typeof createBackup>) => {
-  const sessions = parseStoredSessions(workspace.sessions, { backup: true });
+  const sessions = parseStoredSessions(workspace.sessions);
   const settings = parseAppSettings(workspace.settings, { backup: true });
   const instructions = parseSystemInstructions(workspace.instructions);
   validateWorkspaceReferences({ sessions, settings, instructions });
@@ -178,21 +178,31 @@ describe('workspace runtime schema', () => {
     );
   });
 
-  it('rejects dangling workspace references and local-only backup attachments', () => {
+  it('rejects dangling workspace references and transient persisted attachment fields', () => {
     const danglingSession = createBackup();
     danglingSession.settings!.lastActiveSessionId = 'missing-session';
     expect(() => parseWorkspace(danglingSession)).toThrow(
       'must reference a session in the same workspace'
     );
 
-    const localAttachment = createBackup();
-    localAttachment.sessions[0].messages[0].attachments = [{
+    const attachmentWithId = createBackup();
+    attachmentWithId.sessions[0].messages[0].attachments = [{
       id: 'attachment-1',
       name: 'notes.txt',
       type: 'text/plain'
+    } as FileAttachment];
+    expect(() => parseWorkspace(attachmentWithId)).toThrow(
+      'attachments[0].id is not supported'
+    );
+
+    const attachmentWithContent = createBackup();
+    attachmentWithContent.sessions[0].messages[0].attachments = [{
+      name: 'notes.txt',
+      type: 'text/plain',
+      content: 'data:text/plain;base64,eA=='
     }];
-    expect(() => parseWorkspace(localAttachment)).toThrow(
-      'cannot reference a local attachment ID without embedded content'
+    expect(() => parseWorkspace(attachmentWithContent)).toThrow(
+      'attachments[0].content is not supported'
     );
   });
 

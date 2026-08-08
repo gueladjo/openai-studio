@@ -363,7 +363,6 @@ describe('ChatArea failed attachment controls', () => {
       content: 'Analyze this.',
       timestamp: 1,
       attachments: [{
-        id: 'attachment-1',
         name: 'report.pdf',
         type: 'application/pdf',
         size: 1024

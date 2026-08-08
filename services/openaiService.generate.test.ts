@@ -459,13 +459,11 @@ describe('OpenAI request contracts', () => {
       ...userMessage,
       attachments: [
         {
-          id: 'image-1',
           name: 'diagram.png',
           type: 'image/png',
           size: 1
         },
         {
-          id: 'file-1',
           name: 'report.pdf',
           type: 'application/pdf',
           size: 1
@@ -1180,7 +1178,6 @@ describe('generateResponse conversation history', () => {
       {
         ...userMessage,
         attachments: [{
-          id: 'failed-file',
           name: 'failed.pdf',
           type: 'application/pdf',
           size: 1024
@@ -1221,7 +1218,6 @@ describe('generateResponse conversation history', () => {
     const oversizedMessage: Message = {
       ...userMessage,
       attachments: [{
-        id: 'oversized-file',
         name: 'oversized.pdf',
         type: 'application/pdf',
         size: MAX_ATTACHMENT_BYTES
@@ -1245,7 +1241,6 @@ describe('generateResponse conversation history', () => {
       {
         ...userMessage,
         attachments: [{
-          id: 'first-file',
           name: 'first.pdf',
           type: 'application/pdf',
           size: 30 * 1024 * 1024
@@ -1263,7 +1258,6 @@ describe('generateResponse conversation history', () => {
         content: 'Continue.',
         timestamp: 3,
         attachments: [{
-          id: 'second-file',
           name: 'second.pdf',
           type: 'application/pdf',
           size: 20 * 1024 * 1024

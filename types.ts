@@ -162,12 +162,11 @@ export interface Message {
 }
 
 export interface FileAttachment {
-  id?: string;
   name: string;
   type: string;
   size?: number;
   localBlob?: LocalBlobReference;
-  content?: string; // Legacy/backup data URL, or a transient Responses API input
+  content?: string; // Transient Responses API input; never persisted
   previewUrl?: string; // Runtime-only object URL for locally stored images
 }
 

@@ -745,14 +745,6 @@ export const inspectWorkspaceArchive = async (
         message.attachments?.forEach(attachment => {
           if (!attachment.localBlob) {
             if (
-              attachment.id !== undefined ||
-              attachment.content !== undefined
-            ) {
-              throw new BackupArchiveError(
-                `Attachment "${attachment.name}" contains non-portable local data.`
-              );
-            }
-            if (
               attachment.size !== undefined &&
               attachment.size > MAX_ATTACHMENT_BYTES
             ) {

@@ -966,7 +966,7 @@ export const MessageRow = React.memo(({
                           type: file.type
                         }) && (file.previewUrl || file.content) ? (
                           <div
-                            key={file.id || `img-${index}`}
+                            key={`img-${index}`}
                             className="group relative"
                           >
                             <img
@@ -997,7 +997,7 @@ export const MessageRow = React.memo(({
                           name: file.name,
                           type: file.type
                         }) ? (
-                          <div key={file.id || `file-${index}`} className="flex min-w-0 max-w-full items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                          <div key={`file-${index}`} className="flex min-w-0 max-w-full items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
                               <FileText size={12} className="flex-shrink-0" />
                               <span className="min-w-0 truncate">{file.name}</span>
                               {canEditAttachments && message.id && onRemoveFailedAttachment && (

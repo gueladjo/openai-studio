@@ -23,7 +23,6 @@ const MAX_SHORT_TEXT_LENGTH = 4096;
 const MAX_URL_LENGTH = 16 * 1024;
 const MAX_MESSAGE_CONTENT_LENGTH = 16 * 1024 * 1024;
 const MAX_INSTRUCTION_CONTENT_LENGTH = 2 * 1024 * 1024;
-const MAX_ATTACHMENT_CONTENT_LENGTH = 256 * 1024 * 1024;
 const MAX_SESSIONS = 10_000;
 const MAX_MESSAGES_PER_SESSION = 100_000;
 const MAX_OUTPUT_MESSAGES_PER_MESSAGE = 1_000;
@@ -38,7 +37,6 @@ const MAX_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_TIMESTAMP = 8_640_000_000_000_000;
 
 const LOCAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
-const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 const MESSAGE_STATUSES = new Set([
   'streaming',
@@ -152,12 +150,6 @@ const assertLocalId = (value: unknown, path: string): string => {
 const assertOptionalLocalId = (value: unknown, path: string): string | undefined => (
   value === undefined ? undefined : assertLocalId(value, path)
 );
-
-const assertAttachmentId = (value: unknown, path: string): string => {
-  const id = assertString(value, path, 128, false);
-  if (!ATTACHMENT_ID_PATTERN.test(id)) fail(path, 'contains unsupported characters');
-  return id;
-};
 
 const assertFiniteNumber = (
   value: unknown,
@@ -341,18 +333,14 @@ const parseGeneratedFile = (value: unknown, path: string): GeneratedFile => {
 
 const parseAttachment = (
   value: unknown,
-  path: string,
-  backup: boolean
+  path: string
 ): FileAttachment => {
   const attachment = assertRecord(value, path);
   assertOnlyKeys(
     attachment,
-    ['id', 'name', 'type', 'size', 'localBlob', 'content'],
+    ['name', 'type', 'size', 'localBlob'],
     path
   );
-  const id = attachment.id === undefined
-    ? undefined
-    : assertAttachmentId(attachment.id, `${path}.id`);
   assertString(attachment.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH);
   assertString(attachment.type, `${path}.type`, 512);
   if (attachment.size !== undefined) {
@@ -362,15 +350,6 @@ const parseAttachment = (
       0,
       MAX_WORKSPACE_BACKUP_BYTES
     );
-  }
-  const content = assertOptionalString(
-    attachment.content,
-    `${path}.content`,
-    MAX_ATTACHMENT_CONTENT_LENGTH,
-    false
-  );
-  if (content !== undefined && !content.startsWith('data:')) {
-    fail(`${path}.content`, 'must be a data URL');
   }
   if (attachment.localBlob !== undefined) {
     const localBlob = parseLocalBlobReference(
@@ -384,23 +363,13 @@ const parseAttachment = (
       fail(`${path}.size`, 'must match localBlob.byteSize');
     }
   }
-  if (
-    backup &&
-    id !== undefined &&
-    content === undefined &&
-    attachment.localBlob === undefined
-  ) {
-    fail(path, 'cannot reference a local attachment ID without embedded content');
-  }
   return value as FileAttachment;
 };
 
 const parseMessage = (
   value: unknown,
   path: string,
-  backup: boolean,
-  messageIds: Set<string>,
-  attachmentIds: Set<string>
+  messageIds: Set<string>
 ): Message => {
   const message = assertRecord(value, path);
   assertOnlyKeys(
@@ -541,18 +510,7 @@ const parseMessage = (
       `${path}.attachments`,
       MAX_ATTACHMENTS_PER_MESSAGE
     ).forEach((attachment, index) => {
-      const parsedAttachment = parseAttachment(
-        attachment,
-        `${path}.attachments[${index}]`,
-        backup
-      );
-      if (parsedAttachment.id !== undefined) {
-        assertUniqueId(
-          attachmentIds,
-          parsedAttachment.id,
-          `${path}.attachments[${index}].id`
-        );
-      }
+      parseAttachment(attachment, `${path}.attachments[${index}]`);
     });
   }
 
@@ -693,14 +651,10 @@ const parseConfig = (value: unknown, path: string): void => {
   );
 };
 
-export const parseStoredSessions = (
-  value: unknown,
-  options: { backup?: boolean } = {}
-): Session[] => {
+export const parseStoredSessions = (value: unknown): Session[] => {
   const sessions = assertArray(value, 'sessions', MAX_SESSIONS);
   const sessionIds = new Set<string>();
   const messageIds = new Set<string>();
-  const attachmentIds = new Set<string>();
   const pendingRequestIds = new Set<string>();
 
   sessions.forEach((sessionValue, sessionIndex) => {
@@ -727,9 +681,7 @@ export const parseStoredSessions = (
       parseMessage(
         message,
         `${path}.messages[${messageIndex}]`,
-        Boolean(options.backup),
-        messageIds,
-        attachmentIds
+        messageIds
       )
     ));
 

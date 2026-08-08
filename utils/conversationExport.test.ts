@@ -17,7 +17,6 @@ const createSession = (): Session => ({
       content: '',
       timestamp: 1,
       attachments: [{
-        id: 'attachment-1',
         name: 'private.txt',
         type: 'text/plain',
         size: 14,

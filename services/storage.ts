@@ -8,7 +8,6 @@ import {
 } from '../types';
 import {
   getAttachmentMimeType,
-  getDataUrlByteLength,
   validateAttachments
 } from '../utils/attachmentValidation';
 import {
@@ -75,8 +74,6 @@ const IDB_STORE = 'files';
 const IDB_VERSION = 1;
 const BACKEND_IDENTITY_KEY = 'openai-studio-storage-backend-v1';
 const BACKEND_IDENTITY_VERSION = 1;
-const ATTACHMENTS_DIRECTORY = 'attachments';
-const ATTACHMENT_KEY_PREFIX = `${ATTACHMENTS_DIRECTORY}/`;
 
 interface StoredFileRecord {
   filename: string;
@@ -752,7 +749,7 @@ const inspectOpfsBackend = async (supported: boolean): Promise<BackendInspection
 
     if (
       entry.kind !== 'directory' ||
-      ![ATTACHMENTS_DIRECTORY, 'objects', 'blobs', 'recovery'].includes(name)
+      !['objects', 'blobs', 'recovery'].includes(name)
     ) {
       extraDescriptors.push(`${entry.kind}:${name}`);
       continue;
@@ -790,7 +787,7 @@ const rollbackOpfsMigration = async (
   for (const record of [...writtenRecords].reverse()) {
     await deleteOpfsPath(dataDir, record.filename);
   }
-  for (const directory of [ATTACHMENTS_DIRECTORY, 'objects', 'blobs', 'recovery']) {
+  for (const directory of ['objects', 'blobs', 'recovery']) {
     try {
       await dataDir.removeEntry(directory);
     } catch (error) {
@@ -821,12 +818,7 @@ const copyIndexedDbWorkspaceToOpfs = async (
 
       if (record.filename.includes('/')) {
         const [directory, child, ...extra] = record.filename.split('/');
-        const isAllowedDirectory = [
-          ATTACHMENTS_DIRECTORY,
-          'objects',
-          'blobs',
-          'recovery'
-        ].includes(directory);
+        const isAllowedDirectory = ['objects', 'blobs', 'recovery'].includes(directory);
         const expectsText = directory === 'objects';
         if (
           !isAllowedDirectory ||
@@ -1007,7 +999,7 @@ const hasUnsupportedLocalWorkspace = async (
   for await (const [name, entry] of (dirHandle as any).entries()) {
     if (
       (entry.kind === 'file' && isUnsupportedLocalWorkspacePath(name)) ||
-      (entry.kind === 'directory' && name === ATTACHMENTS_DIRECTORY)
+      (entry.kind === 'directory' && name === 'attachments')
     ) {
       return true;
     }
@@ -1036,58 +1028,6 @@ export const getWorkspaceRevision = (): number => {
   return workspaceRevision;
 };
 
-const getOpfsAttachmentsDirectory = async (
-  dirHandle: FileSystemDirectoryHandle,
-  create: boolean
-): Promise<FileSystemDirectoryHandle | null> => {
-  try {
-    return await dirHandle.getDirectoryHandle(ATTACHMENTS_DIRECTORY, { create });
-  } catch (error) {
-    if (!create && isNotFoundError(error)) return null;
-    throw error;
-  }
-};
-
-const isValidAttachmentId = (id: unknown): id is string => (
-  typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)
-);
-
-const getAttachmentStorageKey = (id: string): string => `${ATTACHMENT_KEY_PREFIX}${id}`;
-
-const readAttachmentBlob = async (
-  dirHandle: FileSystemDirectoryHandle,
-  id: string
-): Promise<Blob | null> => {
-  if (!isValidAttachmentId(id)) return null;
-
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    const record = await idbReadRawData(getAttachmentStorageKey(id));
-    return record?.data instanceof Blob ? record.data : null;
-  }
-
-  const attachmentsDir = await getOpfsAttachmentsDirectory(dirHandle, false);
-  if (!attachmentsDir) return null;
-
-  try {
-    const fileHandle = await attachmentsDir.getFileHandle(id);
-    return await fileHandle.getFile();
-  } catch (error) {
-    if (isNotFoundError(error)) return null;
-    throw error;
-  }
-};
-
-const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
-    throw new Error('Attachment content is not a data URL.');
-  }
-
-  const response = await fetch(dataUrl);
-  if (!response.ok) throw new Error('Attachment data URL could not be decoded.');
-  return response.blob();
-};
-
 const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.onloadend = () => {
@@ -1101,82 +1041,6 @@ const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, rej
 const applyAttachmentMimeType = (blob: Blob, type: string): Blob => (
   type && blob.type !== type ? blob.slice(0, blob.size, type) : blob
 );
-
-const migrateSessionsToContentBlobs = async (
-  dirHandle: FileSystemDirectoryHandle,
-  sessions: Session[],
-  recoverMissingLegacyAttachments = false
-): Promise<Session[]> => {
-  const store = createWorkspaceGenerationStore(dirHandle);
-
-  return mapSessionAttachments(sessions, async attachment => {
-    const name = typeof attachment.name === 'string' ? attachment.name : 'Attachment';
-    const type = typeof attachment.type === 'string'
-      ? attachment.type
-      : 'application/octet-stream';
-    const metadataOnlyAttachment: FileAttachment = {
-      name,
-      type,
-      ...(attachment.size !== undefined ? { size: attachment.size } : {})
-    };
-    const hasStorageLocator = Boolean(
-      attachment.localBlob ||
-      attachment.content ||
-      isValidAttachmentId(attachment.id)
-    );
-    if (!hasStorageLocator) return metadataOnlyAttachment;
-
-    let blob: Blob | null = null;
-
-    if (attachment.localBlob) {
-      blob = await store.readBlob(attachment.localBlob);
-    } else if (attachment.content) {
-      blob = await dataUrlToBlob(attachment.content);
-    } else if (
-      typeof attachment.id === 'string' &&
-      /^[a-f0-9]{64}$/.test(attachment.id) &&
-      Number.isSafeInteger(attachment.size) &&
-      (attachment.size as number) >= 0
-    ) {
-      blob = await store.readBlob({
-        sha256: attachment.id,
-        byteSize: attachment.size as number,
-        ...(type ? { mimeType: type } : {})
-      });
-      if (!blob) {
-        blob = await readAttachmentBlob(dirHandle, attachment.id);
-      }
-    } else if (isValidAttachmentId(attachment.id)) {
-      blob = await readAttachmentBlob(dirHandle, attachment.id);
-    }
-    if (!blob) {
-      if (
-        recoverMissingLegacyAttachments &&
-        !attachment.localBlob &&
-        !attachment.content &&
-        isValidAttachmentId(attachment.id)
-      ) {
-        console.warn(
-          `Legacy attachment ${attachment.id} (${name}) is missing; preserved its metadata without the unusable local ID.`
-        );
-        return metadataOnlyAttachment;
-      }
-      throw new Error(`Attachment "${name}" is missing from local storage.`);
-    }
-    validateAttachments([{
-      name,
-      type: type || blob.type,
-      size: blob.size
-    }]);
-    const localBlob = await store.storeBlob(blob, type || blob.type);
-    return {
-      name,
-      type: type || blob.type || 'application/octet-stream',
-      size: blob.size,
-      localBlob
-    };
-  });
-};
 
 const normalizeWorkspaceGenerationReferences = (
   data: WorkspaceGenerationData
@@ -1296,12 +1160,7 @@ const writeJsonFileNow = async (
   }
 
   const nextData = normalizeWorkspaceGenerationReferences({
-    sessions: key === 'sessions'
-      ? await migrateSessionsToContentBlobs(
-          dirHandle,
-          parsedData as Session[]
-        )
-      : current.sessions,
+    sessions: key === 'sessions' ? parsedData as Session[] : current.sessions,
     settings: key === 'settings'
       ? parsedData as AppSettings
       : current.settings,
@@ -1407,14 +1266,7 @@ const toStoredSessions = (sessions: Session[]): Session[] => sessions.map(sessio
               ...(attachment.size !== undefined ? { size: attachment.size } : {})
             };
 
-            if (attachment.localBlob) {
-              storedAttachment.localBlob = attachment.localBlob;
-            } else if (isValidAttachmentId(attachment.id)) {
-              storedAttachment.id = attachment.id;
-            } else if (attachment.content) {
-              // Preserve an unreadable legacy attachment until it can be migrated.
-              storedAttachment.content = attachment.content;
-            }
+            if (attachment.localBlob) storedAttachment.localBlob = attachment.localBlob;
 
             return storedAttachment;
           })
@@ -1458,45 +1310,8 @@ const addRuntimeAttachmentMetadata = async (
     }
   }
 
-  if (!isValidAttachmentId(attachment.id)) {
-    if (!attachment.content) return attachment;
-
-    try {
-      return {
-        ...attachment,
-        size: getDataUrlByteLength(attachment.content)
-      };
-    } catch {
-      return attachment;
-    }
-  }
-
-  try {
-    const blob = await readAttachmentBlob(dirHandle, attachment.id);
-    if (!blob) {
-      console.warn(`Stored attachment ${attachment.id} (${attachment.name}) is missing.`);
-      return attachment;
-    }
-
-    return {
-      ...attachment,
-      size: blob.size,
-      ...(attachment.type.startsWith('image/')
-        ? { previewUrl: URL.createObjectURL(applyAttachmentMimeType(blob, attachment.type)) }
-        : {})
-    };
-  } catch (error) {
-    console.warn(`Failed to load attachment preview ${attachment.name}`, error);
-    return attachment;
-  }
+  return attachment;
 });
-
-export const storeAttachment = async (
-  dirHandle: FileSystemDirectoryHandle,
-  file: File
-): Promise<string> => {
-  return (await storeAttachmentBlob(dirHandle, file)).sha256;
-};
 
 export const storeAttachmentBlob = async (
   dirHandle: FileSystemDirectoryHandle,
@@ -1528,20 +1343,7 @@ export const getAttachmentDataUrl = async (
     }]);
     return blobToDataUrl(applyAttachmentMimeType(blob, getAttachmentMimeType(attachment)));
   }
-  if (!isValidAttachmentId(attachment.id)) return undefined;
-
-  const blob = await readAttachmentBlob(dirHandle, attachment.id);
-  if (!blob) {
-    throw new Error(`Attachment "${attachment.name}" is missing from local storage.`);
-  }
-
-  validateAttachments([{
-    name: attachment.name,
-    type: attachment.type,
-    size: blob.size
-  }]);
-  const mimeType = getAttachmentMimeType(attachment);
-  return blobToDataUrl(applyAttachmentMimeType(blob, mimeType));
+  return undefined;
 };
 
 export const writeSessions = async (
@@ -1589,10 +1391,7 @@ const writeWorkspaceStateNow = async (
     : parseProjects(changes.projects);
   const sessions = changes.sessions === undefined
     ? current.sessions
-    : await migrateSessionsToContentBlobs(
-        dirHandle,
-        parseStoredSessions(toStoredSessions(changes.sessions))
-      );
+    : parseStoredSessions(toStoredSessions(changes.sessions));
   const projectRemoteState = changes.projectRemoteState === undefined
     ? current.projectRemoteState
     : parseProjectRemoteState(changes.projectRemoteState, projects);
@@ -1804,10 +1603,7 @@ const replaceWorkspaceSnapshotNow = async (
       throw new Error(`Restore blob ${hash} failed its SHA-256 check.`);
     }
   }
-  const sessions = await migrateSessionsToContentBlobs(
-    dirHandle,
-    replacement.sessions
-  );
+  const sessions = parseStoredSessions(toStoredSessions(replacement.sessions));
   const restoredSettings: AppSettings = replacement.settings
     ? {
         theme: replacement.settings.theme,

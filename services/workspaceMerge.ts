@@ -1,5 +1,4 @@
 import {
-  FileAttachment,
   Message,
   Project,
   Session,
@@ -135,7 +134,6 @@ const createUniqueId = (
 const collectIds = (sessions: Session[]) => {
   const sessionIds = new Set<string>();
   const messageIds = new Set<string>();
-  const attachmentIds = new Set<string>();
   const requestIds = new Set<string>();
 
   sessions.forEach(session => {
@@ -143,13 +141,10 @@ const collectIds = (sessions: Session[]) => {
     session.messages.forEach(message => {
       if (message.id) messageIds.add(message.id);
       if (message.requestId) requestIds.add(message.requestId);
-      message.attachments?.forEach(attachment => {
-        if (attachment.id) attachmentIds.add(attachment.id);
-      });
     });
     if (session.pendingRequest) requestIds.add(session.pendingRequest.id);
   });
-  return { sessionIds, messageIds, attachmentIds, requestIds };
+  return { sessionIds, messageIds, requestIds };
 };
 
 const remapOptionalId = (
@@ -170,19 +165,6 @@ const remapOptionalId = (
   return mapped;
 };
 
-const remapAttachment = (
-  attachment: FileAttachment,
-  usedIds: Set<string>,
-  mapping: Map<string, string>,
-  force: boolean
-): FileAttachment => {
-  const id = remapOptionalId(attachment.id, usedIds, mapping, force, 128);
-  return {
-    ...attachment,
-    ...(id === undefined ? {} : { id })
-  };
-};
-
 const remapSession = (
   session: Session,
   instructionId: string | undefined,
@@ -197,7 +179,6 @@ const remapSession = (
   usedIds.sessionIds.add(sessionId);
 
   const messageIdMap = new Map<string, string>();
-  const attachmentIdMap = new Map<string, string>();
   const requestIdMap = new Map<string, string>();
   const messages = session.messages.map((message): Message => {
     const id = remapOptionalId(
@@ -216,18 +197,6 @@ const remapSession = (
       ...message,
       ...(id === undefined ? {} : { id }),
       ...(requestId === undefined ? {} : { requestId }),
-      ...(message.attachments
-        ? {
-            attachments: message.attachments.map(attachment => (
-              remapAttachment(
-                attachment,
-                usedIds.attachmentIds,
-                attachmentIdMap,
-                force
-              )
-            ))
-          }
-        : {}),
       ...(message.sources
         ? {
             sources: message.sources.map(source => (

@@ -315,26 +315,32 @@ describe('portable workspace archive', () => {
     expect(inspected.replacement.blobs.size).toBe(2);
   });
 
-  it('rejects attachment-local IDs and inline content from portable archives', async () => {
-    const nonPortableAttachments: FileAttachment[] = [{
-      id: 'legacy-attachment',
-      name: 'legacy.txt',
-      type: 'text/plain',
-      size: 1
+  it('rejects attachment IDs and inline content from portable archives', async () => {
+    const unsupportedAttachments = [{
+      field: 'id',
+      attachment: {
+        id: 'legacy-attachment',
+        name: 'legacy.txt',
+        type: 'text/plain',
+        size: 1
+      } as FileAttachment
     }, {
-      name: 'embedded.txt',
-      type: 'text/plain',
-      size: 1,
-      content: 'data:text/plain;base64,eA=='
+      field: 'content',
+      attachment: {
+        name: 'embedded.txt',
+        type: 'text/plain',
+        size: 1,
+        content: 'data:text/plain;base64,eA=='
+      }
     }];
 
-    for (const attachment of nonPortableAttachments) {
+    for (const { attachment, field } of unsupportedAttachments) {
       const archive = await createWorkspaceArchive(
         appendAttachment(attachment),
         { reason: 'manual' }
       );
       await expect(inspectWorkspaceArchive(archive)).rejects.toThrow(
-        `Attachment "${attachment.name}" contains non-portable local data.`
+        `.attachments[1].${field} is not supported`
       );
     }
   });

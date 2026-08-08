@@ -36,7 +36,6 @@ const createSession = (
     ...(options.blob
       ? {
           attachments: [{
-            id: `attachment-${id}`,
             name: `${id}.txt`,
             type: 'text/plain',
             size: options.blob.byteSize,
@@ -140,7 +139,6 @@ describe('workspace merge planning', () => {
         requestId: 'shared-request',
         timestamp: 6,
         attachments: [{
-          id: 'shared-attachment',
           name: 'local.txt',
           type: 'text/plain'
         }]
@@ -195,8 +193,7 @@ describe('workspace merge planning', () => {
       'shared-user'
     );
     expect(importedCopy.messages[0].requestId).not.toBe('shared-request');
-    expect(importedCopy.messages[0].attachments?.[0].id)
-      .not.toBe('shared-attachment');
+    expect(importedCopy.messages[0].attachments?.[0].name).toBe('local.txt');
     expect(importedCopy.pendingRequest?.id)
       .toBe(importedCopy.messages[0].requestId);
     expect(importedCopy.pendingRequest?.userMessageId)
@@ -239,21 +236,10 @@ describe('workspace merge planning', () => {
     expect(plan.replacement.instructions).toHaveLength(1);
   });
 
-  it('remaps local-ID collisions even when chat IDs are disjoint', () => {
+  it('remaps message-ID collisions even when chat IDs are disjoint', () => {
     const local = createSession('local', 1);
     const imported = createSession('imported', 2);
     imported.messages[0].id = local.messages[0].id;
-    imported.messages[0].attachments = [{
-      id: 'attachment-local',
-      name: 'imported.txt',
-      type: 'text/plain'
-    }];
-    local.messages[0].attachments = [{
-      id: 'attachment-local',
-      name: 'local.txt',
-      type: 'text/plain'
-    }];
-
     const plan = createWorkspaceMergePlan(
       currentWorkspace([local]),
       importedWorkspace([imported])
@@ -262,8 +248,6 @@ describe('workspace merge planning', () => {
 
     expect(importedCopy.id).toBe('imported');
     expect(importedCopy.messages[0].id).not.toBe(local.messages[0].id);
-    expect(importedCopy.messages[0].attachments?.[0].id)
-      .not.toBe('attachment-local');
   });
 
   it('reuses identical instructions and remaps conflicting instruction IDs', () => {
