@@ -601,10 +601,13 @@ modified.
 ## Automatic Backup Contract
 
 Automatic backup is opt-in, writer-tab-only, and changed-revision-only. A
-scheduled backup runs at the next eligible foreground opportunity at most once
-per local calendar day. Eligibility is re-evaluated after startup, resume,
-writer acquisition, and saves. Responses, generated-file caching, archive work,
-and destructive operations postpone it.
+scheduled backup runs after a 30-second startup grace period at the next
+eligible foreground opportunity, at most once per local calendar day. The
+workspace becomes interactive before destination discovery, managed-file
+listing, or scheduled archive work completes. Eligibility is re-evaluated after
+startup, resume, writer acquisition, and saves. Responses, generated-file
+caching, archive work, and destructive operations postpone it. Electron close
+bypasses the grace period and still waits for a due backup.
 
 File System Access destinations persist a directory handle separately from the
 workspace. A `prompt` permission state requires an explicit Reconnect action.
@@ -615,11 +618,19 @@ Electron keeps absolute destination paths in the main process. Renderer IPC
 accepts only validated managed filenames. Writes use a unique managed partial,
 sequential backpressured chunks, expected SHA-256 and size verification,
 `fsync`, atomic rename, and final read-back. A failed write removes its partial
-without touching unrelated files.
+without touching unrelated files. Destination configuration is restored before
+window creation, but the potentially slow selected-folder scan for stale
+partials runs after the window is created.
 
-After a new archive validates from the destination, rotation retains the three
-newest valid managed backups. Corrupt managed files are not counted and are
-removed only after a replacement verifies. Unrelated files are never rotated.
+Archive contents are semantically validated once before publication. The
+destination then verifies that its stored size and SHA-256 match those validated
+bytes; that proof is reused during rotation instead of rereading the new archive.
+Rotation retains the three newest valid managed backups. Corrupt managed files
+are not counted and are removed only after a replacement verifies. Rotation
+results directly populate scheduler state instead of triggering another full
+refresh. Startup lists managed-file metadata without reading archive contents;
+full validation occurs when backup details open, during explicit refreshes, and
+when rotation must classify existing files. Unrelated files are never rotated.
 Scheduled failures retry after one minute, five minutes, and thirty minutes.
 
 Electron close waits for a due backup. A save or due-backup failure leaves the

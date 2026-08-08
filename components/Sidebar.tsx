@@ -56,6 +56,7 @@ interface SidebarProps {
   onToggleAutomaticBackups: (enabled: boolean) => void;
   onChooseBackupFolder: () => void;
   onReconnectBackupFolder: () => void;
+  onRefreshManagedBackups: () => void;
   onBackUpNow: () => void;
   onRestoreManagedBackup: (filename: string) => void;
   onExportManagedBackup: (filename: string) => void;
@@ -94,6 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleAutomaticBackups,
   onChooseBackupFolder,
   onReconnectBackupFolder,
+  onRefreshManagedBackups,
   onBackUpNow,
   onRestoreManagedBackup,
   onExportManagedBackup,
@@ -115,6 +117,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const mergeFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setApiKeyDraft(apiKey), [apiKey]);
+
+  const toggleAutomaticBackupDetails = () => {
+    const opening = !isAutomaticBackupOpen;
+    setIsAutomaticBackupOpen(opening);
+    if (opening) onRefreshManagedBackups();
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     restoreFocusAfterFileDialog();
@@ -426,7 +434,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <div className="space-y-2 rounded-md border border-gray-200 p-2 dark:border-gray-700">
                         <button
                           type="button"
-                          onClick={() => setIsAutomaticBackupOpen(!isAutomaticBackupOpen)}
+                          onClick={toggleAutomaticBackupDetails}
                           aria-expanded={isAutomaticBackupOpen}
                           className="flex w-full items-center justify-between gap-2 text-left group"
                         >
@@ -508,8 +516,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                       ? new Date(backup.preview.createdAt).toLocaleString()
                                       : backup.filename}
                                   </span>
-                                  <span className={backup.integrity === 'valid' ? 'text-green-600' : 'text-red-500'}>
-                                    {backup.integrity}
+                                  <span className={
+                                    backup.integrity === 'valid'
+                                      ? 'text-green-600'
+                                      : backup.integrity === 'corrupt'
+                                        ? 'text-red-500'
+                                        : 'text-gray-500 dark:text-gray-400'
+                                  }>
+                                    {backup.integrity === 'unverified'
+                                      ? 'not verified'
+                                      : backup.integrity}
                                   </span>
                                 </div>
                                 <div className="mt-1 text-gray-500">

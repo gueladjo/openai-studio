@@ -352,11 +352,16 @@ if (!gotSingleInstanceLock) {
     }
 
     try {
-      await backupFileManager.initialize(app.getPath('userData'));
+      await backupFileManager.initialize(app.getPath('userData'), {
+        cleanupStalePartials: false
+      });
     } catch (error) {
       console.error('Failed to initialize the backup destination.', error);
     }
     createWindow();
+    void backupFileManager.cleanupStalePartials().catch(error => {
+      console.error('Failed to clean stale backup partials.', error);
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

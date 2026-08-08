@@ -256,10 +256,11 @@ file/source data.
 Compatible Chromium browsers and Electron can opt into automatic backups by choosing a folder. Automatic backups:
 
 - are disabled by default;
-- run at the next eligible foreground opportunity, at most once per local day;
+- run after a brief startup grace period at the next eligible foreground opportunity, at most once per local day;
 - skip unchanged persisted revisions and run only in the writer tab;
 - pause for responses, generated-file caching, destructive operations, or renewed folder permission;
 - verify a newly written archive before rotation and retain the three newest valid managed archives;
+- do not delay the workspace becoming interactive while destination files are listed or validated;
 - never delete unrelated files in the selected folder.
 
 Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.

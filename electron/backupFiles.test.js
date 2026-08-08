@@ -69,4 +69,18 @@ describe('Electron managed backup files', () => {
     )).rejects.toThrow('failed size or SHA-256');
     expect(await fs.readdir(destination)).toEqual(['unrelated.txt']);
   });
+
+  it('can restore destination configuration without blocking on partial cleanup', async () => {
+    const partial = '.openai-studio-backup-partial-stale-startup';
+    await fs.writeFile(path.join(destination, partial), 'partial');
+    const reloaded = new BackupFileManager();
+
+    await reloaded.initialize(userData, { cleanupStalePartials: false });
+
+    expect(reloaded.getStatus()).toBe('connected');
+    expect(await fs.readdir(destination)).toContain(partial);
+
+    await reloaded.cleanupStalePartials();
+    expect(await fs.readdir(destination)).not.toContain(partial);
+  });
 });

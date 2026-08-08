@@ -22,6 +22,7 @@ export interface ManagedBackupFile {
 export interface BackupDestination {
   readonly kind: 'electron' | 'file-system-access';
   getStatus(): Promise<BackupDestinationStatus>;
+  // Resolves only after the published bytes match the expected size and hash.
   writeAtomic(
     filename: string,
     archive: Blob,

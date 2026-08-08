@@ -1029,35 +1029,37 @@ function App() {
         if (roleAfterLoad === 'writer') {
           coordinator.publishUpdate(getWorkspaceRevision());
         }
-        try {
-          const backupDestination = await loadBackupDestination();
-          const backupScheduler = new BackupScheduler({
-            dirHandle: handle,
-            destination: backupDestination,
-            supported: supportsAutomaticBackupDestination(),
-            canRun: () => (
-              workspaceCanWriteRef.current &&
-              !workspaceMutationBlockedRef.current &&
-              activeRequestsRef.current.size === 0 &&
-              operationRegistryRef.current.getOperations().length === 0
-            ),
-            onStateChange: setBackupState
-          });
-          backupSchedulerRef.current?.dispose();
-          backupSchedulerRef.current = backupScheduler;
-          await backupScheduler.initialize();
-        } catch (backupError) {
-          console.error('Backup scheduling could not be initialized.', backupError);
-          const message = getErrorMessage(backupError);
-          setBackupActionError(message);
-          if (!backupSchedulerRef.current) {
-            setBackupState({
-              ...DEFAULT_BACKUP_STATE,
+        void (async () => {
+          try {
+            const backupDestination = await loadBackupDestination();
+            const backupScheduler = new BackupScheduler({
+              dirHandle: handle,
+              destination: backupDestination,
               supported: supportsAutomaticBackupDestination(),
-              error: message
+              canRun: () => (
+                workspaceCanWriteRef.current &&
+                !workspaceMutationBlockedRef.current &&
+                activeRequestsRef.current.size === 0 &&
+                operationRegistryRef.current.getOperations().length === 0
+              ),
+              onStateChange: setBackupState
             });
+            backupSchedulerRef.current?.dispose();
+            backupSchedulerRef.current = backupScheduler;
+            await backupScheduler.initialize();
+          } catch (backupError) {
+            console.error('Backup scheduling could not be initialized.', backupError);
+            const message = getErrorMessage(backupError);
+            setBackupActionError(message);
+            if (!backupSchedulerRef.current) {
+              setBackupState({
+                ...DEFAULT_BACKUP_STATE,
+                supported: supportsAutomaticBackupDestination(),
+                error: message
+              });
+            }
           }
-        }
+        })();
       } catch (e) {
         console.error("Critical: Failed to initialize storage", e);
         dirHandleRef.current = null;
@@ -3214,6 +3216,15 @@ function App() {
     }
   };
 
+  const handleRefreshManagedBackups = async () => {
+    try {
+      await backupSchedulerRef.current?.refresh();
+      setBackupActionError(null);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
   const handleBackUpNow = async () => {
     try {
       await flushPendingSaves();
@@ -3426,6 +3437,7 @@ function App() {
               onToggleAutomaticBackups={handleToggleAutomaticBackups}
               onChooseBackupFolder={handleChooseBackupFolder}
               onReconnectBackupFolder={handleReconnectBackupFolder}
+              onRefreshManagedBackups={handleRefreshManagedBackups}
               onBackUpNow={handleBackUpNow}
               onRestoreManagedBackup={handleManagedBackupRestore}
               onExportManagedBackup={handleManagedBackupExport}
@@ -3505,6 +3517,7 @@ function App() {
                     onToggleAutomaticBackups={handleToggleAutomaticBackups}
                     onChooseBackupFolder={handleChooseBackupFolder}
                     onReconnectBackupFolder={handleReconnectBackupFolder}
+                    onRefreshManagedBackups={handleRefreshManagedBackups}
                     onBackUpNow={handleBackUpNow}
                     onRestoreManagedBackup={handleManagedBackupRestore}
                     onExportManagedBackup={handleManagedBackupExport}

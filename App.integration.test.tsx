@@ -540,6 +540,36 @@ describe('App workspace and request lifecycle', () => {
     return call[4] as GenerateOptions;
   };
 
+  it('shows the loaded workspace without waiting for backup initialization', async () => {
+    const backupStatus = createDeferred<
+      'connected' | 'permission-required' | 'unavailable'
+    >();
+    window.electronAPI = {
+      minimize: vi.fn(),
+      maximize: vi.fn(),
+      close: vi.fn(),
+      isMaximized: vi.fn().mockResolvedValue(false),
+      onMaximizedChange: vi.fn(),
+      writeClipboardText: vi.fn().mockResolvedValue(undefined),
+      onCloseRequested: vi.fn(() => vi.fn()),
+      confirmClose: vi.fn(),
+      cancelClose: vi.fn(),
+      getBackupDestinationStatus: vi.fn(() => backupStatus.promise)
+    };
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(container.textContent).not.toContain('Loading Workspace...');
+    expect(mocks.sidebarProps).not.toBeNull();
+
+    await act(async () => {
+      backupStatus.resolve('unavailable');
+      await backupStatus.promise;
+    });
+    await flushMicrotasks();
+  });
+
   it('does not write defaults when workspace loading fails', async () => {
     mocks.readSessions.mockRejectedValueOnce(
       new Error('Stored sessions could not be validated.')

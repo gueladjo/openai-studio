@@ -44,7 +44,7 @@ export class BackupFileManager {
     this.writes = new Map();
   }
 
-  async initialize(userDataPath) {
+  async initialize(userDataPath, options = {}) {
     if (typeof userDataPath !== 'string' || !path.isAbsolute(userDataPath)) {
       throw new Error('Electron user-data path is invalid.');
     }
@@ -56,7 +56,9 @@ export class BackupFileManager {
       const value = JSON.parse(await fs.readFile(this.configurationPath, 'utf8'));
       if (typeof value.path === 'string' && path.isAbsolute(value.path)) {
         this.destinationPath = value.path;
-        await this.cleanupStalePartials();
+        if (options.cleanupStalePartials !== false) {
+          await this.cleanupStalePartials();
+        }
       }
     } catch (error) {
       if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;

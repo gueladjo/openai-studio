@@ -36,7 +36,9 @@ describe('Sidebar workspace merge controls', () => {
     sessions = [],
     projects = [],
     onApiKeySave,
-    onNewSession = vi.fn()
+    onNewSession = vi.fn(),
+    onRefreshManagedBackups = vi.fn(),
+    automaticBackupsSupported = false
   }: {
     onMergeData?: (file: File) => void;
     mergeDisabled?: boolean;
@@ -45,6 +47,8 @@ describe('Sidebar workspace merge controls', () => {
     projects?: Project[];
     onApiKeySave?: (key: string) => void | Promise<void>;
     onNewSession?: (projectId?: string) => void;
+    onRefreshManagedBackups?: () => void;
+    automaticBackupsSupported?: boolean;
   } = {}) => {
     await act(async () => {
       root.render(
@@ -65,7 +69,7 @@ describe('Sidebar workspace merge controls', () => {
           onMergeData={onMergeData}
           mergeDisabled={mergeDisabled}
           backupState={{
-            supported: false,
+            supported: automaticBackupsSupported,
             enabled: false,
             destinationStatus: 'unavailable',
             running: false,
@@ -74,6 +78,7 @@ describe('Sidebar workspace merge controls', () => {
           onToggleAutomaticBackups={() => undefined}
           onChooseBackupFolder={() => undefined}
           onReconnectBackupFolder={() => undefined}
+          onRefreshManagedBackups={onRefreshManagedBackups}
           onBackUpNow={() => undefined}
           onRestoreManagedBackup={() => undefined}
           onExportManagedBackup={() => undefined}
@@ -98,6 +103,21 @@ describe('Sidebar workspace merge controls', () => {
     const settingsLabel = Array.from(container.querySelectorAll('span'))
       .find(element => element.textContent === 'Settings');
     expect(settingsLabel?.classList).toContain('text-base');
+  });
+
+  it('refreshes managed backup validation when backup details open', async () => {
+    const onRefreshManagedBackups = vi.fn();
+    await renderSidebar({
+      automaticBackupsSupported: true,
+      onRefreshManagedBackups
+    });
+    const details = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent?.includes('Automatic daily backups')
+    );
+
+    await act(async () => details?.click());
+
+    expect(onRefreshManagedBackups).toHaveBeenCalledTimes(1);
   });
 
   it('uses a separate ZIP input and forwards the selected file immediately', async () => {

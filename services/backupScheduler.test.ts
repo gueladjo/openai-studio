@@ -38,7 +38,10 @@ vi.mock('./storage', () => ({
   readWorkspaceSnapshot: () => Promise.resolve(snapshot())
 }));
 
-import { BackupScheduler } from './backupScheduler';
+import {
+  BackupScheduler,
+  STARTUP_BACKUP_DELAY_MS
+} from './backupScheduler';
 
 class MemoryLocalStorage {
   private values = new Map<string, string>();
@@ -55,6 +58,7 @@ class MemoryBackupDestination implements BackupDestination {
   readonly files = new Map<string, Blob>();
   private modified = 1;
   failWrites = false;
+  reads = 0;
 
   async getStatus() {
     return 'connected' as const;
@@ -75,6 +79,7 @@ class MemoryBackupDestination implements BackupDestination {
   }
 
   async read(filename: string): Promise<Blob> {
+    this.reads += 1;
     const file = this.files.get(filename);
     if (!file) throw new Error('Missing backup.');
     return file;
@@ -115,6 +120,11 @@ describe('backup scheduler', () => {
     expect(destination.files.size).toBe(0);
 
     await scheduler.setEnabled(true);
+    expect(destination.files.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(STARTUP_BACKUP_DELAY_MS - 1);
+    expect(destination.files.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await scheduler.evaluate();
     expect(destination.files.size).toBe(1);
     await scheduler.evaluate();
     expect(destination.files.size).toBe(1);
@@ -126,6 +136,35 @@ describe('backup scheduler', () => {
     vi.setSystemTime(new Date('2026-07-30T09:00:00'));
     await scheduler.evaluate();
     expect(destination.files.size).toBe(2);
+  });
+
+  it('loads managed-file metadata without validating archives during startup', async () => {
+    const destination = new MemoryBackupDestination();
+    const filename =
+      'openai-studio-backup-2026-07-28T09-00-00-000Z-unverified_id.zip';
+    destination.files.set(
+      filename,
+      new Blob(['not inspected yet'], { type: 'application/zip' })
+    );
+    const scheduler = new BackupScheduler({
+      dirHandle: {} as FileSystemDirectoryHandle,
+      destination,
+      supported: true,
+      canRun: () => true,
+      onStateChange: () => undefined
+    });
+
+    await scheduler.initialize();
+
+    expect(destination.reads).toBe(0);
+    expect(scheduler.currentState.backups).toMatchObject([{
+      filename,
+      integrity: 'unverified'
+    }]);
+
+    await scheduler.refresh();
+    expect(destination.reads).toBe(1);
+    expect(scheduler.currentState.backups[0].integrity).toBe('corrupt');
   });
 
   it('retains exactly the three newest verified managed backups', async () => {
@@ -159,14 +198,29 @@ describe('backup scheduler', () => {
       onStateChange: () => undefined
     });
     await scheduler.setEnabled(true);
-    harness.revision = 2;
-    vi.setSystemTime(new Date('2026-07-30T09:00:00'));
     destination.failWrites = true;
 
     await expect(scheduler.runDueForClose()).rejects.toThrow(
       'Destination write failed'
     );
     expect(scheduler.currentState.error).toContain('Destination write failed');
+  });
+
+  it('does not reread a newly verified destination backup', async () => {
+    const destination = new MemoryBackupDestination();
+    const scheduler = new BackupScheduler({
+      dirHandle: {} as FileSystemDirectoryHandle,
+      destination,
+      supported: true,
+      canRun: () => true,
+      onStateChange: () => undefined
+    });
+
+    await scheduler.backUpNow();
+
+    expect(destination.reads).toBe(0);
+    expect(scheduler.currentState.backups).toHaveLength(1);
+    expect(scheduler.currentState.backups[0].integrity).toBe('valid');
   });
 
   it('does not count a corrupt file and removes it only after a replacement verifies', async () => {
@@ -190,7 +244,9 @@ describe('backup scheduler', () => {
       integrity: 'corrupt'
     }]);
 
+    destination.reads = 0;
     await scheduler.backUpNow();
+    expect(destination.reads).toBe(1);
     expect(destination.files.has(corruptFilename)).toBe(false);
     expect(scheduler.currentState.backups).toHaveLength(1);
     expect(scheduler.currentState.backups[0].integrity).toBe('valid');

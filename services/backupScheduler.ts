@@ -12,6 +12,7 @@ import {
 } from './workspaceArchive';
 
 const BACKUP_PREFERENCES_KEY = 'openai-studio-backup-scheduler-v1';
+export const STARTUP_BACKUP_DELAY_MS = 30_000;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as const;
 
 interface BackupSchedulerPreferences {
@@ -22,7 +23,7 @@ interface BackupSchedulerPreferences {
 }
 
 export interface ManagedBackupStatus extends ManagedBackupFile {
-  integrity: 'valid' | 'corrupt';
+  integrity: 'unverified' | 'valid' | 'corrupt';
   preview?: BackupArchivePreview;
   error?: string;
 }
@@ -91,6 +92,8 @@ export class BackupScheduler {
   private destination: BackupDestination | null;
   private retryIndex = 0;
   private retryTimer: number | null = null;
+  private startupTimer: number | null = null;
+  private readonly startupEligibleAt = Date.now() + STARTUP_BACKUP_DELAY_MS;
   private runningPromise: Promise<BackupArchivePreview | null> | null = null;
   private disposed = false;
   private state: BackupSchedulerState;
@@ -121,8 +124,8 @@ export class BackupScheduler {
   }
 
   async initialize(): Promise<void> {
-    await this.refresh();
-    await this.evaluate();
+    await this.refresh({ validate: false });
+    void this.evaluate().catch(() => undefined);
   }
 
   async setDestination(destination: BackupDestination | null): Promise<void> {
@@ -134,10 +137,14 @@ export class BackupScheduler {
     this.preferences = { ...this.preferences, enabled };
     writePreferences(this.preferences);
     this.updateState({ enabled, error: undefined });
-    if (enabled) await this.evaluate();
+    if (enabled) {
+      await this.evaluate();
+    } else {
+      this.clearStartupTimer();
+    }
   }
 
-  async refresh(): Promise<void> {
+  async refresh(options: { validate?: boolean } = {}): Promise<void> {
     if (!this.destination) {
       this.updateState({
         destinationStatus: 'unavailable',
@@ -153,6 +160,13 @@ export class BackupScheduler {
     if (destinationStatus !== 'connected') return;
 
     const files = await this.destination.list();
+    if (options.validate === false) {
+      this.updateState({
+        backups: files.map(file => ({ ...file, integrity: 'unverified' }))
+      });
+      return;
+    }
+
     const backups: ManagedBackupStatus[] = [];
     for (const file of files) {
       try {
@@ -182,13 +196,14 @@ export class BackupScheduler {
   }
 
   evaluate(): Promise<BackupArchivePreview | null> {
-    if (
-      !this.preferences.enabled ||
-      !this.options.canRun() ||
-      !this.isDue()
-    ) {
+    if (!this.preferences.enabled || !this.isDue()) {
       return Promise.resolve(null);
     }
+    if (Date.now() < this.startupEligibleAt) {
+      this.scheduleStartupEvaluation();
+      return Promise.resolve(null);
+    }
+    if (!this.options.canRun()) return Promise.resolve(null);
     return this.run('scheduled');
   }
 
@@ -208,12 +223,14 @@ export class BackupScheduler {
   }
 
   async runDueForClose(): Promise<BackupArchivePreview | null> {
+    if (this.runningPromise) return this.runningPromise;
     if (!this.preferences.enabled || !this.isDue()) return null;
     return this.run('scheduled', true);
   }
 
   dispose(): void {
     this.disposed = true;
+    this.clearStartupTimer();
     if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
     this.retryTimer = null;
   }
@@ -279,14 +296,6 @@ export class BackupScheduler {
         archive,
         validated.preview.sha256
       );
-      const stored = await this.destination.read(filename);
-      const readBack = await inspectWorkspaceArchive(stored, {
-        filename,
-        retainBlobs: false
-      });
-      if (readBack.preview.sha256 !== validated.preview.sha256) {
-        throw new Error('The destination backup failed read-back verification.');
-      }
 
       this.preferences = {
         ...this.preferences,
@@ -298,15 +307,19 @@ export class BackupScheduler {
       };
       writePreferences(this.preferences);
       this.retryIndex = 0;
-      await this.rotateAfterVerifiedWrite();
-      await this.refresh();
+      const rotation = await this.rotateAfterVerifiedWrite(
+        filename,
+        validated.preview
+      );
       this.updateState({
         running: false,
         lastSuccessAt: this.preferences.lastSuccessAt,
         nextDueAt: getNextLocalDay(this.preferences.lastSuccessAt!),
-        error: undefined
+        error: undefined,
+        warning: rotation.warning,
+        backups: rotation.backups
       });
-      return readBack.preview;
+      return validated.preview;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.updateState({ running: false, error: message });
@@ -315,40 +328,102 @@ export class BackupScheduler {
     }
   }
 
-  private async rotateAfterVerifiedWrite(): Promise<void> {
-    if (!this.destination) return;
+  private async rotateAfterVerifiedWrite(
+    writtenFilename: string,
+    writtenPreview: BackupArchivePreview
+  ): Promise<{ backups: ManagedBackupStatus[]; warning?: string }> {
+    if (!this.destination) return { backups: [] };
     const files = await this.destination.list();
-    const valid: Array<{ file: ManagedBackupFile; createdAt: number }> = [];
-    const corrupt: ManagedBackupFile[] = [];
+    const valid: Array<{
+      status: ManagedBackupStatus;
+      createdAt: number;
+    }> = [];
+    const corrupt: ManagedBackupStatus[] = [];
+    let foundWrittenFile = false;
     for (const file of files) {
+      if (file.filename === writtenFilename) {
+        foundWrittenFile = true;
+        valid.push({
+          status: {
+            ...file,
+            integrity: 'valid',
+            preview: writtenPreview
+          },
+          createdAt: writtenPreview.createdAt
+        });
+        continue;
+      }
       try {
         const inspected = await inspectWorkspaceArchive(
           await this.destination.read(file.filename),
           { filename: file.filename, retainBlobs: false }
         );
-        valid.push({ file, createdAt: inspected.preview.createdAt });
-      } catch {
-        corrupt.push(file);
+        valid.push({
+          status: {
+            ...file,
+            integrity: 'valid',
+            preview: inspected.preview
+          },
+          createdAt: inspected.preview.createdAt
+        });
+      } catch (error) {
+        corrupt.push({
+          ...file,
+          integrity: 'corrupt',
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
+    }
+    if (!foundWrittenFile) {
+      throw new Error('The newly written backup is missing from its destination.');
     }
     valid.sort((left, right) => right.createdAt - left.createdAt);
     const removals = [
-      ...valid.slice(3).map(item => item.file),
+      ...valid.slice(3).map(item => item.status),
       ...corrupt
     ];
     const failures: string[] = [];
+    const removed = new Set<string>();
     for (const file of removals) {
       try {
         await this.destination.delete(file.filename);
+        removed.add(file.filename);
       } catch {
         failures.push(file.filename);
       }
     }
-    if (failures.length > 0) {
-      this.updateState({
-        warning: `Could not remove ${failures.length} old backup file(s); cleanup will retry later.`
-      });
-    }
+    const backups = [
+      ...valid.map(item => item.status),
+      ...corrupt
+    ]
+      .filter(file => !removed.has(file.filename))
+      .sort((left, right) => (
+        (right.preview?.createdAt || right.lastModified) -
+        (left.preview?.createdAt || left.lastModified)
+      ));
+    return {
+      backups,
+      ...(failures.length > 0
+        ? {
+            warning: `Could not remove ${failures.length} old backup file(s); cleanup will retry later.`
+          }
+        : {})
+    };
+  }
+
+  private scheduleStartupEvaluation(): void {
+    if (this.disposed || this.startupTimer !== null) return;
+    const delay = Math.max(0, this.startupEligibleAt - Date.now());
+    this.startupTimer = window.setTimeout(() => {
+      this.startupTimer = null;
+      void this.evaluate().catch(() => undefined);
+    }, delay);
+  }
+
+  private clearStartupTimer(): void {
+    if (this.startupTimer === null) return;
+    window.clearTimeout(this.startupTimer);
+    this.startupTimer = null;
   }
 
   private scheduleRetry(): void {
