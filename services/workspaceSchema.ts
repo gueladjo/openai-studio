@@ -74,14 +74,6 @@ export interface AppSettings {
 
 export type BackupSettings = Omit<AppSettings, 'apiKey'> & { apiKey?: string };
 
-export interface WorkspaceBackup {
-  schemaVersion: typeof WORKSPACE_SCHEMA_VERSION;
-  sessions: Session[];
-  settings?: BackupSettings | null;
-  instructions?: SystemInstruction[];
-  timestamp: number;
-}
-
 export class WorkspaceSchemaError extends Error {
   constructor(message: string) {
     super(message);
@@ -1147,47 +1139,6 @@ export const validateWorkspaceReferences = ({
   });
 };
 
-export const parseWorkspaceBackup = (value: unknown): WorkspaceBackup => {
-  const backup = assertRecord(value, 'backup');
-  assertOnlyKeys(
-    backup,
-    ['schemaVersion', 'sessions', 'settings', 'instructions', 'timestamp'],
-    'backup'
-  );
-  if (
-    backup.schemaVersion !== undefined &&
-    backup.schemaVersion !== WORKSPACE_SCHEMA_VERSION
-  ) {
-    fail(
-      'backup.schemaVersion',
-      `must equal the supported version ${WORKSPACE_SCHEMA_VERSION}`
-    );
-  }
-
-  const sessions = parseStoredSessions(backup.sessions, { backup: true });
-  const settings = backup.settings === undefined || backup.settings === null
-    ? backup.settings
-    : parseAppSettings(backup.settings, { backup: true }) as BackupSettings;
-  const instructions = backup.instructions === undefined
-    ? undefined
-    : parseSystemInstructions(backup.instructions);
-  const timestamp = assertTimestamp(backup.timestamp, 'backup.timestamp');
-
-  validateWorkspaceReferences({
-    sessions,
-    settings,
-    instructions
-  });
-
-  return {
-    schemaVersion: WORKSPACE_SCHEMA_VERSION,
-    sessions,
-    settings,
-    instructions,
-    timestamp
-  };
-};
-
 export const parseJsonText = <T>(
   filename: string,
   text: string,
@@ -1207,43 +1158,5 @@ export const parseJsonText = <T>(
       throw new WorkspaceSchemaError(`Stored file ${filename}: ${error.message}`);
     }
     throw error;
-  }
-};
-
-export const parseJsonTextWithBackup = async <T>({
-  filename,
-  primaryText,
-  readBackupText,
-  parseValue,
-  onFallback
-}: {
-  filename: string;
-  primaryText: string;
-  readBackupText: () => Promise<string | null>;
-  parseValue: (value: unknown) => T;
-  onFallback?: (backupFilename: string) => void;
-}): Promise<T> => {
-  try {
-    return parseJsonText(filename, primaryText, parseValue);
-  } catch (primaryError) {
-    const backupFilename = `${filename}.bak`;
-    const backupText = await readBackupText();
-    if (backupText === null) throw primaryError;
-
-    try {
-      const backup = parseJsonText(backupFilename, backupText, parseValue);
-      onFallback?.(backupFilename);
-      return backup;
-    } catch (backupError) {
-      const primaryMessage = primaryError instanceof Error
-        ? primaryError.message
-        : String(primaryError);
-      const backupMessage = backupError instanceof Error
-        ? backupError.message
-        : String(backupError);
-      throw new WorkspaceSchemaError(
-        `${primaryMessage} Recovery also failed: ${backupMessage}`
-      );
-    }
   }
 };

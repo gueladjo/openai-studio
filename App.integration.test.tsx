@@ -116,7 +116,6 @@ const mocks = vi.hoisted(() => ({
   getActiveStorageBackend: vi.fn(),
   getAttachmentDataUrl: vi.fn(),
   getStorageHandle: vi.fn(),
-  getWorkspaceBackup: vi.fn(),
   inspectWorkspaceArchive: vi.fn(),
   loadedInstructions: [] as SystemInstruction[],
   loadedProjects: [] as Project[],
@@ -126,7 +125,6 @@ const mocks = vi.hoisted(() => ({
   } as ProjectRemoteState,
   loadedSessions: [] as Session[],
   mergeWorkspaceArchive: vi.fn(),
-  parseWorkspaceBackup: vi.fn(),
   projectSourceIngest: vi.fn(),
   projectSourceReconcile: vi.fn(),
   projectSourceRunCleanup: vi.fn(),
@@ -135,7 +133,6 @@ const mocks = vi.hoisted(() => ({
   readLocalBlob: vi.fn(),
   readSessions: vi.fn(),
   readWorkspaceSnapshot: vi.fn(),
-  restoreWorkspaceBackup: vi.fn(),
   restoreWorkspaceArchive: vi.fn(),
   sidebarProps: null as CapturedSidebarProps | null,
   projectHomeProps: null as CapturedProjectHomeProps | null,
@@ -225,7 +222,6 @@ vi.mock('./services/workspaceSync', () => ({
 }));
 
 vi.mock('./services/storage', () => ({
-  MAX_WORKSPACE_BACKUP_BYTES: 512 * 1024 * 1024,
   STORAGE_FILES: {
     SESSIONS: 'sessions.json',
     SETTINGS: 'settings.json',
@@ -237,15 +233,12 @@ vi.mock('./services/storage', () => ({
   getActiveStorageBackend: mocks.getActiveStorageBackend,
   getAttachmentDataUrl: mocks.getAttachmentDataUrl,
   getStorageHandle: mocks.getStorageHandle,
-  getWorkspaceBackup: mocks.getWorkspaceBackup,
   getWorkspaceRevision: () => mocks.currentRevision,
   readWorkspaceSnapshot: mocks.readWorkspaceSnapshot,
   readLocalBlob: mocks.readLocalBlob,
-  parseWorkspaceBackup: mocks.parseWorkspaceBackup,
   readJsonFile: mocks.readJsonFile,
   readSessions: mocks.readSessions,
   clearInternalRecoveryArchive: mocks.clearInternalRecoveryArchive,
-  restoreWorkspaceBackup: mocks.restoreWorkspaceBackup,
   storeAttachmentBlob: mocks.storeAttachment,
   storeLocalBlob: mocks.storeLocalBlob,
   subscribeToStorageBackendChanges: mocks.subscribeToStorageBackendChanges,
@@ -389,7 +382,6 @@ describe('App workspace and request lifecycle', () => {
     mocks.getActiveStorageBackend.mockReset().mockReturnValue('opfs');
     mocks.getAttachmentDataUrl.mockReset();
     mocks.getStorageHandle.mockReset().mockResolvedValue({});
-    mocks.getWorkspaceBackup.mockReset();
     mocks.inspectWorkspaceArchive.mockReset().mockResolvedValue({
       preview: {
         backupId: 'backup-test',
@@ -410,7 +402,6 @@ describe('App workspace and request lifecycle', () => {
         sha256: '0'.repeat(64)
       }
     });
-    mocks.parseWorkspaceBackup.mockReset().mockImplementation(value => value);
     mocks.mergeWorkspaceArchive.mockReset().mockResolvedValue({
       revision: 1,
       recovery: {},
@@ -443,7 +434,6 @@ describe('App workspace and request lifecycle', () => {
     );
     mocks.readWorkspaceSnapshot.mockReset().mockResolvedValue({});
     mocks.readLocalBlob.mockReset().mockResolvedValue(null);
-    mocks.restoreWorkspaceBackup.mockReset().mockResolvedValue(undefined);
     mocks.restoreWorkspaceArchive.mockReset().mockResolvedValue(undefined);
     mocks.storeAttachment.mockReset();
     mocks.storeLocalBlob.mockReset().mockResolvedValue({

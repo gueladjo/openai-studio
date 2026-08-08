@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, Project, Session } from '../types';
 import {
-  WORKSPACE_SCHEMA_VERSION,
+  parseAppSettings,
   parseJsonText,
-  parseJsonTextWithBackup,
   parseProjectRemoteState,
   parseProjects,
   parseStoredSessions,
-  parseWorkspaceBackup,
+  parseSystemInstructions,
   validateWorkspaceReferences
 } from './workspaceSchema';
 
@@ -71,15 +70,21 @@ const createSession = (): Session => ({
 });
 
 const createBackup = () => ({
-  schemaVersion: WORKSPACE_SCHEMA_VERSION,
   sessions: [createSession()],
   settings: {
     theme: 'dark' as const,
     lastActiveSessionId: 'session-1'
   },
-  instructions: [],
-  timestamp: 3
+  instructions: []
 });
+
+const parseWorkspace = (workspace: ReturnType<typeof createBackup>) => {
+  const sessions = parseStoredSessions(workspace.sessions, { backup: true });
+  const settings = parseAppSettings(workspace.settings, { backup: true });
+  const instructions = parseSystemInstructions(workspace.instructions);
+  validateWorkspaceReferences({ sessions, settings, instructions });
+  return { sessions, settings, instructions };
+};
 
 const createProject = (overrides: Partial<Project> = {}): Project => {
   const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
@@ -109,36 +114,22 @@ const createProject = (overrides: Partial<Project> = {}): Project => {
 };
 
 describe('workspace runtime schema', () => {
-  it('accepts a complete versioned backup and migrates a legacy version marker', () => {
-    const parsedBackup = parseWorkspaceBackup(createBackup());
-    expect(parsedBackup).toMatchObject({
-      schemaVersion: WORKSPACE_SCHEMA_VERSION
-    });
-    expect(parsedBackup.sessions[0].messages[1].usage?.input_tokens_details)
+  it('accepts complete current workspace records', () => {
+    const parsedWorkspace = parseWorkspace(createBackup());
+    expect(parsedWorkspace.sessions[0].messages[1].usage?.input_tokens_details)
       .toEqual({ cached_tokens: 2, cache_write_tokens: 1 });
-
-    const legacyBackup = createBackup();
-    delete (legacyBackup as Partial<typeof legacyBackup>).schemaVersion;
-    expect(parseWorkspaceBackup(legacyBackup).schemaVersion).toBe(
-      WORKSPACE_SCHEMA_VERSION
-    );
-
-    expect(() => parseWorkspaceBackup({
-      ...createBackup(),
-      schemaVersion: WORKSPACE_SCHEMA_VERSION + 1
-    })).toThrow('must equal the supported version');
   });
 
   it('rejects malformed nested sources, usage, generated files, and timestamps', () => {
     const invalidSource = createBackup();
     invalidSource.sessions[0].messages[1].sources = [{} as any];
-    expect(() => parseWorkspaceBackup(invalidSource)).toThrow(
+    expect(() => parseWorkspace(invalidSource)).toThrow(
       'sources[0].title must be a string'
     );
 
     const invalidUsage = createBackup();
     invalidUsage.sessions[0].messages[1].usage!.total_tokens = Number.POSITIVE_INFINITY;
-    expect(() => parseWorkspaceBackup(invalidUsage)).toThrow(
+    expect(() => parseWorkspace(invalidUsage)).toThrow(
       'total_tokens must be a finite number'
     );
 
@@ -148,13 +139,13 @@ describe('workspace runtime schema', () => {
       fileId: '',
       containerId: 'container-1'
     }];
-    expect(() => parseWorkspaceBackup(invalidFile)).toThrow(
+    expect(() => parseWorkspace(invalidFile)).toThrow(
       'fileId must not be empty'
     );
 
     const invalidTimestamp = createBackup();
     invalidTimestamp.sessions[0].lastModified = Number.NaN;
-    expect(() => parseWorkspaceBackup(invalidTimestamp)).toThrow(
+    expect(() => parseWorkspace(invalidTimestamp)).toThrow(
       'lastModified must be a finite number'
     );
   });
@@ -162,7 +153,7 @@ describe('workspace runtime schema', () => {
   it('rejects duplicate IDs and invalid pending-request references', () => {
     const duplicateSessions = createBackup();
     duplicateSessions.sessions.push(createSession());
-    expect(() => parseWorkspaceBackup(duplicateSessions)).toThrow(
+    expect(() => parseWorkspace(duplicateSessions)).toThrow(
       'duplicates the ID "session-1"'
     );
 
@@ -173,7 +164,7 @@ describe('workspace runtime schema', () => {
       assistantMessageId: 'message-assistant',
       createdAt: 2
     };
-    expect(() => parseWorkspaceBackup(invalidPending)).toThrow(
+    expect(() => parseWorkspace(invalidPending)).toThrow(
       'must match the referenced user message requestId'
     );
   });
@@ -182,7 +173,7 @@ describe('workspace runtime schema', () => {
     const oversizedTitle = createBackup();
     oversizedTitle.sessions[0].title = 'x'.repeat(4097);
 
-    expect(() => parseWorkspaceBackup(oversizedTitle)).toThrow(
+    expect(() => parseWorkspace(oversizedTitle)).toThrow(
       'must contain at most 4096 characters'
     );
   });
@@ -190,7 +181,7 @@ describe('workspace runtime schema', () => {
   it('rejects dangling workspace references and local-only backup attachments', () => {
     const danglingSession = createBackup();
     danglingSession.settings!.lastActiveSessionId = 'missing-session';
-    expect(() => parseWorkspaceBackup(danglingSession)).toThrow(
+    expect(() => parseWorkspace(danglingSession)).toThrow(
       'must reference a session in the same workspace'
     );
 
@@ -200,7 +191,7 @@ describe('workspace runtime schema', () => {
       name: 'notes.txt',
       type: 'text/plain'
     }];
-    expect(() => parseWorkspaceBackup(localAttachment)).toThrow(
+    expect(() => parseWorkspace(localAttachment)).toThrow(
       'cannot reference a local attachment ID without embedded content'
     );
   });
@@ -221,21 +212,21 @@ describe('workspace runtime schema', () => {
       searchContextSize: 'high',
       userLocation: null
     };
-    expect(parseWorkspaceBackup(backup).sessions[0].config.tools.webSearchOptions)
+    expect(parseWorkspace(backup).sessions[0].config.tools.webSearchOptions)
       .toEqual({ searchContextSize: 'high', userLocation: null });
 
     const legacyBackup = createBackup();
     delete (legacyBackup.sessions[0].config.tools as Partial<
       typeof legacyBackup.sessions[0]['config']['tools']
     >).webSearchOptions;
-    expect(() => parseWorkspaceBackup(legacyBackup)).not.toThrow();
+    expect(() => parseWorkspace(legacyBackup)).not.toThrow();
   });
 
   it('rejects malformed Web Search options', () => {
     const invalidContext = createBackup();
     invalidContext.sessions[0].config.tools.webSearchOptions.searchContextSize =
       'extreme' as any;
-    expect(() => parseWorkspaceBackup(invalidContext)).toThrow(
+    expect(() => parseWorkspace(invalidContext)).toThrow(
       'webSearchOptions.searchContextSize has an unsupported value'
     );
 
@@ -243,7 +234,7 @@ describe('workspace runtime schema', () => {
     invalidLocationType.sessions[0].config.tools.webSearchOptions.userLocation = {
       type: 'precise'
     } as any;
-    expect(() => parseWorkspaceBackup(invalidLocationType)).toThrow(
+    expect(() => parseWorkspace(invalidLocationType)).toThrow(
       'webSearchOptions.userLocation.type must equal "approximate"'
     );
 
@@ -252,7 +243,7 @@ describe('workspace runtime schema', () => {
       type: 'approximate',
       country: 'USA'
     };
-    expect(() => parseWorkspaceBackup(invalidCountry)).toThrow(
+    expect(() => parseWorkspace(invalidCountry)).toThrow(
       'webSearchOptions.userLocation.country must contain at most 2 characters'
     );
   });
@@ -260,13 +251,13 @@ describe('workspace runtime schema', () => {
   it('requires static model names only on assistant messages', () => {
     const missingName = createBackup();
     delete missingName.sessions[0].messages[1].modelName;
-    expect(() => parseWorkspaceBackup(missingName)).toThrow(
+    expect(() => parseWorkspace(missingName)).toThrow(
       'messages[1].modelName must be a string'
     );
 
     const userName = createBackup();
     userName.sessions[0].messages[0].modelName = 'GPT-5.6 Sol';
-    expect(() => parseWorkspaceBackup(userName)).toThrow(
+    expect(() => parseWorkspace(userName)).toThrow(
       'messages[0].modelName is only supported for assistant messages'
     );
   });
@@ -278,27 +269,27 @@ describe('workspace runtime schema', () => {
     assistantMessage.refusal = 'I cannot help with that request.';
     assistantMessage.incompleteReason = 'content_filter';
 
-    expect(parseWorkspaceBackup(backup).sessions[0].messages[1]).toMatchObject({
+    expect(parseWorkspace(backup).sessions[0].messages[1]).toMatchObject({
       status: 'incomplete',
       refusal: 'I cannot help with that request.',
       incompleteReason: 'content_filter'
     });
 
     assistantMessage.incompleteReason = 'unknown_reason' as any;
-    expect(() => parseWorkspaceBackup(backup)).toThrow(
+    expect(() => parseWorkspace(backup)).toThrow(
       'incompleteReason has an unsupported value'
     );
 
     assistantMessage.incompleteReason = 'max_output_tokens';
     assistantMessage.status = 'complete';
-    expect(() => parseWorkspaceBackup(backup)).toThrow(
+    expect(() => parseWorkspace(backup)).toThrow(
       'incompleteReason requires an incomplete message status'
     );
   });
 
   it('validates assistant output phases without requiring them on legacy messages', () => {
     const backup = createBackup();
-    expect(parseWorkspaceBackup(backup).sessions[0].messages[1].outputMessages)
+    expect(parseWorkspace(backup).sessions[0].messages[1].outputMessages)
       .toEqual([{
         content: 'Checking the details.',
         phase: 'commentary'
@@ -309,7 +300,7 @@ describe('workspace runtime schema', () => {
 
     const invalidPhase = createBackup();
     invalidPhase.sessions[0].messages[1].outputMessages![0].phase = 'analysis' as any;
-    expect(() => parseWorkspaceBackup(invalidPhase)).toThrow(
+    expect(() => parseWorkspace(invalidPhase)).toThrow(
       'outputMessages[0].phase has an unsupported value'
     );
 
@@ -317,7 +308,7 @@ describe('workspace runtime schema', () => {
     userOutputs.sessions[0].messages[0].outputMessages = [{
       content: 'Not allowed.'
     }];
-    expect(() => parseWorkspaceBackup(userOutputs)).toThrow(
+    expect(() => parseWorkspace(userOutputs)).toThrow(
       'messages[0].outputMessages is only supported for assistant messages'
     );
   });
@@ -437,20 +428,4 @@ describe('workspace runtime schema', () => {
     )).toThrow('Stored file sessions.json is not valid JSON');
   });
 
-  it('recovers schema-invalid primary JSON only from a schema-valid backup', async () => {
-    const sessions = [createSession()];
-    await expect(parseJsonTextWithBackup({
-      filename: 'sessions.json',
-      primaryText: '{}',
-      readBackupText: async () => JSON.stringify(sessions),
-      parseValue: parseStoredSessions
-    })).resolves.toEqual(JSON.parse(JSON.stringify(sessions)));
-
-    await expect(parseJsonTextWithBackup({
-      filename: 'sessions.json',
-      primaryText: '{}',
-      readBackupText: async () => '{}',
-      parseValue: parseStoredSessions
-    })).rejects.toThrow('Recovery also failed');
-  });
 });

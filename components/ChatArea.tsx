@@ -307,7 +307,7 @@ const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number
     );
 };
 
-export const getAssistantContentPresentation = (message: Message): {
+const getAssistantContentPresentation = (message: Message): {
   commentary: string;
   primary: string;
 } => {

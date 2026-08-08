@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Minus, Square, X, Copy } from 'lucide-react';
 
 interface TitleBarProps {

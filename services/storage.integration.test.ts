@@ -295,17 +295,6 @@ const instructions: SystemInstruction[] = [{
   content: 'Be concise.'
 }];
 
-const createBackup = (
-  sessions: Session[],
-  settings: Record<string, unknown> | null = { theme: 'light' }
-) => ({
-  schemaVersion: 1,
-  sessions,
-  settings,
-  instructions,
-  timestamp: 2
-});
-
 const seedLegacyWorkspaceFiles = async (
   fileSystem: MemoryFileSystem,
   sessions: Session[],
@@ -1162,15 +1151,6 @@ describe('storage public contracts', () => {
       handle,
       storage.STORAGE_FILES.SESSIONS
     )).resolves.toEqual(initialSessions);
-  });
-
-  it('rejects legacy JSON restore calls with a specific error', async () => {
-    await expect(storage.restoreWorkspaceBackup(
-      handle,
-      createBackup([createSession('Legacy')])
-    )).rejects.toMatchObject({
-      name: 'LegacyWorkspaceBackupUnsupportedError'
-    });
   });
 
   it('creates a verified recovery point, preserves the local key, and supports undo', async () => {

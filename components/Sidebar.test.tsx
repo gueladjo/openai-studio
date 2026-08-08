@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import React, { act } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, type Project, type Session } from '../types';

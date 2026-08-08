@@ -1,7 +1,6 @@
 import OpenAI from 'openai';
 import {
   Project,
-  ProjectRemoteFile,
   ProjectRemoteIndex,
   ProjectRemoteState,
   ProjectSource,

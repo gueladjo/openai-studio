@@ -21,16 +21,13 @@ import {
 import {
   AppSettings,
   BackupSettings,
-  MAX_WORKSPACE_BACKUP_BYTES,
   WORKSPACE_SCHEMA_VERSION,
-  WorkspaceBackup,
   parseAppSettings,
   parseJsonText,
   parseProjectRemoteState,
   parseProjects,
   parseStoredSessions,
   parseSystemInstructions,
-  parseWorkspaceBackup,
   validateWorkspaceReferences
 } from './workspaceSchema';
 import {
@@ -55,14 +52,9 @@ export type {
 } from './storageBackend';
 export type {
   AppSettings,
-  BackupSettings,
-  WorkspaceBackup
+  BackupSettings
 } from './workspaceSchema';
-export {
-  MAX_WORKSPACE_BACKUP_BYTES,
-  parseWorkspaceBackup,
-  validateWorkspaceReferences
-} from './workspaceSchema';
+export { validateWorkspaceReferences } from './workspaceSchema';
 
 export const STORAGE_FILES = {
   SESSIONS: 'sessions.json',
@@ -1182,19 +1174,6 @@ const readBackendTextFile = async (
     : readOpfsTextFile(dirHandle, filename);
 };
 
-const writeBackendTextFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string,
-  text: string
-): Promise<void> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbWriteRawFile(filename, text);
-  } else {
-    await writeOpfsTextFile(dirHandle, filename, text);
-  }
-};
-
 const readOptionalWorkspaceManifest = async (
   dirHandle: FileSystemDirectoryHandle,
   filename: string
@@ -2244,26 +2223,3 @@ export const replaceWorkspaceSnapshot = (
   () => replaceWorkspaceSnapshotNow(dirHandle, replacement),
   { blocksInteractions: false }
 );
-
-export class LegacyWorkspaceBackupUnsupportedError extends Error {
-  constructor() {
-    super(
-      'Legacy JSON workspace backups are unsupported. Restore a verified OpenAI Studio ZIP backup instead.'
-    );
-    this.name = 'LegacyWorkspaceBackupUnsupportedError';
-  }
-}
-
-export const getWorkspaceBackup = async (
-  _dirHandle: FileSystemDirectoryHandle,
-  _options: { readOnly?: boolean } = {}
-): Promise<WorkspaceBackup> => {
-  throw new LegacyWorkspaceBackupUnsupportedError();
-};
-
-export const restoreWorkspaceBackup = async (
-  _dirHandle: FileSystemDirectoryHandle,
-  _backupValue: unknown
-): Promise<void> => {
-  throw new LegacyWorkspaceBackupUnsupportedError();
-};
