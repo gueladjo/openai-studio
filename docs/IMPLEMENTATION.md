@@ -545,8 +545,8 @@ invalidating an otherwise complete archive.
 
 Version 3 contains `workspace/projects.json` and every project source's exact
 canonical `blobs/<sha256>` bytes. It excludes OpenAI File/vector-store IDs,
-key fingerprints, remote statuses/errors/usage, and cleanup tombstones. Version
-2 remains readable as a workspace with no projects. Restore publishes projects
+key fingerprints, remote statuses/errors/usage, and cleanup tombstones. Earlier
+archive versions are unsupported. Restore publishes projects
 with no live remote indexes so automatic sources need indexing under the current
 key. Existing device indexes displaced by a portable replacement become local
 cleanup tombstones rather than being silently orphaned.
@@ -741,7 +741,7 @@ The following tests are the executable contracts for this specification:
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
 | Backend selection and migration decisions | [services/storageBackend.test.ts](../services/storageBackend.test.ts) |
 | Immutable generations, v3/v4-to-v5 and legacy migration, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
-| ZIP creation, project/source binary round trip, v2 compatibility, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
+| ZIP creation, project/source binary round trip, v3-only validation, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
 | Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
 | Project source routing/limits and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts) and [services/projectSourceService.test.ts](../services/projectSourceService.test.ts) |
 | Project home source/status/destructive UI, sidebar hierarchy/icons/search/staged key controls, and project chat breadcrumbs | [components/ProjectHome.test.tsx](../components/ProjectHome.test.tsx), [components/Sidebar.test.tsx](../components/Sidebar.test.tsx), and [components/ChatArea.test.tsx](../components/ChatArea.test.tsx) |

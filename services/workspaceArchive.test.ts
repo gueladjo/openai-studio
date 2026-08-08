@@ -157,7 +157,7 @@ const emptyManifest = (entries: Array<{
   sha256?: string;
 }>) => ({
   format: 'openai-studio-backup',
-  version: 2,
+  version: 3,
   backupId: 'backup-test',
   reason: 'manual',
   appVersion: '0.5.0',
@@ -168,7 +168,9 @@ const emptyManifest = (entries: Array<{
     messages: 0,
     attachments: 0,
     generatedFiles: 0,
-    cachedGeneratedFiles: 0
+    cachedGeneratedFiles: 0,
+    projects: 0,
+    projectSources: 0
   },
   uncachedGeneratedFileCount: 0,
   entries: entries.map(entry => ({
@@ -378,15 +380,17 @@ describe('portable workspace archive', () => {
     })).rejects.toBeInstanceOf(UnsupportedLegacyBackupError);
   });
 
-  it('rejects unsupported ZIP backup versions', async () => {
-    const archive = await createZip([{
-      path: 'manifest.json',
-      text: JSON.stringify({ ...emptyManifest([]), version: 1 })
-    }]);
+  it('rejects every non-v3 ZIP backup version', async () => {
+    for (const version of [1, 2]) {
+      const archive = await createZip([{
+        path: 'manifest.json',
+        text: JSON.stringify({ ...emptyManifest([]), version })
+      }]);
 
-    await expect(inspectWorkspaceArchive(archive)).rejects.toThrow(
-      'Backup format version 1 is unsupported'
-    );
+      await expect(inspectWorkspaceArchive(archive)).rejects.toThrow(
+        `Backup format version ${version} is unsupported`
+      );
+    }
   });
 
   it('rejects ZIP files that are not OpenAI Studio archives', async () => {

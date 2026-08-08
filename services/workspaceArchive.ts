@@ -32,7 +32,6 @@ import {
 
 export const BACKUP_ARCHIVE_FORMAT = 'openai-studio-backup';
 export const BACKUP_ARCHIVE_VERSION = 3;
-export const PREVIOUS_BACKUP_ARCHIVE_VERSION = 2;
 export const MAX_BACKUP_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_BACKUP_ARCHIVE_ENTRIES = 100_000;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
@@ -52,15 +51,13 @@ export interface BackupArchiveCounts {
   attachments: number;
   generatedFiles: number;
   cachedGeneratedFiles: number;
-  projects?: number;
-  projectSources?: number;
+  projects: number;
+  projectSources: number;
 }
 
-export interface BackupArchiveManifestV2 {
+export interface BackupArchiveManifest {
   format: typeof BACKUP_ARCHIVE_FORMAT;
-  version:
-    | typeof BACKUP_ARCHIVE_VERSION
-    | typeof PREVIOUS_BACKUP_ARCHIVE_VERSION;
+  version: typeof BACKUP_ARCHIVE_VERSION;
   backupId: string;
   reason: BackupReason;
   appVersion: string;
@@ -93,7 +90,7 @@ export interface BackupArchivePreview {
 }
 
 export interface ValidatedWorkspaceArchive {
-  manifest: BackupArchiveManifestV2;
+  manifest: BackupArchiveManifest;
   preview: BackupArchivePreview;
   replacement: WorkspaceReplacement;
 }
@@ -139,10 +136,7 @@ const parseInteger = (value: unknown, path: string, maximum = Number.MAX_SAFE_IN
   return value as number;
 };
 
-const parseCounts = (
-  value: unknown,
-  archiveVersion: number
-): BackupArchiveCounts => {
+const parseCounts = (value: unknown): BackupArchiveCounts => {
   if (!isRecord(value)) throw new BackupArchiveError('manifest.counts must be an object.');
   assertOnlyKeys(
     value,
@@ -152,9 +146,8 @@ const parseCounts = (
       'attachments',
       'generatedFiles',
       'cachedGeneratedFiles',
-      ...(archiveVersion === BACKUP_ARCHIVE_VERSION
-        ? ['projects', 'projectSources']
-        : [])
+      'projects',
+      'projectSources'
     ],
     'manifest.counts'
   );
@@ -167,17 +160,11 @@ const parseCounts = (
       value.cachedGeneratedFiles,
       'manifest.counts.cachedGeneratedFiles'
     ),
-    ...(value.projects === undefined
-      ? {}
-      : { projects: parseInteger(value.projects, 'manifest.counts.projects') }),
-    ...(value.projectSources === undefined
-      ? {}
-      : {
-          projectSources: parseInteger(
-            value.projectSources,
-            'manifest.counts.projectSources'
-          )
-        })
+    projects: parseInteger(value.projects, 'manifest.counts.projects'),
+    projectSources: parseInteger(
+      value.projectSources,
+      'manifest.counts.projectSources'
+    )
   };
 };
 
@@ -196,7 +183,7 @@ const assertCanonicalArchivePath = (path: string): void => {
 
 export const parseBackupArchiveManifest = (
   value: unknown
-): BackupArchiveManifestV2 => {
+): BackupArchiveManifest => {
   if (!isRecord(value)) throw new BackupArchiveError('manifest must be an object.');
   assertOnlyKeys(
     value,
@@ -217,10 +204,7 @@ export const parseBackupArchiveManifest = (
   if (value.format !== BACKUP_ARCHIVE_FORMAT) {
     throw new BackupArchiveError('This ZIP is not an OpenAI Studio backup.');
   }
-  if (
-    value.version !== BACKUP_ARCHIVE_VERSION &&
-    value.version !== PREVIOUS_BACKUP_ARCHIVE_VERSION
-  ) {
+  if (value.version !== BACKUP_ARCHIVE_VERSION) {
     throw new BackupArchiveError(
       `Backup format version ${String(value.version)} is unsupported.`
     );
@@ -302,7 +286,7 @@ export const parseBackupArchiveManifest = (
       value.workspaceRevision,
       'manifest.workspaceRevision'
     ),
-    counts: parseCounts(value.counts, value.version),
+    counts: parseCounts(value.counts),
     uncachedGeneratedFileCount: parseInteger(
       value.uncachedGeneratedFileCount,
       'manifest.uncachedGeneratedFileCount'
@@ -448,7 +432,7 @@ const createWorkspaceArchiveFromSnapshot = async (
     snapshot.sessions,
     projects
   );
-  const manifest: BackupArchiveManifestV2 = {
+  const manifest: BackupArchiveManifest = {
     format: BACKUP_ARCHIVE_FORMAT,
     version: BACKUP_ARCHIVE_VERSION,
     backupId: createBackupId(),
@@ -584,7 +568,7 @@ const verifyEntryBlob = async (
 };
 
 const verifyCounts = (
-  manifest: BackupArchiveManifestV2,
+  manifest: BackupArchiveManifest,
   sessions: Session[],
   projects: Project[]
 ): void => {
@@ -595,9 +579,8 @@ const verifyCounts = (
     'attachments',
     'generatedFiles',
     'cachedGeneratedFiles',
-    ...(manifest.version === BACKUP_ARCHIVE_VERSION
-      ? ['projects' as const, 'projectSources' as const]
-      : [])
+    'projects',
+    'projectSources'
   ];
   if (
     countKeys.some(key => (
@@ -680,9 +663,7 @@ export const inspectWorkspaceArchive = async (
     const sessionValues: Session[] = [];
     let settings: BackupSettings | null = null;
     let instructions: SystemInstruction[] | null = null;
-    let projects: Project[] | null = manifest.version === PREVIOUS_BACKUP_ARCHIVE_VERSION
-      ? []
-      : null;
+    let projects: Project[] | null = null;
     const blobs = new Map<string, Blob>();
     const blobSizes = new Map<string, number>();
     let completedEntries = 0;
@@ -710,9 +691,6 @@ export const inspectWorkspaceArchive = async (
       } else if (descriptor.path === 'workspace/system_instructions.json') {
         instructions = parseSystemInstructions(JSON.parse(await blob.text()));
       } else if (descriptor.path === 'workspace/projects.json') {
-        if (manifest.version !== BACKUP_ARCHIVE_VERSION) {
-          throw new BackupArchiveError('Archive v2 cannot contain projects.');
-        }
         projects = parseProjects(JSON.parse(await blob.text()));
       } else if (descriptor.path.startsWith('workspace/sessions/')) {
         const parsed = parseStoredSessions([JSON.parse(await blob.text())]);
@@ -878,7 +856,7 @@ export const inspectWorkspaceArchive = async (
 };
 
 export const selectWorkspaceArchiveBlobEntries = (
-  manifest: BackupArchiveManifestV2,
+  manifest: BackupArchiveManifest,
   includedHashes?: ReadonlySet<string>
 ): BackupArchiveEntry[] => manifest.entries.filter(entry => (
     entry.path.startsWith('blobs/') &&
@@ -891,7 +869,7 @@ export const selectWorkspaceArchiveBlobEntries = (
 export const stageWorkspaceArchiveBlobs = async (
   dirHandle: FileSystemDirectoryHandle,
   archive: Blob,
-  manifest: BackupArchiveManifestV2,
+  manifest: BackupArchiveManifest,
   signal?: AbortSignal,
   includedHashes?: ReadonlySet<string>
 ): Promise<void> => {
