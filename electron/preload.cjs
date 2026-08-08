@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
+  restoreFocusAfterDialog: () => ipcRenderer.invoke('window-restore-focus-after-dialog'),
   confirmClose: () => ipcRenderer.send('window-close-confirmed'),
   cancelClose: () => ipcRenderer.send('window-close-cancelled'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),

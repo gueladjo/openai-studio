@@ -23,6 +23,10 @@ import {
   SquarePen
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
+import {
+  registerFileDialogFocusRecovery,
+  restoreFocusAfterFileDialog
+} from '../utils/focusRecovery';
 import { ProjectIconGlyph } from './ProjectIcon';
 
 interface SidebarProps {
@@ -113,6 +117,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => setApiKeyDraft(apiKey), [apiKey]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    restoreFocusAfterFileDialog();
     if (e.target.files && e.target.files.length > 0) {
       onImportData(e.target.files[0]);
     }
@@ -120,6 +125,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleMergeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    restoreFocusAfterFileDialog();
     if (e.target.files && e.target.files.length > 0) {
       onMergeData(e.target.files[0]);
     }
@@ -385,7 +391,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <input
                             type="file"
                             accept=".zip,application/zip"
-                            ref={fileInputRef}
+                            ref={input => {
+                              fileInputRef.current = input;
+                              registerFileDialogFocusRecovery(input);
+                            }}
                             onChange={handleFileSelect}
                             disabled={readOnly}
                             className="hidden"
@@ -393,7 +402,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <input
                             type="file"
                             accept=".zip,application/zip"
-                            ref={mergeFileInputRef}
+                            ref={input => {
+                              mergeFileInputRef.current = input;
+                              registerFileDialogFocusRecovery(input);
+                            }}
                             onChange={handleMergeFileSelect}
                             disabled={mergeDisabled}
                             className="hidden"

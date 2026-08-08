@@ -60,12 +60,15 @@ const requestWindowClose = (win) => {
   }
 };
 
-const focusMainWindow = () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
+const focusWindow = (win) => {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (!win.webContents.isDestroyed()) win.webContents.focus();
 };
+
+const focusMainWindow = () => focusWindow(mainWindow);
 
 // Window control IPC handlers
 ipcMain.on('window-minimize', (event) => {
@@ -107,19 +110,27 @@ ipcMain.handle('window-is-maximized', (event) => {
   return win ? win.isMaximized() : false;
 });
 
+ipcMain.handle('window-restore-focus-after-dialog', (event) => {
+  focusWindow(assertMainWindowSender(event));
+});
+
 ipcMain.handle('clipboard-write-text', (_event, text) => {
   clipboard.writeText(String(text ?? ''));
 });
 
 ipcMain.handle('backup-choose-directory', async (event) => {
   const win = assertMainWindowSender(event);
-  const result = await dialog.showOpenDialog(win, {
-    title: 'Choose OpenAI Studio Backup Folder',
-    properties: ['openDirectory', 'createDirectory']
-  });
-  if (result.canceled || result.filePaths.length !== 1) return false;
-  await backupFileManager.setDestination(result.filePaths[0]);
-  return true;
+  try {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Choose OpenAI Studio Backup Folder',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || result.filePaths.length !== 1) return false;
+    await backupFileManager.setDestination(result.filePaths[0]);
+    return true;
+  } finally {
+    focusWindow(win);
+  }
 });
 
 ipcMain.handle('backup-destination-status', event => {

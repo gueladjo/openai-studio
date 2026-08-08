@@ -56,13 +56,54 @@ describe('ProjectHome', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    window.electronAPI = {
+      restoreFocusAfterDialog: vi.fn().mockResolvedValue(undefined)
+    } as unknown as Window['electronAPI'];
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    delete window.electronAPI;
     delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it('restores Electron focus when the project source picker closes', async () => {
+    const onAddSources = vi.fn();
+    await act(async () => {
+      root.render(<ProjectHome
+        project={createProject()}
+        sessions={[]}
+        totalIndexedUsageBytes={0}
+        onUpdate={() => undefined}
+        onNewChat={() => undefined}
+        onAddSources={onAddSources}
+        onDeleteSource={() => undefined}
+        onRetrySource={() => undefined}
+        onDownloadSource={() => undefined}
+        onDeleteProject={() => undefined}
+      />);
+    });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const source = new File(['project source'], 'source.txt', { type: 'text/plain' });
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [source]
+    });
+
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    expect(window.electronAPI?.restoreFocusAfterDialog).toHaveBeenCalledTimes(1);
+    expect(onAddSources).toHaveBeenCalledWith([source]);
+
+    vi.mocked(window.electronAPI!.restoreFocusAfterDialog!).mockClear();
+    await act(async () => {
+      input.dispatchEvent(new Event('cancel'));
+    });
+    expect(window.electronAPI?.restoreFocusAfterDialog).toHaveBeenCalledTimes(1);
   });
 
   it('shows source capabilities, durable statuses, usage, and project errors', async () => {

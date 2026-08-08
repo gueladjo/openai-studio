@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => {
     const windowHandlers = new Map();
     const webContentsHandlers = new Map();
     const webContents = {
+      focus: vi.fn(),
       isDestroyed: vi.fn(() => false),
       on: vi.fn((event, handler) => {
         webContentsHandlers.set(event, handler);
@@ -187,6 +188,20 @@ describe('Electron main-process policy', () => {
     navigate(localFileEvent, 'file:///tmp/another.html');
     expect(localFileEvent.preventDefault).toHaveBeenCalledTimes(1);
     expect(harness.shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it('restores main-window and web-content focus after a renderer file dialog', async () => {
+    const window = await loadMain();
+    const restoreFocus = harness.ipcHandleHandlers.get(
+      'window-restore-focus-after-dialog'
+    );
+
+    await restoreFocus({ sender: window.webContents });
+
+    expect(window.show).toHaveBeenCalledTimes(1);
+    expect(window.focus).toHaveBeenCalledTimes(1);
+    expect(window.webContents.focus).toHaveBeenCalledTimes(1);
+    expect(() => restoreFocus({ sender: {} })).toThrow('untrusted renderer');
   });
 
   it('deduplicates close requests and allows the renderer to cancel or confirm', async () => {

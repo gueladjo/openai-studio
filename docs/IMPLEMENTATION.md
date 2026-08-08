@@ -656,6 +656,13 @@ clipboard writes, close coordination, and validated managed-backup operations.
 New-window and external navigation are denied in the renderer and opened in the
 system browser under `electron/urlPolicy.js`.
 
+When a native file or directory chooser closes, Electron explicitly restores
+both the main window and its web contents as the focus target. Renderer file
+inputs request this through a sender-validated, focus-only IPC method; the
+main-process backup directory chooser performs the same recovery in `finally`.
+This prevents Windows native-dialog focus loss from leaving text inputs visibly
+clickable but unable to receive keyboard input.
+
 Electron's Chromium sandbox is currently disabled. This is a verified current
 limitation, not an approved permanent design choice; remediation status is
 unresolved. Until it changes, narrow IPC, renderer identity checks, managed

@@ -23,6 +23,10 @@ import {
   chatDraftsReducer,
   getChatDraft
 } from '../utils/chatDrafts';
+import {
+  registerFileDialogFocusRecovery,
+  restoreFocusAfterFileDialog
+} from '../utils/focusRecovery';
 import { ProjectIconGlyph } from './ProjectIcon';
 
 interface ChatAreaProps {
@@ -921,6 +925,7 @@ export const MessageRow = React.memo(({
   const handleReplacementSelect = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
+    restoreFocusAfterFileDialog();
     const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (!message.id || files.length === 0 || !onReplaceFailedAttachments) return;
@@ -1021,7 +1026,10 @@ export const MessageRow = React.memo(({
                         Replace attachments
                       </button>
                       <input
-                        ref={replacementInputRef}
+                        ref={input => {
+                          replacementInputRef.current = input;
+                          registerFileDialogFocusRecovery(input);
+                        }}
                         type="file"
                         multiple
                         accept={ATTACHMENT_INPUT_ACCEPT}
@@ -1363,6 +1371,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    restoreFocusAfterFileDialog();
     const targetSessionId = fileSelectionSessionIdRef.current;
     fileSelectionSessionIdRef.current = null;
     if (
@@ -1617,7 +1626,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   type="file"
                   multiple
                   className="hidden"
-                  ref={fileInputRef}
+                  ref={input => {
+                    fileInputRef.current = input;
+                    registerFileDialogFocusRecovery(input);
+                  }}
                   onChange={handleFileSelect}
                   accept={ATTACHMENT_INPUT_ACCEPT}
                   key={fileInputKey}

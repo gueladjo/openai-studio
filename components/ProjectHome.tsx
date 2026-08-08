@@ -18,6 +18,10 @@ import {
   ProjectSource,
   Session
 } from '../types';
+import {
+  registerFileDialogFocusRecovery,
+  restoreFocusAfterFileDialog
+} from '../utils/focusRecovery';
 import { MAX_INDEXED_USAGE_BYTES } from '../utils/projectSources';
 import { ConfigPanel } from './ConfigPanel';
 import { PROJECT_ICON_OPTIONS, ProjectIconGlyph } from './ProjectIcon';
@@ -169,13 +173,17 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
                 Add sources
               </button>
               <input
-                ref={sourceInputRef}
+                ref={input => {
+                  sourceInputRef.current = input;
+                  registerFileDialogFocusRecovery(input);
+                }}
                 type="file"
                 multiple
                 className="hidden"
                 onChange={event => {
                   const files = Array.from(event.target.files || []);
                   event.target.value = '';
+                  restoreFocusAfterFileDialog();
                   if (files.length > 0) onAddSources(files);
                 }}
               />
