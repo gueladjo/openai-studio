@@ -235,7 +235,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           const expanded = normalizedSearch || expandedProjectIds.has(project.id);
           return (
             <div key={project.id}>
-              <div className={`flex items-center rounded-md ${selectedProjectId === project.id ? 'bg-gray-200 dark:bg-[#1f2937]' : ''}`}>
+              <div className={`group flex items-center rounded-md ${selectedProjectId === project.id ? 'bg-gray-200 dark:bg-[#1f2937]' : ''}`}>
                 <button type="button" onClick={() => setExpandedProjectIds(current => {
                   const next = new Set(current);
                   if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
@@ -251,7 +251,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   type="button"
                   onClick={() => onNewSession(project.id)}
                   disabled={readOnly}
-                  className="mr-1 rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                  className={`mr-1 rounded-md p-2 text-gray-400 transition-all hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed dark:hover:bg-gray-700 dark:hover:text-gray-200 ${
+                    isMobile
+                      ? 'opacity-100 disabled:opacity-50'
+                      : 'opacity-0 group-hover:opacity-100 focus:opacity-100 group-hover:disabled:opacity-50'
+                  }`}
                   aria-label={`New chat in ${project.name}`}
                   title={`New chat in ${project.name}`}
                 >
@@ -262,13 +266,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           );
         })}
-        <div className="mb-1 mt-4 flex items-center justify-between px-2">
+        <div className="group mb-1 mt-4 flex items-center justify-between px-2">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Chats</h3>
           <button
             type="button"
             onClick={() => onNewSession()}
             disabled={readOnly}
-            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+            className={`rounded-md p-1.5 text-gray-400 transition-all hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed dark:hover:bg-gray-700 dark:hover:text-gray-200 ${
+              isMobile
+                ? 'opacity-100 disabled:opacity-50'
+                : 'opacity-0 group-hover:opacity-100 focus:opacity-100 group-hover:disabled:opacity-50'
+            }`}
             aria-label="New standalone chat"
             title="New standalone chat"
           >

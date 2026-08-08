@@ -123,7 +123,9 @@ member chats, separate Projects and Chats sections, and global project/chat
 search with the project path shown for chat matches. Project rows show their
 icon and name without an aggregate chat counter, plus a shortcut that creates a
 new chat with that project's defaults and membership. The standalone Chats
-section has the same shortcut for creating a chat outside every project.
+section has the same shortcut for creating a chat outside every project. These
+shortcuts appear on row or section hover and keyboard focus on desktop, and
+remain visible on mobile where hover is unavailable.
 Selecting a project opens its project home; below 768 px that home and its
 settings occupy the full main sheet.
 
