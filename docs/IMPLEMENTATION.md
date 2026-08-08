@@ -63,7 +63,10 @@ same time, and completion is routed back to the originating session even if the
 user selects another chat. A response can be stopped, a failed turn can be
 retried, and the latest answer can be regenerated. Stop retains the available
 partial output with `stopped` status. Stream failure retains useful partial
-output with an error state instead of deleting the turn.
+output with an error state instead of deleting the turn. Partial aggregate
+text, output-index/phase messages, and reasoning are accumulated by one
+per-request stream state and checkpointed atomically for frame flushes, page
+suspension, explicit stop, failure, and Electron close.
 
 On writer startup, a persisted `pendingRequest` is converted to a failed,
 retryable turn. Reader tabs do not mutate pending requests. Chat deletion asks
@@ -255,6 +258,8 @@ Primary boundaries are:
 - `services/openaiService.ts`: Responses API request construction, streaming,
   cancellation, title generation, citation processing, and generated-file
   retrieval.
+- `services/responseStreamState.ts`: per-request partial text, phased output,
+  and reasoning accumulation plus atomic message checkpoints.
 - `services/projectSourceService.ts`: OpenAI File and vector-store lifecycle,
   usage refresh, interruption reconciliation, key fingerprints, error classes,
   and durable cleanup execution. `utils/projectSources.ts` owns routing and

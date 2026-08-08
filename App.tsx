@@ -6,8 +6,6 @@ import { ChatArea } from './components/ChatArea';
 import { ProjectHome } from './components/ProjectHome';
 import { TitleBar } from './components/TitleBar';
 import {
-  AssistantOutputMessage,
-  AssistantPhase,
   Session,
   ChatConfig,
   FileAttachment,
@@ -105,6 +103,13 @@ import {
   resolveProjectContext
 } from './services/projectSourceService';
 import { validateProjectSourceFiles } from './utils/projectSources';
+import {
+  applyResponseStreamSnapshot,
+  hasResponseStreamOutput,
+  ResponseStreamSnapshot,
+  ResponseStreamState,
+  responseStreamSnapshotMatchesMessage
+} from './services/responseStreamState';
 
 const MOBILE_BREAKPOINT_PX = 768;
 const isMobileViewport = (): boolean => window.innerWidth < MOBILE_BREAKPOINT_PX;
@@ -238,26 +243,8 @@ interface ActiveChatRequest {
   controller: AbortController;
   operationId: string;
   assistantMessageId: string;
-  getPartialContent?: () => string;
-  getPartialOutputMessages?: () => AssistantOutputMessage[];
-  getPartialThinking?: () => string;
-  checkpointPartialContent?: () => string;
-  checkpointPartialOutputMessages?: () => AssistantOutputMessage[];
-  checkpointPartialThinking?: () => string;
+  streamState: ResponseStreamState;
 }
-
-const assistantOutputMessagesEqual = (
-  left?: AssistantOutputMessage[],
-  right?: AssistantOutputMessage[]
-): boolean => (
-  left === right || (
-    left?.length === right?.length &&
-    Boolean(left?.every((output, index) => (
-      output.content === right?.[index].content &&
-      output.phase === right[index].phase
-    )))
-  )
-);
 
 const isAbortError = (error: unknown): boolean => {
   if (!(error instanceof Error)) return false;
@@ -1100,44 +1087,21 @@ function App() {
       let hasStreamingChanges = false;
       const checkpointedSessions = sessionsRef.current.map(session => {
         const activeRequest = activeRequestsRef.current.get(session.id);
-        const partialContent = activeRequest?.checkpointPartialContent?.() ||
-          activeRequest?.getPartialContent?.();
-        const partialOutputMessages =
-          activeRequest?.checkpointPartialOutputMessages?.() ||
-          activeRequest?.getPartialOutputMessages?.();
-        const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
-          activeRequest?.getPartialThinking?.();
-        if (
-          !activeRequest ||
-          (!partialContent && !partialThinking && !partialOutputMessages?.length)
-        ) return session;
+        if (!activeRequest) return session;
+        const snapshot = activeRequest.streamState.checkpoint().snapshot;
+        if (!hasResponseStreamOutput(snapshot)) return session;
 
         let didUpdateMessage = false;
         const messages = session.messages.map(message => {
           if (
             message.id !== activeRequest.assistantMessageId ||
-            (
-              message.content === partialContent &&
-              assistantOutputMessagesEqual(
-                message.outputMessages,
-                partialOutputMessages
-              ) &&
-              (message.thinking || '') === (partialThinking || '')
-            )
+            responseStreamSnapshotMatchesMessage(message, snapshot)
           ) {
             return message;
           }
 
           didUpdateMessage = true;
-          return {
-            ...message,
-            content: partialContent || message.content,
-            outputMessages: partialOutputMessages?.length
-              ? partialOutputMessages
-              : message.outputMessages,
-            thinking: partialThinking || message.thinking,
-            status: 'streaming' as const
-          };
+          return applyResponseStreamSnapshot(message, snapshot, 'streaming');
         });
         if (!didUpdateMessage) return session;
 
@@ -1906,23 +1870,17 @@ function App() {
   const markAssistantStopped = (
     sessionId: string,
     assistantMessageId: string,
-    partialContent?: string,
-    partialThinking?: string,
-    partialOutputMessages?: AssistantOutputMessage[]
+    snapshot: ResponseStreamSnapshot
   ) => {
     updateAssistantMessage(
       sessionId,
       assistantMessageId,
-      message => ({
-        ...message,
-        content: partialContent || message.content || 'Stopped.',
-        outputMessages: partialOutputMessages?.length
-          ? partialOutputMessages
-          : message.outputMessages,
-        thinking: partialThinking || message.thinking,
-        status: 'stopped',
-        timestamp: Date.now()
-      }),
+      message => applyResponseStreamSnapshot(
+        message,
+        snapshot,
+        'stopped',
+        Date.now()
+      ),
       true
     );
   };
@@ -1957,11 +1915,14 @@ function App() {
       return;
     }
 
-    activeRequestsRef.current.set(targetSessionId, {
+    const streamState = new ResponseStreamState();
+    const activeRequest: ActiveChatRequest = {
       controller,
       operationId: operation.id,
-      assistantMessageId
-    });
+      assistantMessageId,
+      streamState
+    };
+    activeRequestsRef.current.set(targetSessionId, activeRequest);
     const matchesActiveRequest = (
       request: ActiveChatRequest | undefined
     ): request is ActiveChatRequest => (
@@ -1971,36 +1932,8 @@ function App() {
 
     // Streamed deltas flush once per animation frame while visible and on a
     // short timer while hidden, where animation frames may be suspended.
-    let streamedContent = '';
-    const streamedOutputMessages = new Map<number, AssistantOutputMessage>();
-    let streamedThinking = '';
-    let pendingDelta = '';
-    const pendingOutputDeltas: Array<{
-      delta: string;
-      outputIndex: number;
-      phase?: AssistantPhase;
-    }> = [];
-    let pendingThinkingDelta = '';
     let deltaFlushHandle: number | null = null;
     let deltaFlushUsesTimeout = false;
-    const activeRequest = activeRequestsRef.current.get(targetSessionId);
-    if (matchesActiveRequest(activeRequest)) {
-      activeRequest.getPartialContent = () => streamedContent + pendingDelta;
-      activeRequest.getPartialOutputMessages = () => {
-        const partialOutputs = new Map(streamedOutputMessages);
-        pendingOutputDeltas.forEach(({ delta, outputIndex, phase }) => {
-          const current = partialOutputs.get(outputIndex);
-          partialOutputs.set(outputIndex, {
-            content: `${current?.content || ''}${delta}`,
-            ...(phase || current?.phase ? { phase: phase || current?.phase } : {})
-          });
-        });
-        return [...partialOutputs.entries()]
-          .sort(([left], [right]) => left - right)
-          .map(([, output]) => output);
-      };
-      activeRequest.getPartialThinking = () => streamedThinking + pendingThinkingDelta;
-    }
 
     const cancelScheduledDeltaFlush = () => {
       if (deltaFlushHandle !== null) {
@@ -2011,63 +1944,16 @@ function App() {
       }
     };
 
-    const checkpointPendingDeltas = () => {
-      cancelScheduledDeltaFlush();
-      streamedContent += pendingDelta;
-      pendingOutputDeltas.forEach(({ delta, outputIndex, phase }) => {
-        const current = streamedOutputMessages.get(outputIndex);
-        streamedOutputMessages.set(outputIndex, {
-          content: `${current?.content || ''}${delta}`,
-          ...(phase || current?.phase ? { phase: phase || current?.phase } : {})
-        });
-      });
-      streamedThinking += pendingThinkingDelta;
-      pendingDelta = '';
-      pendingOutputDeltas.length = 0;
-      pendingThinkingDelta = '';
-    };
-
     const flushPendingDeltas = () => {
-      const hasContentDelta = pendingDelta.length > 0;
-      const hasThinkingDelta = pendingThinkingDelta.length > 0;
-      if (!hasContentDelta && !hasThinkingDelta) return;
-
-      checkpointPendingDeltas();
-      const content = streamedContent;
-      const thinking = streamedThinking;
-      const outputMessages = [...streamedOutputMessages.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([, output]) => output);
+      const { snapshot, textChanged, thinkingChanged } = streamState.checkpoint();
+      if (!textChanged && !thinkingChanged) return;
 
       updateAssistantMessage(
         targetSessionId,
         assistantMessageId,
-        message => ({
-          ...message,
-          content: hasContentDelta ? content : message.content,
-          outputMessages: hasContentDelta ? outputMessages : message.outputMessages,
-          thinking: hasThinkingDelta ? thinking : message.thinking,
-          status: 'streaming'
-        })
+        message => applyResponseStreamSnapshot(message, snapshot, 'streaming')
       );
     };
-
-    if (matchesActiveRequest(activeRequest)) {
-      activeRequest.checkpointPartialContent = () => {
-        checkpointPendingDeltas();
-        return streamedContent;
-      };
-      activeRequest.checkpointPartialOutputMessages = () => {
-        checkpointPendingDeltas();
-        return [...streamedOutputMessages.entries()]
-          .sort(([left], [right]) => left - right)
-          .map(([, output]) => output);
-      };
-      activeRequest.checkpointPartialThinking = () => {
-        checkpointPendingDeltas();
-        return streamedThinking;
-      };
-    }
 
     const scheduleDeltaFlush = () => {
       if (deltaFlushHandle !== null) return;
@@ -2133,7 +2019,7 @@ function App() {
               return;
             }
 
-            pendingThinkingDelta += delta;
+            streamState.appendThinking(delta);
             scheduleDeltaFlush();
           },
           onTextDelta: (delta, outputIndex, phase) => {
@@ -2146,8 +2032,7 @@ function App() {
               return;
             }
 
-            pendingDelta += delta;
-            pendingOutputDeltas.push({ delta, outputIndex, phase });
+            streamState.appendText(delta, outputIndex, phase);
             scheduleDeltaFlush();
           },
           resolveAttachmentContent: async attachment => {
@@ -2168,15 +2053,13 @@ function App() {
         !sessionsRef.current.some(item => item.id === targetSessionId)
       ) {
         cancelScheduledDeltaFlush();
-        pendingDelta = '';
-        pendingThinkingDelta = '';
+        streamState.discardPending();
         return;
       }
 
       // The terminal event carries the authoritative full output; drop any unflushed tail.
       cancelScheduledDeltaFlush();
-      pendingDelta = '';
-      pendingThinkingDelta = '';
+      streamState.discardPending();
 
       const newBotMessage: Message = {
         id: assistantMessageId,
@@ -2220,8 +2103,7 @@ function App() {
         !sessionsRef.current.some(item => item.id === targetSessionId)
       ) {
         cancelScheduledDeltaFlush();
-        pendingDelta = '';
-        pendingThinkingDelta = '';
+        streamState.discardPending();
         return;
       }
 
@@ -2229,7 +2111,11 @@ function App() {
       flushPendingDeltas();
 
       if (isAbortError(error)) {
-        markAssistantStopped(targetSessionId, assistantMessageId);
+        markAssistantStopped(
+          targetSessionId,
+          assistantMessageId,
+          streamState.checkpoint().snapshot
+        );
       } else {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
 
@@ -2720,13 +2606,6 @@ function App() {
 
     const targetSessionId = currentSessionIdRef.current;
     const activeRequest = activeRequestsRef.current.get(targetSessionId);
-    const partialContent = activeRequest?.checkpointPartialContent?.() ||
-      activeRequest?.getPartialContent?.();
-    const partialOutputMessages =
-      activeRequest?.checkpointPartialOutputMessages?.() ||
-      activeRequest?.getPartialOutputMessages?.();
-    const partialThinking = activeRequest?.checkpointPartialThinking?.() ||
-      activeRequest?.getPartialThinking?.();
     const responseOperations = operationRegistryRef.current.getSessionOperations(
       targetSessionId
     ).filter(operation => operation.kind === 'response');
@@ -2742,9 +2621,7 @@ function App() {
       markAssistantStopped(
         targetSessionId,
         activeRequest.assistantMessageId,
-        partialContent,
-        partialThinking,
-        partialOutputMessages
+        activeRequest.streamState.checkpoint().snapshot
       );
     }
   };
@@ -2773,31 +2650,18 @@ function App() {
         const stoppedSessions = sessionsRef.current.map(session => {
           const activeRequest = activeRequests.get(session.id);
           if (!activeRequest) return session;
-          const partialContent = activeRequest.checkpointPartialContent?.() ||
-            activeRequest.getPartialContent?.();
-          const partialOutputMessages =
-            activeRequest.checkpointPartialOutputMessages?.() ||
-            activeRequest.getPartialOutputMessages?.();
-          const partialThinking = activeRequest.checkpointPartialThinking?.() ||
-            activeRequest.getPartialThinking?.();
+          const snapshot = activeRequest.streamState.checkpoint().snapshot;
 
           return {
             ...session,
             messages: session.messages.map(message => (
               message.id === activeRequest.assistantMessageId
-                ? {
-                    ...message,
-                    content: partialContent ||
-                      message.content ||
-                      'Stopped.',
-                    outputMessages: partialOutputMessages?.length
-                      ? partialOutputMessages
-                      : message.outputMessages,
-                    thinking: partialThinking ||
-                      message.thinking,
-                    status: 'stopped' as const,
-                    timestamp: now
-                  }
+                ? applyResponseStreamSnapshot(
+                    message,
+                    snapshot,
+                    'stopped',
+                    now
+                  )
                 : message
             )),
             pendingRequest: undefined,

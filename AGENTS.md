@@ -46,6 +46,7 @@ Use this map to start a change at the narrowest boundary:
 | Cross-tab writer/reader ownership and reload coordination | `services/workspaceSync.ts` | `services/workspaceSync.test.ts` |
 | Debounced, versioned, retried, and flushed saves | `services/saveQueue.ts` | `services/saveQueue.test.ts` |
 | In-flight operation ownership and session/workspace invalidation | `services/operationRegistry.ts` | `services/operationRegistry.test.ts` |
+| Partial response accumulation and atomic stop/lifecycle checkpoints | `services/responseStreamState.ts` | `services/responseStreamState.test.ts`; `App.integration.test.tsx` |
 | Serialization of destructive or workspace-wide operations | `services/serializedOperationQueue.ts` | `services/serializedOperationQueue.test.ts` |
 | Supported attachment formats, MIME normalization, and size limits | `utils/attachmentValidation.ts` | `utils/attachmentValidation.test.ts` |
 | Per-session composer draft transitions | `utils/chatDrafts.ts` | `utils/chatDrafts.test.ts` |

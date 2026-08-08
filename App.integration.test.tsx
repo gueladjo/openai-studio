@@ -1149,7 +1149,9 @@ describe('App workspace and request lifecycle', () => {
     });
     const options = getGenerateOptions();
     await act(async () => {
-      options.onTextDelta?.('Unflushed partial output.');
+      options.onReasoningSummaryDelta?.('Unflushed reasoning.');
+      options.onTextDelta?.('Status. ', 0, 'commentary');
+      options.onTextDelta?.('Unflushed partial output.', 1, 'final_answer');
       getChatAreaProps().onStopGenerating();
     });
 
@@ -1159,7 +1161,15 @@ describe('App workspace and request lifecycle', () => {
     expect(options.signal?.aborted).toBe(true);
     expect(stoppedSession?.pendingRequest).toBeUndefined();
     expect(stoppedSession?.messages.at(-1)).toMatchObject({
-      content: 'Unflushed partial output.',
+      content: 'Status. Unflushed partial output.',
+      outputMessages: [{
+        content: 'Status. ',
+        phase: 'commentary'
+      }, {
+        content: 'Unflushed partial output.',
+        phase: 'final_answer'
+      }],
+      thinking: 'Unflushed reasoning.',
       status: 'stopped',
       modelName: 'GPT-5.6 Sol'
     });
@@ -1173,7 +1183,8 @@ describe('App workspace and request lifecycle', () => {
       getSidebarProps().sessions.find(session => session.id === 'session-a')
         ?.messages.at(-1)
     ).toMatchObject({
-      content: 'Unflushed partial output.',
+      content: 'Status. Unflushed partial output.',
+      thinking: 'Unflushed reasoning.',
       status: 'stopped'
     });
   });
