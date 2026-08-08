@@ -41,7 +41,7 @@ interface CapturedSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onSelectProject: (projectId: string) => void;
   onNewProject: () => void;
-  onNewSession: () => void;
+  onNewSession: (projectId?: string) => void;
   onDeleteSession: (event: React.MouseEvent, sessionId: string) => void;
   onExportData: () => Promise<void>;
   onImportData: (file: File) => Promise<void>;
@@ -780,7 +780,7 @@ describe('App workspace and request lifecycle', () => {
       });
     });
     await act(async () => {
-      getProjectHomeProps().onNewChat();
+      getSidebarProps().onNewSession(createdProject.id);
     });
     await flushMicrotasks();
 

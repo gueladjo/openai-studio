@@ -35,7 +35,8 @@ describe('Sidebar workspace merge controls', () => {
     undoWorkspaceAction = null,
     sessions = [],
     projects = [],
-    onApiKeySave
+    onApiKeySave,
+    onNewSession = vi.fn()
   }: {
     onMergeData?: (file: File) => void;
     mergeDisabled?: boolean;
@@ -43,6 +44,7 @@ describe('Sidebar workspace merge controls', () => {
     sessions?: Session[];
     projects?: Project[];
     onApiKeySave?: (key: string) => void | Promise<void>;
+    onNewSession?: (projectId?: string) => void;
   } = {}) => {
     await act(async () => {
       root.render(
@@ -51,7 +53,7 @@ describe('Sidebar workspace merge controls', () => {
           projects={projects}
           currentSessionId={null}
           onSelectSession={() => undefined}
-          onNewSession={() => undefined}
+          onNewSession={onNewSession}
           onDeleteSession={() => undefined}
           isDarkMode={false}
           toggleTheme={() => undefined}
@@ -213,5 +215,34 @@ describe('Sidebar workspace merge controls', () => {
     )!;
     await act(async () => save.click());
     expect(onApiKeySave).toHaveBeenCalledWith('sk-staged');
+  });
+
+  it('starts chats from project rows and the standalone Chats section', async () => {
+    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
+    const project: Project = {
+      id: 'project-1',
+      name: 'Client Alpha',
+      icon: 'briefcase',
+      instructions: '',
+      defaultConfig,
+      sources: [],
+      createdAt: 1,
+      updatedAt: 1
+    };
+    const onNewSession = vi.fn();
+    await renderSidebar({ projects: [project], onNewSession });
+
+    const projectShortcut = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="New chat in Client Alpha"]'
+    )!;
+    const standaloneShortcut = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="New standalone chat"]'
+    )!;
+
+    await act(async () => projectShortcut.click());
+    await act(async () => standaloneShortcut.click());
+
+    expect(onNewSession).toHaveBeenNthCalledWith(1, 'project-1');
+    expect(onNewSession).toHaveBeenNthCalledWith(2);
   });
 });

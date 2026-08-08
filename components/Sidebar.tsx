@@ -19,7 +19,8 @@ import {
   RefreshCw,
   ShieldCheck,
   GitMerge,
-  Settings
+  Settings,
+  SquarePen
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
 import { ProjectIconGlyph } from './ProjectIcon';
@@ -32,7 +33,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onSelectProject?: (id: string) => void;
   onNewProject?: () => void;
-  onNewSession: () => void;
+  onNewSession: (projectId?: string) => void;
   onDeleteSession: (e: React.MouseEvent, id: string) => void;
   isDarkMode: boolean;
   toggleTheme: () => void;
@@ -182,7 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Top section */}
       <div className="space-y-2 p-4">
         <button
-          onClick={onNewSession}
+          onClick={() => onNewSession()}
           disabled={readOnly}
           title={readOnly ? 'Another tab is editing this workspace' : undefined}
           className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 px-4 flex items-center justify-center gap-2 transition-colors font-medium text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
@@ -232,12 +233,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <ProjectIconGlyph icon={project.icon} size={14} className="shrink-0" />
                   <span className="truncate">{project.name}</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => onNewSession(project.id)}
+                  disabled={readOnly}
+                  className="mr-1 rounded-md p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                  aria-label={`New chat in ${project.name}`}
+                  title={`New chat in ${project.name}`}
+                >
+                  <SquarePen size={15} />
+                </button>
               </div>
               {expanded && <div className="ml-5 space-y-1">{projectSessions.map(session => renderSession(session, project.name))}</div>}
             </div>
           );
         })}
-        <h3 className="mb-1 mt-4 px-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Chats</h3>
+        <div className="mb-1 mt-4 flex items-center justify-between px-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Chats</h3>
+          <button
+            type="button"
+            onClick={() => onNewSession()}
+            disabled={readOnly}
+            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+            aria-label="New standalone chat"
+            title="New standalone chat"
+          >
+            <SquarePen size={15} />
+          </button>
+        </div>
         {standaloneSessions.map(session => renderSession(session))}
         {matchingProjects.length === 0 && standaloneSessions.length === 0 && (
           <div className="mt-10 text-center text-sm text-gray-500">No projects or chats found</div>

@@ -172,8 +172,9 @@ project owns its instructions, default model/reasoning/verbosity/tool settings,
 chats, and source library. Defaults are copied only into newly created project
 chats. Project instructions are resolved live for every future request; changing
 them does not rewrite earlier messages. Create project chats from the project
-home; existing chats cannot be moved between projects or into the standalone
-**Chats** section.
+home or the shortcut beside its sidebar row. The shortcut beside **Chats**
+creates a standalone chat. Existing chats cannot be moved between projects or
+into the standalone **Chats** section.
 
 Each project supports at most 40 sources, with at most 10 files selected per
 upload and the existing strict per-file limit of less than 50 MiB. Source bytes

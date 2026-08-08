@@ -1260,8 +1260,6 @@ function App() {
     updateCurrentSessionId(newSession.id);
   };
 
-  const createNewSession = () => createSession();
-
   const createProjectSession = (projectId: string) => createSession(projectId);
 
   const createNewProject = () => {
@@ -3390,7 +3388,7 @@ function App() {
               onSelectSession={handleSelectSession}
               onSelectProject={handleSelectProject}
               onNewProject={createNewProject}
-              onNewSession={createNewSession}
+              onNewSession={createSession}
               onDeleteSession={deleteSession}
               isDarkMode={isDarkMode}
               toggleTheme={() => {
@@ -3469,7 +3467,7 @@ function App() {
                     onSelectSession={handleSelectSession}
                     onSelectProject={handleSelectProject}
                     onNewProject={createNewProject}
-                    onNewSession={() => { createNewSession(); setIsSidebarOpen(false); }}
+                    onNewSession={projectId => { createSession(projectId); setIsSidebarOpen(false); }}
                     onDeleteSession={deleteSession}
                     isDarkMode={isDarkMode}
                     toggleTheme={() => {
