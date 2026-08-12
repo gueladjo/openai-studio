@@ -100,6 +100,8 @@ const mocks = vi.hoisted(() => ({
   apiKey: 'workspace-key',
   bundledApiKey: '',
   chatAreaProps: null as CapturedChatAreaProps | null,
+  chatAreaMountCount: 0,
+  chatAreaUnmountCount: 0,
   confirmChatDeletion: vi.fn(),
   coordinator: {
     canWrite: true,
@@ -155,6 +157,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./components/ChatArea', () => ({
   ChatArea: (props: CapturedChatAreaProps) => {
     mocks.chatAreaProps = props;
+    React.useEffect(() => {
+      mocks.chatAreaMountCount += 1;
+      return () => {
+        mocks.chatAreaUnmountCount += 1;
+      };
+    }, []);
     return null;
   }
 }));
@@ -340,6 +348,8 @@ describe('App workspace and request lifecycle', () => {
     mocks.apiKey = 'workspace-key';
     mocks.bundledApiKey = '';
     mocks.chatAreaProps = null;
+    mocks.chatAreaMountCount = 0;
+    mocks.chatAreaUnmountCount = 0;
     mocks.sidebarProps = null;
     mocks.projectHomeProps = null;
     mocks.sidebarMountCount = 0;
@@ -863,6 +873,43 @@ describe('App workspace and request lifecycle', () => {
     ));
     expect(standaloneChat?.config.reasoningEffort)
       .toBe(DEFAULT_CONFIG.reasoningEffort);
+  });
+
+  it.each([
+    ['standalone', false],
+    ['project', true]
+  ])('keeps the chat composer mounted while visiting a project from a %s chat', async (
+    _chatKind,
+    projectChat
+  ) => {
+    const currentProject = createProject('project-current');
+    const visitedProject = createProject('project-visited');
+    mocks.loadedProjects = projectChat
+      ? [currentProject, visitedProject]
+      : [visitedProject];
+    if (projectChat) {
+      mocks.loadedSessions[0].projectId = currentProject.id;
+    }
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(getChatAreaProps().session?.id).toBe('session-a');
+    expect(mocks.chatAreaMountCount).toBe(1);
+
+    await act(async () => {
+      getSidebarProps().onSelectProject(visitedProject.id);
+    });
+    expect(getProjectHomeProps().project.id).toBe(visitedProject.id);
+    expect(mocks.chatAreaMountCount).toBe(1);
+    expect(mocks.chatAreaUnmountCount).toBe(0);
+
+    await act(async () => {
+      getSidebarProps().onSelectSession('session-a');
+    });
+    expect(getChatAreaProps().session?.id).toBe('session-a');
+    expect(mocks.chatAreaMountCount).toBe(1);
+    expect(mocks.chatAreaUnmountCount).toBe(0);
   });
 
   it('uses the bundled Electron key when indexing a project source', async () => {

@@ -3442,7 +3442,7 @@ function App() {
           </div>
 
           <main className="flex-1 flex min-w-0 w-full overflow-hidden">
-            {selectedProject ? (
+            {selectedProject && (
               <ProjectHome
                 project={selectedProject}
                 sessions={sessions.filter(session => session.projectId === selectedProject.id)}
@@ -3460,66 +3460,67 @@ function App() {
                 onDownloadSource={downloadProjectSource}
                 onDeleteProject={() => deleteProject(selectedProject.id)}
               />
-            ) : <>
-            <ChatArea
-              key={draftWorkspaceEpoch}
-              session={currentSession}
-              availableSessionIds={sessions.map(session => session.id)}
-              onSendMessage={handleSendMessage}
-              onStopGenerating={handleStopGenerating}
-              onRetryFailedMessage={handleRetryFailedMessage}
-              onRemoveFailedAttachment={handleRemoveFailedAttachment}
-              onReplaceFailedAttachments={handleReplaceFailedAttachments}
-              onRegenerateResponse={handleRegenerateLatestResponse}
-              onShareConversation={handleShareConversation}
-              onDownloadGeneratedFile={cacheGeneratedFile}
-              apiKey={apiKey}
-              isLoading={isCurrentSessionProcessing}
-              readOnly={isWorkspaceInteractionReadOnly}
-              projectSources={currentSessionProject?.sources.filter(
-                source => source.capability === 'direct_attachment'
-              ) || []}
-              onLoadProjectSource={loadProjectSourceFile}
-              project={currentSessionProject || undefined}
-            />
-
-            {currentSession && (
-              <>
-                {isConfigOpen && (
-                  <div
-                    className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
-                    onClick={() => setIsConfigOpen(false)}
-                  />
-                )}
-                <div
-                  className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 max-h-[85vh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
-                >
-                  <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
-                    <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
-                    <button
-                      onClick={() => setIsConfigOpen(false)}
-                      className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-                      aria-label="Close configuration"
-                    >
-                      <X size={20} />
-                    </button>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-hidden md:contents">
-                    <ConfigPanel
-                      config={currentSession.config}
-                      onChange={updateConfig}
-                      systemInstructions={systemInstructions}
-                      onCreateSystemInstruction={handleCreateSystemInstruction}
-                      onUpdateSystemInstruction={handleUpdateSystemInstruction}
-                      onDeleteSystemInstruction={handleDeleteSystemInstruction}
-                      hideSystemInstructions={Boolean(currentSession.projectId)}
-                      readOnly={isWorkspaceInteractionReadOnly}
-                    />
-                  </div>
-                </div>
-              </>
             )}
-            </>}
+            <div className={selectedProject ? 'hidden' : 'contents'}>
+              <ChatArea
+                key={draftWorkspaceEpoch}
+                session={currentSession}
+                availableSessionIds={sessions.map(session => session.id)}
+                onSendMessage={handleSendMessage}
+                onStopGenerating={handleStopGenerating}
+                onRetryFailedMessage={handleRetryFailedMessage}
+                onRemoveFailedAttachment={handleRemoveFailedAttachment}
+                onReplaceFailedAttachments={handleReplaceFailedAttachments}
+                onRegenerateResponse={handleRegenerateLatestResponse}
+                onShareConversation={handleShareConversation}
+                onDownloadGeneratedFile={cacheGeneratedFile}
+                apiKey={apiKey}
+                isLoading={isCurrentSessionProcessing}
+                readOnly={isWorkspaceInteractionReadOnly}
+                projectSources={currentSessionProject?.sources.filter(
+                  source => source.capability === 'direct_attachment'
+                ) || []}
+                onLoadProjectSource={loadProjectSourceFile}
+                project={currentSessionProject || undefined}
+              />
+
+              {currentSession && (
+                <>
+                  {isConfigOpen && (
+                    <div
+                      className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
+                      onClick={() => setIsConfigOpen(false)}
+                    />
+                  )}
+                  <div
+                    className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 max-h-[85vh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
+                  >
+                    <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
+                      <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
+                      <button
+                        onClick={() => setIsConfigOpen(false)}
+                        className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                        aria-label="Close configuration"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-hidden md:contents">
+                      <ConfigPanel
+                        config={currentSession.config}
+                        onChange={updateConfig}
+                        systemInstructions={systemInstructions}
+                        onCreateSystemInstruction={handleCreateSystemInstruction}
+                        onUpdateSystemInstruction={handleUpdateSystemInstruction}
+                        onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                        hideSystemInstructions={Boolean(currentSession.projectId)}
+                        readOnly={isWorkspaceInteractionReadOnly}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </main>
         </div>
 

@@ -130,7 +130,9 @@ section has the same shortcut for creating a chat outside every project. These
 shortcuts appear on row or section hover and keyboard focus on desktop, and
 remain visible on mobile where hover is unavailable.
 Selecting a project opens its project home; below 768 px that home and its
-settings occupy the full main sheet.
+settings occupy the full main sheet. The chat composer remains mounted behind
+the project home so its per-session text, attachments, and validation state
+survive visiting a project from either a standalone or project chat.
 
 The selected icon appears on the project home, in its sidebar row, and in each
 member chat header. Project chat headers use `Icon Project / Chat`; standalone
