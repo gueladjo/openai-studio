@@ -3,19 +3,29 @@
 import React, { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, type ChatConfig } from '../types';
+import { DEFAULT_CONFIG, type ChatConfig, type SystemInstruction } from '../types';
 import { ConfigPanel } from './ConfigPanel';
 
 interface HarnessProps {
   initialConfig?: ChatConfig;
   onConfigChange: (config: ChatConfig) => void;
+  systemInstructions?: SystemInstruction[];
+  onUpdateSystemInstruction?: (instruction: SystemInstruction) => void;
+  onCreateSystemInstruction?: () => void;
+  onDeleteSystemInstruction?: (id: string) => void;
   readOnly?: boolean;
+  hideSystemInstructions?: boolean;
 }
 
 const ConfigPanelHarness: React.FC<HarnessProps> = ({
   initialConfig = DEFAULT_CONFIG,
   onConfigChange,
-  readOnly = false
+  systemInstructions = [],
+  onUpdateSystemInstruction = () => undefined,
+  onCreateSystemInstruction = () => undefined,
+  onDeleteSystemInstruction = () => undefined,
+  readOnly = false,
+  hideSystemInstructions = false
 }) => {
   const [config, setConfig] = useState(initialConfig);
 
@@ -26,16 +36,17 @@ const ConfigPanelHarness: React.FC<HarnessProps> = ({
         onConfigChange(nextConfig);
         setConfig(nextConfig);
       }}
-      systemInstructions={[]}
-      onUpdateSystemInstruction={() => undefined}
-      onCreateSystemInstruction={() => undefined}
-      onDeleteSystemInstruction={() => undefined}
+      systemInstructions={systemInstructions}
+      onUpdateSystemInstruction={onUpdateSystemInstruction}
+      onCreateSystemInstruction={onCreateSystemInstruction}
+      onDeleteSystemInstruction={onDeleteSystemInstruction}
       readOnly={readOnly}
+      hideSystemInstructions={hideSystemInstructions}
     />
   );
 };
 
-describe('ConfigPanel Web Search options', () => {
+describe('ConfigPanel', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -73,8 +84,16 @@ describe('ConfigPanel Web Search options', () => {
     return onConfigChange;
   };
 
-  const getDisclosure = (): HTMLButtonElement => (
-    container.querySelector<HTMLButtonElement>('button[aria-controls]')!
+  const getWebSearchDisclosure = (): HTMLButtonElement => (
+    container.querySelector<HTMLButtonElement>(
+      'button[aria-label*="Web Search options"]'
+    )!
+  );
+
+  const getSystemInstructionsDisclosure = (): HTMLButtonElement => (
+    container.querySelector<HTMLButtonElement>(
+      'button[aria-label*="System instructions options"]'
+    )!
   );
 
   const getSwitch = (): HTMLButtonElement => (
@@ -113,9 +132,26 @@ describe('ConfigPanel Web Search options', () => {
     });
   };
 
+  const changeValue = async (
+    element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+    value: string,
+    eventName: 'input' | 'change' = 'input'
+  ) => {
+    const prototype = element instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    await act(async () => {
+      valueSetter?.call(element, value);
+      element.dispatchEvent(new Event(eventName, { bubbles: true }));
+    });
+  };
+
   it('starts collapsed and keeps disclosure independent from enablement', async () => {
     const onConfigChange = await renderPanel();
-    const disclosure = getDisclosure();
+    const disclosure = getWebSearchDisclosure();
     const webSearchSwitch = getSwitch();
 
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
@@ -149,7 +185,7 @@ describe('ConfigPanel Web Search options', () => {
     const onConfigChange = await renderPanel();
     await act(async () => {
       getSwitch().click();
-      getDisclosure().click();
+      getWebSearchDisclosure().click();
     });
     await act(async () => {
       getContextButton('High').click();
@@ -180,7 +216,7 @@ describe('ConfigPanel Web Search options', () => {
   it('clears location and lets a new approximate location be entered', async () => {
     const onConfigChange = await renderPanel();
     await act(async () => {
-      getDisclosure().click();
+      getWebSearchDisclosure().click();
     });
     await act(async () => {
       getButton('Clear location').click();
@@ -208,15 +244,179 @@ describe('ConfigPanel Web Search options', () => {
   it('disables disclosure, switch, and inputs in read-only mode', async () => {
     const onConfigChange = await renderPanel(undefined, true);
 
-    expect(getDisclosure().matches(':disabled')).toBe(true);
+    expect(getWebSearchDisclosure().matches(':disabled')).toBe(true);
     expect(getSwitch().matches(':disabled')).toBe(true);
     await act(async () => {
-      getDisclosure().click();
+      getWebSearchDisclosure().click();
       getSwitch().click();
     });
 
-    expect(getDisclosure().getAttribute('aria-expanded')).toBe('false');
+    expect(getWebSearchDisclosure().getAttribute('aria-expanded')).toBe('false');
     expect(getSwitch().getAttribute('aria-checked')).toBe('true');
     expect(onConfigChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the System instructions picker visible while its editor starts collapsed', async () => {
+    const instructions: SystemInstruction[] = [{
+      id: 'instruction-1',
+      title: 'Concise',
+      content: 'Keep answers brief.'
+    }];
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          initialConfig={{
+            ...DEFAULT_CONFIG,
+            systemInstructionId: instructions[0].id
+          }}
+          onConfigChange={() => undefined}
+          systemInstructions={instructions}
+        />
+      );
+    });
+
+    const pickerLabel = Array.from(container.querySelectorAll('label')).find(
+      label => label.textContent?.trim() === 'System instructions'
+    )!;
+    const picker = container.querySelector<HTMLSelectElement>(
+      `#${pickerLabel.htmlFor}`
+    )!;
+    const disclosure = getSystemInstructionsDisclosure();
+
+    expect(picker.value).toBe('instruction-1');
+    expect(container.querySelector('option[value="new"]')).toBeNull();
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('New instruction');
+    expect(container.querySelector('textarea')).toBeNull();
+
+    await act(async () => {
+      disclosure.click();
+    });
+
+    const optionsId = disclosure.getAttribute('aria-controls')!;
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector(`#${optionsId}`)).not.toBeNull();
+    expect(container.textContent).toContain('New instruction');
+    expect(container.querySelector('textarea')?.value).toBe('Keep answers brief.');
+  });
+
+  it('selects, creates, edits, and deletes instructions through inline controls', async () => {
+    const instructions: SystemInstruction[] = [{
+      id: 'instruction-1',
+      title: 'Concise',
+      content: 'Keep answers brief.'
+    }, {
+      id: 'instruction-2',
+      title: 'Detailed',
+      content: 'Explain the reasoning.'
+    }];
+    const onConfigChange = vi.fn();
+    const onUpdateSystemInstruction = vi.fn();
+    const onCreateSystemInstruction = vi.fn();
+    const onDeleteSystemInstruction = vi.fn();
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          initialConfig={{
+            ...DEFAULT_CONFIG,
+            systemInstructionId: instructions[0].id
+          }}
+          onConfigChange={onConfigChange}
+          systemInstructions={instructions}
+          onUpdateSystemInstruction={onUpdateSystemInstruction}
+          onCreateSystemInstruction={onCreateSystemInstruction}
+          onDeleteSystemInstruction={onDeleteSystemInstruction}
+        />
+      );
+    });
+
+    const picker = Array.from(container.querySelectorAll('select')).find(
+      select => select.value === 'instruction-1'
+    )!;
+    await changeValue(picker, 'instruction-2', 'change');
+    expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      systemInstructionId: 'instruction-2'
+    }));
+
+    await act(async () => {
+      getSystemInstructionsDisclosure().click();
+    });
+    const nameInput = Array.from(container.querySelectorAll('label')).find(
+      label => label.textContent?.trim() === 'Name'
+    )!.querySelector<HTMLInputElement>('input')!;
+    const instructionsInput = container.querySelector<HTMLTextAreaElement>('textarea')!;
+    await changeValue(nameInput, 'Detailed guidance');
+    expect(onUpdateSystemInstruction).toHaveBeenLastCalledWith({
+      ...instructions[1],
+      title: 'Detailed guidance'
+    });
+
+    await changeValue(instructionsInput, 'Show the important steps.');
+    expect(onUpdateSystemInstruction).toHaveBeenLastCalledWith({
+      ...instructions[1],
+      content: 'Show the important steps.'
+    });
+
+    await act(async () => {
+      getButton('New instruction').click();
+      getButton('Delete instruction').click();
+    });
+    expect(onCreateSystemInstruction).toHaveBeenCalledTimes(1);
+    expect(onDeleteSystemInstruction).toHaveBeenCalledWith('instruction-2');
+  });
+
+  it('shows an empty instruction state and preserves hidden and read-only behavior', async () => {
+    const onCreateSystemInstruction = vi.fn();
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          onConfigChange={() => undefined}
+          onCreateSystemInstruction={onCreateSystemInstruction}
+          readOnly
+        />
+      );
+    });
+
+    const pickerLabel = Array.from(container.querySelectorAll('label')).find(
+      label => label.textContent?.trim() === 'System instructions'
+    )!;
+    const picker = container.querySelector<HTMLSelectElement>(
+      `#${pickerLabel.htmlFor}`
+    )!;
+    const disclosure = getSystemInstructionsDisclosure();
+    expect(picker.disabled).toBe(true);
+    expect(disclosure.disabled).toBe(true);
+    await act(async () => {
+      disclosure.click();
+    });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(onCreateSystemInstruction).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          onConfigChange={() => undefined}
+          onCreateSystemInstruction={onCreateSystemInstruction}
+        />
+      );
+    });
+    await act(async () => {
+      getSystemInstructionsDisclosure().click();
+    });
+    expect(container.textContent).toContain(
+      'Select an instruction to edit it, or create a new one.'
+    );
+    expect(getButton('Delete instruction')).toBeUndefined();
+
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          onConfigChange={() => undefined}
+          hideSystemInstructions
+        />
+      );
+    });
+    expect(container.textContent).not.toContain('System instructions');
+    expect(getSystemInstructionsDisclosure()).toBeNull();
   });
 });

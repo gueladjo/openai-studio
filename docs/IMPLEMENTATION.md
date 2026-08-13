@@ -85,6 +85,13 @@ in the top-level Responses API `instructions` field. Model identities,
 capabilities, cutoff metadata, defaults, and configuration normalization are
 owned by `constants.ts`.
 
+For standalone chats, the reusable System instructions picker remains visible
+at the top of the Configuration panel on desktop and mobile. Its adjacent
+accessible disclosure starts collapsed, keeps local unpersisted state, and
+reveals the inline name/content editor plus explicit create and immediate-delete
+actions. Instruction management does not open a separate page or modal. Project
+chats hide this picker because their project instructions are resolved live.
+
 Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
 older workspaces remain loadable.

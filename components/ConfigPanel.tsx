@@ -9,7 +9,15 @@ import {
   getModelConfig,
   getNormalizedReasoningEffort
 } from '../constants';
-import { Sliders, Globe, Terminal, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  Sliders,
+  Globe,
+  Terminal,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  Plus
+} from 'lucide-react';
 
 interface ConfigPanelProps {
   config: ChatConfig;
@@ -32,8 +40,10 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   readOnly = false,
   hideSystemInstructions = false
 }) => {
-  const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(true);
+  const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(false);
   const [isWebSearchOptionsOpen, setIsWebSearchOptionsOpen] = useState(false);
+  const systemInstructionsSelectId = useId();
+  const systemInstructionsOptionsId = useId();
   const webSearchOptionsId = useId();
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -99,72 +109,133 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
         }`}
       >
         {/* System Instructions */}
-        {!hideSystemInstructions && <div className="space-y-3">
-            <div 
-              className="flex items-center justify-between cursor-pointer group"
-              onClick={() => setIsSystemInstructionsOpen(!isSystemInstructionsOpen)}
+        {!hideSystemInstructions && (
+          <div className="space-y-3">
+            <label
+              htmlFor={systemInstructionsSelectId}
+              className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
             >
-               <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide group-hover:text-gray-700 dark:group-hover:text-gray-200 transition-colors">System instructions</label>
-               {isSystemInstructionsOpen ? <ChevronUp size={14} className="text-gray-400"/> : <ChevronDown size={14} className="text-gray-400"/>}
-            </div>
-            
-            {isSystemInstructionsOpen && (
-              <div className="space-y-3 animate-in slide-in-from-top-2 duration-200">
-                 {/* Selection Dropdown */}
-                 <div className="relative">
-                    <select
-                      value={config.systemInstructionId || ''}
-                      onChange={(e) => {
-                         if (e.target.value === 'new') {
-                             onCreateSystemInstruction();
-                         } else {
-                             onChange({ ...config, systemInstructionId: e.target.value || undefined });
-                         }
-                      }}
-                      className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-md p-2.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none appearance-none transition-colors"
-                    >
-                       <option value="">None</option>
-                       {systemInstructions.map(si => (
-                           <option key={si.id} value={si.id}>{si.title || 'Untitled Instruction'}</option>
-                       ))}
-                       <option disabled>──────────</option>
-                       <option value="new" className="font-medium">+ Create new instruction</option>
-                    </select>
-                    <div className="absolute right-3 top-3 pointer-events-none text-gray-400">
-                        <ChevronDown size={14} />
-                    </div>
-                 </div>
-
-                 {/* Edit Form */}
-                 {selectedInstruction && (
-                    <div className="bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded-md p-3 space-y-3 shadow-sm">
-                        <div className="flex gap-2">
-                           <input 
-                              type="text" 
-                              value={selectedInstruction.title}
-                              onChange={(e) => onUpdateSystemInstruction({...selectedInstruction, title: e.target.value})}
-                              placeholder="Title"
-                              className="flex-1 bg-transparent border-b border-gray-200 dark:border-gray-700 pb-1 text-sm font-medium text-gray-800 dark:text-gray-200 placeholder-gray-400 focus:border-blue-500 focus:outline-none transition-colors"
-                           />
-                           <button 
-                              onClick={() => onDeleteSystemInstruction(selectedInstruction.id)}
-                              className="text-gray-400 hover:text-red-500 p-1 rounded transition-colors"
-                              title="Delete instruction"
-                           >
-                              <Trash2 size={14} />
-                           </button>
-                        </div>
-                        <textarea
-                           value={selectedInstruction.content}
-                           onChange={(e) => onUpdateSystemInstruction({...selectedInstruction, content: e.target.value})}
-                           placeholder="Optional tone and style instructions for the model"
-                           className="w-full bg-transparent text-sm text-gray-600 dark:text-gray-300 placeholder-gray-400 focus:outline-none resize-none min-h-[120px]"
-                        />
-                    </div>
-                 )}
+              System instructions
+            </label>
+            <div
+              className={`rounded-md border transition-colors ${
+                selectedInstruction
+                  ? 'border-blue-200 bg-blue-50 dark:border-blue-500/50 dark:bg-blue-900/10'
+                  : 'border-gray-200 bg-white dark:border-gray-800 dark:bg-[#161b22]'
+              }`}
+            >
+              <div className="flex items-center gap-2 p-3">
+                <div className="relative min-w-0 flex-1">
+                  <select
+                    id={systemInstructionsSelectId}
+                    disabled={readOnly}
+                    value={config.systemInstructionId || ''}
+                    onChange={event => onChange({
+                      ...config,
+                      systemInstructionId: event.target.value || undefined
+                    })}
+                    className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-2.5 pr-8 text-sm text-gray-800 outline-none transition-colors focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200"
+                  >
+                    <option value="">None</option>
+                    {systemInstructions.map(instruction => (
+                      <option key={instruction.id} value={instruction.id}>
+                        {instruction.title || 'Untitled instruction'}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none absolute right-2.5 top-2.5 text-gray-400">
+                    <ChevronDown size={14} />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  aria-expanded={isSystemInstructionsOpen}
+                  aria-controls={systemInstructionsOptionsId}
+                  aria-label={isSystemInstructionsOpen
+                    ? 'Collapse System instructions options'
+                    : 'Expand System instructions options'}
+                  onClick={() => setIsSystemInstructionsOpen(open => !open)}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-gray-400 transition-colors hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-200"
+                >
+                  {isSystemInstructionsOpen
+                    ? <ChevronUp size={16} />
+                    : <ChevronDown size={16} />}
+                </button>
               </div>
-            )}
-        </div>}
+
+              {isSystemInstructionsOpen && (
+                <div
+                  id={systemInstructionsOptionsId}
+                  className={`space-y-4 border-t p-3 ${
+                    selectedInstruction
+                      ? 'border-blue-100 dark:border-blue-500/20'
+                      : 'border-gray-200 dark:border-gray-800'
+                  }`}
+                >
+                  {selectedInstruction ? (
+                    <div className="space-y-4">
+                      <label className="block space-y-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                        <span>Name</span>
+                        <input
+                          type="text"
+                          disabled={readOnly}
+                          value={selectedInstruction.title}
+                          onChange={event => onUpdateSystemInstruction({
+                            ...selectedInstruction,
+                            title: event.target.value
+                          })}
+                          placeholder="Instruction name"
+                          className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-2 text-sm font-medium text-gray-800 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200"
+                        />
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                        <span>Instructions</span>
+                        <textarea
+                          disabled={readOnly}
+                          value={selectedInstruction.content}
+                          onChange={event => onUpdateSystemInstruction({
+                            ...selectedInstruction,
+                            content: event.target.value
+                          })}
+                          placeholder="Optional tone and style instructions for the model"
+                          className="min-h-[120px] w-full resize-y rounded-md border border-gray-200 bg-white px-2.5 py-2 text-sm font-normal text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-300"
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <p className="text-xs leading-5 text-gray-500 dark:text-gray-400">
+                      Select an instruction to edit it, or create a new one.
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      disabled={readOnly}
+                      onClick={onCreateSystemInstruction}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-700 transition-colors hover:border-gray-300 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-300 dark:hover:border-gray-600 dark:hover:text-white"
+                    >
+                      <Plus size={14} />
+                      New instruction
+                    </button>
+                    {selectedInstruction && (
+                      <button
+                        type="button"
+                        disabled={readOnly}
+                        onClick={() => onDeleteSystemInstruction(selectedInstruction.id)}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 size={14} />
+                        Delete instruction
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         
         {/* Model Selection */}
         <div className="space-y-3">

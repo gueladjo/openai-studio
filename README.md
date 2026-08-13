@@ -70,6 +70,11 @@ Open `http://localhost:5173/openai-studio/`. Vite provides hot module replacemen
 
 Create a chat, open Settings from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
 
+For a standalone chat, the reusable **System instructions** picker stays at the
+top of Configuration. Expand its inline options to create, edit, or delete an
+instruction without leaving the chat settings. Project chats use their
+project's live instructions instead of this reusable-instruction picker.
+
 On WSL, a non-interactive command runner may skip user shell initialization. If
 an expected tool is missing or resolves to a Windows executable under `/mnt/c`,
 compare its resolution in the user's interactive login shell and run the
