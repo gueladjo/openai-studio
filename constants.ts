@@ -5,6 +5,7 @@ import {
   ModelConfig,
   ModelId,
   ReasoningEffort,
+  ReasoningEffortAstra,
   ReasoningEffortFlagship,
   ReasoningEffortGPT56,
   ReasoningEffortNano,
@@ -23,12 +24,22 @@ type ChatConfigInput = Partial<Omit<ChatConfig, 'tools'>> & {
 };
 
 export const APP_VERSION = __APP_VERSION__;
+export const REASONING_EFFORT_ASTRA: ReasoningEffortAstra[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const REASONING_EFFORT_FLAGSHIP: ReasoningEffortFlagship[] = ['none', 'low', 'medium', 'high', 'xhigh'];
 export const REASONING_EFFORT_GPT_5_6: ReasoningEffortGPT56[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 export const REASONING_EFFORT_NANO: ReasoningEffortNano[] = ['minimal', 'low', 'medium', 'high'];
 export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'];
 
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
+  [ModelId.GPT_6_ASTRA]: {
+    id: ModelId.GPT_6_ASTRA,
+    name: 'GPT-6 Astra',
+    knowledgeCutoff: 'April 30, 2026',
+    contextWindowTokens: 1_050_000,
+    supportsVerbosity: true,
+    reasoningOptions: REASONING_EFFORT_ASTRA,
+    defaultReasoningEffort: 'medium'
+  },
   [ModelId.GPT_5_6_SOL]: {
     id: ModelId.GPT_5_6_SOL,
     name: 'GPT-5.6 Sol',
@@ -86,6 +97,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
 };
 
 export const MODELS = [
+  MODEL_CONFIGS[ModelId.GPT_6_ASTRA],
   MODEL_CONFIGS[ModelId.GPT_5_6_SOL],
   MODEL_CONFIGS[ModelId.GPT_5_6_TERRA],
   MODEL_CONFIGS[ModelId.GPT_5_6_LUNA],

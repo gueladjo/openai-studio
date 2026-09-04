@@ -3,7 +3,12 @@
 import React, { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, type ChatConfig, type SystemInstruction } from '../types';
+import {
+  DEFAULT_CONFIG,
+  ModelId,
+  type ChatConfig,
+  type SystemInstruction
+} from '../types';
 import { ConfigPanel } from './ConfigPanel';
 
 interface HarnessProps {
@@ -254,6 +259,26 @@ describe('ConfigPanel', () => {
     expect(getWebSearchDisclosure().getAttribute('aria-expanded')).toBe('false');
     expect(getSwitch().getAttribute('aria-checked')).toBe('true');
     expect(onConfigChange).not.toHaveBeenCalled();
+  });
+
+  it('selects Astra with its model-specific reasoning options', async () => {
+    const onConfigChange = await renderPanel();
+    const modelPicker = Array.from(container.querySelectorAll('select')).find(
+      select => select.querySelector(`option[value="${ModelId.GPT_6_ASTRA}"]`)
+    )!;
+
+    expect(modelPicker.querySelector(
+      `option[value="${ModelId.GPT_6_ASTRA}"]`
+    )?.textContent).toBe('GPT-6 Astra');
+
+    await changeValue(modelPicker, ModelId.GPT_6_ASTRA, 'change');
+
+    expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: ModelId.GPT_6_ASTRA,
+      reasoningEffort: 'medium'
+    }));
+    expect(getButton('none')).toBeUndefined();
+    expect(getButton('max')).toBeDefined();
   });
 
   it('keeps the System instructions picker visible while its editor starts collapsed', async () => {

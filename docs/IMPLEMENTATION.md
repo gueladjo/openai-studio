@@ -94,7 +94,9 @@ chats hide this picker because their project instructions are resolved live.
 
 Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
-older workspaces remain loadable.
+older workspaces remain loadable. GPT-6 Astra is selectable with Low, Medium,
+High, Xhigh, and Max reasoning; Medium is its fallback for unsupported saved
+efforts. GPT-5.6 Sol remains the new-chat default.
 
 Web Search and Code Interpreter can be enabled per chat. The Web Search card is
 an accessible disclosure that starts collapsed; its local disclosure state is

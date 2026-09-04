@@ -97,6 +97,23 @@ describe('normalizeChatConfig', () => {
       textVerbosity: DEFAULT_CONFIG.textVerbosity
     });
   });
+
+  it('normalizes Astra reasoning to its supported range', () => {
+    expect(normalizeChatConfig({
+      model: ModelId.GPT_6_ASTRA,
+      reasoningEffort: 'none'
+    })).toMatchObject({
+      model: ModelId.GPT_6_ASTRA,
+      reasoningEffort: 'medium'
+    });
+    expect(normalizeChatConfig({
+      model: ModelId.GPT_6_ASTRA,
+      reasoningEffort: 'max'
+    })).toMatchObject({
+      model: ModelId.GPT_6_ASTRA,
+      reasoningEffort: 'max'
+    });
+  });
 });
 
 describe('model catalog', () => {
@@ -112,6 +129,7 @@ describe('model catalog', () => {
   });
 
   it('tracks the context window for each model', () => {
+    expect(MODEL_CONFIGS[ModelId.GPT_6_ASTRA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_SOL].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_TERRA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_LUNA].contextWindowTokens).toBe(1_050_000);
@@ -120,8 +138,9 @@ describe('model catalog', () => {
     expect(MODEL_CONFIGS[ModelId.GPT_O3].contextWindowTokens).toBe(200_000);
   });
 
-  it('orders the picker with Luna between Terra and GPT-5.5', () => {
+  it('orders the picker with Astra first and Luna between Terra and GPT-5.5', () => {
     expect(MODELS.map(model => model.id)).toEqual([
+      ModelId.GPT_6_ASTRA,
       ModelId.GPT_5_6_SOL,
       ModelId.GPT_5_6_TERRA,
       ModelId.GPT_5_6_LUNA,

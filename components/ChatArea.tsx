@@ -1427,7 +1427,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
              <Bot size={32} className="text-blue-600 dark:text-blue-500" />
         </div>
         <p className="text-lg font-medium text-gray-700 dark:text-gray-300">Welcome to OpenAI Studio</p>
-        <p className="text-sm mt-2 text-gray-500 dark:text-gray-400">Create a new chat to get started with GPT-5 models.</p>
+        <p className="text-sm mt-2 text-gray-500 dark:text-gray-400">Create a new chat to get started with OpenAI models.</p>
       </div>
     );
   }

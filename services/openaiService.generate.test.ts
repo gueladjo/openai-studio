@@ -146,7 +146,7 @@ describe('OpenAI request contracts', () => {
       [userMessage],
       {
         ...DEFAULT_CONFIG,
-        model: ModelId.GPT_5_6_SOL,
+        model: ModelId.GPT_6_ASTRA,
         reasoningEffort: 'max',
         textVerbosity: 'high',
         tools: {
@@ -166,7 +166,7 @@ describe('OpenAI request contracts', () => {
       timeout: 60 * 60 * 1000
     });
     expect(createResponseMock.mock.calls[0][0]).toEqual({
-      model: ModelId.GPT_5_6_SOL,
+      model: ModelId.GPT_6_ASTRA,
       input: [{ role: 'user', content: 'Solve this problem.' }],
       tools: [
         {
@@ -196,8 +196,8 @@ describe('OpenAI request contracts', () => {
         verbosity: 'high'
       },
       instructions: (
-        'You are GPT-5.6 Sol, an OpenAI model. '
-        + 'Your knowledge cutoff is February 16, 2026.\n\n'
+        'You are GPT-6 Astra, an OpenAI model. '
+        + 'Your knowledge cutoff is April 30, 2026.\n\n'
         + 'Respond with concise examples.'
       ),
       reasoning: {

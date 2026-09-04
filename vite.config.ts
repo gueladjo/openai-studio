@@ -37,7 +37,7 @@ export const getInjectedProcessEnvironment = (
 export const getPwaManifest = (base: string) => ({
   name: 'OpenAI Studio',
   short_name: 'AI Studio',
-  description: 'A professional chat interface for OpenAI GPT-5 models',
+  description: 'A professional chat interface for OpenAI models',
   theme_color: '#0d1117',
   background_color: '#0d1117',
   display: 'standalone' as const,

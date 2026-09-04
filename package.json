@@ -4,7 +4,7 @@
   "version": "0.8.0",
   "main": "electron/main.js",
   "author": "OpenAI Studio User",
-  "description": "A professional chat interface for OpenAI GPT-5 models.",
+  "description": "A professional chat interface for OpenAI models.",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"

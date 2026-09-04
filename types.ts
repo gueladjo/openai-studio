@@ -17,6 +17,7 @@ import type {
 } from 'openai/resources/responses/responses';
 
 export enum ModelId {
+  GPT_6_ASTRA = 'gpt-6-astra',
   GPT_5_6_SOL = 'gpt-5.6-sol',
   GPT_5_6_TERRA = 'gpt-5.6-terra',
   GPT_5_6_LUNA = 'gpt-5.6-luna',
@@ -26,10 +27,12 @@ export enum ModelId {
 }
 
 export type ReasoningEffortFlagship = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ReasoningEffortAstra = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ReasoningEffortGPT56 = ReasoningEffortFlagship | 'max';
 export type ReasoningEffortNano = 'minimal' | 'low' | 'medium' | 'high';
 export type ReasoningEffortO3 = 'low' | 'medium' | 'high';
 export type ReasoningEffort =
+  | ReasoningEffortAstra
   | ReasoningEffortGPT56
   | ReasoningEffortFlagship
   | ReasoningEffortNano
