@@ -3,9 +3,8 @@
 ## Status And Authority
 
 - Status: implemented current behavior and approved constraints.
-- Last meaningful update: 2026-08-03, adding local projects, project-owned
-  instructions and sources, remote File/vector-store indexing, and portable
-  project archives.
+- Last meaningful update: 2026-09-04, clarifying supported storage/archive
+  formats, current-format backend migration, and optional-field defaults.
 - Last verified against code and tests: 2026-08-03.
 
 This document is authoritative for intended application behavior, architecture,
@@ -94,18 +93,19 @@ chats hide this picker because their project instructions are resolved live.
 
 Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
-older workspaces remain loadable. GPT-6 Astra is selectable with Low, Medium,
-High, Xhigh, and Max reasoning; Medium is its fallback for unsupported saved
-efforts. GPT-5.6 Sol remains the new-chat default.
+existing chats in supported workspace formats remain loadable. GPT-6 Astra is
+selectable with Low, Medium, High, Xhigh, and Max reasoning; Medium is its fallback
+for unsupported saved efforts. GPT-5.6 Sol remains the new-chat default.
 
 Web Search and Code Interpreter can be enabled per chat. The Web Search card is
 an accessible disclosure that starts collapsed; its local disclosure state is
 not persisted and is independent from the persisted enable switch. Expanded
 options remain editable while the tool is disabled. Search context supports
 Low, Medium, and High. Approximate location supports bounded City and Region
-text plus a two-letter Country code, with an explicit clear action. New and
-legacy chats default to Medium and New York, NY, US. A cleared location is
-persisted as `null`. Code Interpreter requests an automatic container.
+text plus a two-letter Country code, with an explicit clear action. New chats
+and saved configurations without these options default to Medium and New York,
+NY, US. A cleared location is persisted as `null`. Code Interpreter requests an
+automatic container.
 
 Supported attachments are validated and normalized by
 `utils/attachmentValidation.ts`, including the 50 MiB per-attachment limit.
@@ -455,9 +455,10 @@ messages, chat configuration, timestamps, and optional `pendingRequest`
 records. Persisted assistant messages carry the
 static model name used for historical labels and may carry an ordered
 `outputMessages` list containing content plus an optional `commentary` or
-`final_answer` phase. The legacy aggregate `content` remains required so older
-workspaces and partial/error handling stay compatible; `outputMessages` is an
-additive schema-version-1 field.
+`final_answer` phase. Aggregate `content` remains required even when
+`outputMessages` is present. `outputMessages` is optional within the supported
+formats; messages without it retain the aggregate representation used by
+partial/error handling.
 
 `Session.projectId` is an optional reference into `Project[]`. Project records
 own inline instructions, normalized defaults without `systemInstructionId`,
@@ -467,7 +468,9 @@ sources.
 
 Local schema v5 is the only supported persisted format and uses the strict
 color-free project shape. Earlier generation versions are rejected without
-republishing or changing their records.
+republishing or changing their records. Portable archives use a separate v3
+format. Optional-field defaults apply within these supported formats and do not
+migrate earlier local or archive versions.
 
 `ProjectRemoteState` is a separate nonportable registry of project vector-store
 IDs, project-exclusive OpenAI File IDs, transient status/error/usage, SHA-256 API
@@ -495,12 +498,12 @@ the compatibility or schema-version policy. It must re-check IDs and
 cross-references and update schema, storage integration, and portable archive
 contracts as applicable.
 
-`ChatConfig.tools.webSearchOptions` is an additive schema-version-1 field.
-Missing options in legacy chats normalize to Medium with the approximate New
-York, NY, US location. An explicit `userLocation: null` remains distinct and
-means no geographic hint. Runtime validation accepts only Low, Medium, or High,
-the `approximate` location discriminator, bounded City and Region strings, and
-an at-most-two-letter Country value; unknown nested keys are rejected.
+Persisted chat configurations may omit `tools.webSearchOptions`. Missing options
+normalize to Medium with the approximate New York, NY, US location. An explicit
+`userLocation: null` remains distinct and means no geographic hint. Runtime
+validation accepts only Low, Medium, or High, the `approximate` location
+discriminator, bounded City and Region strings, and an at-most-two-letter Country
+value; unknown nested keys are rejected.
 
 ## Local Storage And Recovery
 
@@ -509,10 +512,10 @@ Electron requires OPFS and must fail visibly instead of silently opening an
 empty IndexedDB workspace. Backend identity is persisted so a temporary
 capability change cannot select a different workspace unnoticed.
 
-When both stores contain data, or IndexedDB data can be migrated to OPFS, the
-writer resolves the choice. Reader tabs cannot make that decision. Migration
-copies and byte-verifies the complete source before switching identity and
-rolls back an incomplete OPFS copy.
+When both stores contain data, or current-format IndexedDB data can be migrated
+to OPFS, the writer resolves the choice. Reader tabs cannot make that decision.
+Backend migration copies and byte-verifies the complete source before switching
+identity and rolls back an incomplete OPFS copy.
 
 Local storage schema v5 uses alternating `workspace_manifest_a.json` and
 `workspace_manifest_b.json` records. Each manifest references immutable
@@ -538,9 +541,10 @@ snapshots, attachment directories, and schema-v3/v4 manifests are unsupported.
 They are never converted into an empty workspace or overwritten during load.
 
 Project sources participate in the exact declared blob union and in object
-reuse, pinning, fallback, and bounded garbage collection. Backend migration is
-independent of schema migration: it copies and byte-verifies complete current
-schema-v5 records between IndexedDB and OPFS without republishing them.
+reuse, pinning, fallback, and bounded garbage collection. Supported backend
+migration copies and byte-verifies complete schema-v5 records from IndexedDB to
+OPFS without republishing them. It does not upgrade unsupported local formats;
+there is no schema migration path for earlier versions.
 
 ## Portable Archive Contract
 

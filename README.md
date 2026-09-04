@@ -122,9 +122,10 @@ either the Settings key or the compiled local key.
 
 The Vitest suite is deterministic and does not require a live API key, browser
 profile, OPFS directory, or Electron process. It covers the App request
-lifecycle, Responses API payloads and stream parsing, storage and migration
-contracts, build security policy, Electron window policy, and focused utility
-and component behavior. There is currently no lint or format script.
+lifecycle, Responses API payloads and stream parsing, storage and current-format
+backend migration contracts, build security policy, Electron window policy, and
+focused utility and component behavior. There is currently no lint or format
+script.
 
 ## Web And PWA
 
