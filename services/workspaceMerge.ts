@@ -23,6 +23,7 @@ import {
   stageWorkspaceArchiveBlobs
 } from './workspaceArchive';
 import { runWithVerifiedWorkspaceRecovery } from './workspaceRestore';
+import { iterateWorkspaceBlobReferences } from './workspaceBlobs';
 
 export interface WorkspaceMergeCounts {
   imported: number;
@@ -255,27 +256,6 @@ const remapSession = (
   };
 };
 
-const collectBlobHashes = (sessions: Session[]): Set<string> => {
-  const hashes = new Set<string>();
-  sessions.forEach(session => {
-    session.messages.forEach(message => {
-      message.attachments?.forEach(attachment => {
-        if (attachment.localBlob) hashes.add(attachment.localBlob.sha256);
-      });
-      message.generatedFiles?.forEach(file => {
-        if (file.localBlob) hashes.add(file.localBlob.sha256);
-      });
-    });
-  });
-  return hashes;
-};
-
-const addProjectBlobHashes = (hashes: Set<string>, projects: Project[]): void => {
-  projects.forEach(project => {
-    project.sources.forEach(source => hashes.add(source.localBlob.sha256));
-  });
-};
-
 const createMergedProjectName = (
   name: string,
   usedNames: ReadonlySet<string>
@@ -446,8 +426,10 @@ export const createWorkspaceMergePlan = (
     projects
   });
 
-  const importedBlobHashes = collectBlobHashes(importedSessions);
-  addProjectBlobHashes(importedBlobHashes, importedProjectsAdded);
+  const importedBlobHashes = new Set(Array.from(
+    iterateWorkspaceBlobReferences(importedSessions, importedProjectsAdded),
+    reference => reference.sha256
+  ));
 
   return {
     replacement: {

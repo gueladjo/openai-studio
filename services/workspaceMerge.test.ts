@@ -311,16 +311,25 @@ describe('workspace merge planning', () => {
       mimeType: 'text/plain'
     };
     const duplicate = createSession('duplicate', 1, { blob: skippedBlob });
+    const accepted = createSession('accepted', 2, { blob: acceptedBlob });
+    accepted.messages.push({
+      id: 'accepted-output', role: 'assistant', content: 'Done.',
+      modelName: 'GPT-5.6 Sol', timestamp: 2,
+      generatedFiles: [{
+        filename: 'output.txt', fileId: 'file-output', containerId: 'container-output',
+        localBlob: { ...acceptedBlob, sha256: 'd'.repeat(64) }
+      }]
+    });
+    const project = createProject('accepted-project', 'accepted-source', 'c'.repeat(64));
 
     const plan = createWorkspaceMergePlan(
       currentWorkspace([duplicate]),
-      importedWorkspace([
-        structuredClone(duplicate),
-        createSession('accepted', 2, { blob: acceptedBlob })
-      ])
+      { ...importedWorkspace([structuredClone(duplicate), accepted]), projects: [project] }
     );
 
-    expect([...plan.importedBlobHashes]).toEqual([acceptedBlob.sha256]);
+    expect([...plan.importedBlobHashes]).toEqual([
+      acceptedBlob.sha256, 'd'.repeat(64), project.sources[0].localBlob.sha256
+    ]);
   });
 
   it('remaps colliding projects, sources, memberships, and file citations', () => {
@@ -395,6 +404,7 @@ describe('workspace merge planning', () => {
 
     expect(plan.counts.skipped).toBe(1);
     expect(plan.replacement.sessions[0].projectId).toBe(localProject.id);
+    expect(plan.importedBlobHashes.size).toBe(0);
   });
 
   it('rejects a merged workspace that exceeds the session limit', () => {

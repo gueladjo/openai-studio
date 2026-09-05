@@ -246,9 +246,16 @@ describe('portable workspace archive', () => {
       createdAt: 1,
       updatedAt: 2
     }];
+    const projectSessions = structuredClone(snapshot.sessions);
+    const sharedReference = projects[0].sources[0].localBlob;
+    projectSessions[0].messages[0].attachments![0] = {
+      name: 'shared.txt', type: 'text/plain', size: projectBlob.size,
+      localBlob: sharedReference
+    };
+    projectSessions[0].messages[1].generatedFiles![1].localBlob = sharedReference;
     const projectSnapshot: WorkspaceSnapshot = {
       ...snapshot,
-      sessions: snapshot.sessions.map(session => ({
+      sessions: projectSessions.map(session => ({
         ...session,
         projectId: projects[0].id
       })),
@@ -288,12 +295,24 @@ describe('portable workspace archive', () => {
       projectSources: 1
     });
     expect(inspected.replacement.projects).toEqual(projects);
+    expect(inspected.manifest.entries.filter(entry => entry.path.startsWith('blobs/')))
+      .toEqual([{ path: `blobs/${projectHash}`, byteLength: projectBlob.size, sha256: projectHash }]);
     expect(inspected.replacement.sessions[0].projectId).toBe(projects[0].id);
     expect(await inspected.replacement.blobs.get(projectHash)?.text())
       .toBe('project knowledge');
     expect(inspected.replacement.projectRemoteState).toBeUndefined();
     expect(inspected.manifest.entries.map(entry => entry.path))
       .not.toContain('workspace/project_remote_state.json');
+
+    const inconsistentSessions = structuredClone(projectSnapshot.sessions);
+    inconsistentSessions[0].messages[1].generatedFiles![1].localBlob = {
+      ...sharedReference, byteSize: sharedReference.byteSize + 1
+    };
+    const inconsistentArchive = await createWorkspaceArchive({
+      ...projectSnapshot, sessions: inconsistentSessions
+    }, { reason: 'manual' });
+    await expect(inspectWorkspaceArchive(inconsistentArchive))
+      .rejects.toThrow('byte metadata is inconsistent');
   });
 
   it('round-trips metadata-only attachments without inventing blob entries', async () => {

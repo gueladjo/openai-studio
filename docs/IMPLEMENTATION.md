@@ -299,6 +299,10 @@ Primary boundaries are:
   to the generation store rather than acting as public API selectors.
 - `services/workspaceSchema.ts`: strict runtime boundary for persisted sessions,
   settings, instructions, IDs, limits, and cross-references.
+- `services/workspaceBlobs.ts`: pure enumeration of attachment, generated-file,
+  and project-source blob references for generations, archives, and merge plans.
+  Each consumer retains its own integrity checks and deduplication policy;
+  merge enumerates only accepted imported chats and projects.
 - `services/storageBackend.ts`: OPFS/IndexedDB identity, conflict, migration,
   and Electron fallback policy.
 - `services/workspaceGenerationStore.ts`: immutable object/blob publication,

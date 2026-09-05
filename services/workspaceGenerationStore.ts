@@ -37,6 +37,7 @@ import {
   WORKSPACE_OBJECT_PREFIX,
   WorkspaceManifestSlot
 } from './workspaceGeneration';
+import { iterateWorkspaceBlobReferences } from './workspaceBlobs';
 
 export interface WorkspaceGenerationAdapter {
   readText(path: string): Promise<string | null>;
@@ -104,7 +105,7 @@ const collectLocalBlobReferences = (
   projects: Project[]
 ): Map<string, LocalBlobReference> => {
   const references = new Map<string, LocalBlobReference>();
-  const addReference = (reference: LocalBlobReference): void => {
+  for (const reference of iterateWorkspaceBlobReferences(sessions, projects)) {
     const existing = references.get(reference.sha256);
     if (existing && existing.byteSize !== reference.byteSize) {
       throw new WorkspaceGenerationError(
@@ -112,21 +113,7 @@ const collectLocalBlobReferences = (
       );
     }
     references.set(reference.sha256, reference);
-  };
-
-  sessions.forEach(session => {
-    session.messages.forEach(message => {
-      message.attachments?.forEach(attachment => {
-        if (attachment.localBlob) addReference(attachment.localBlob);
-      });
-      message.generatedFiles?.forEach(file => {
-        if (file.localBlob) addReference(file.localBlob);
-      });
-    });
-  });
-  projects.forEach(project => {
-    project.sources.forEach(source => addReference(source.localBlob));
-  });
+  }
 
   return references;
 };

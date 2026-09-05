@@ -631,13 +631,33 @@ describe('storage public contracts', () => {
       updatedAt: 1
     };
 
-    await storage.writeWorkspaceState(handle, { projects: [project] });
+    const session = createSession('Shared source bytes', [{
+      name: 'attached.txt', type: 'text/plain', localBlob
+    }, { name: 'metadata-only.txt', type: 'text/plain' }]);
+    session.messages.push({
+      id: 'shared-generated-file', role: 'assistant', content: 'Done.',
+      modelName: 'GPT-5.6 Sol', timestamp: 2,
+      generatedFiles: [{
+        filename: 'generated.txt', fileId: 'file-shared',
+        containerId: 'container-shared', localBlob
+      }]
+    });
+    await storage.writeWorkspaceState(handle, { projects: [project], sessions: [session] });
     await expect(readField('projects')).resolves.toEqual([project]);
+    const manifest = JSON.parse((await fileSystem.readText('data/workspace_manifest_b.json'))!);
+    expect(manifest.blobs).toEqual([{ sha256: localBlob.sha256, byteLength: bytes.size }]);
     await expect(storage.readLocalBlob(handle, localBlob)).resolves.toMatchObject({
       size: bytes.size
     });
 
     const currentRevision = storage.getWorkspaceRevision();
+    const committedSessions = await readField('sessions');
+    const inconsistent = structuredClone(session);
+    inconsistent.messages[1].generatedFiles![0].localBlob!.byteSize += 1;
+    await expect(storage.writeWorkspaceState(handle, { sessions: [inconsistent] }))
+      .rejects.toThrow('inconsistent byte metadata');
+    expect(storage.getWorkspaceRevision()).toBe(currentRevision);
+    await expect(readField('sessions')).resolves.toEqual(committedSessions);
     await expect(storage.writeWorkspaceState(handle, { projects: [{
       ...project,
       sources: [{

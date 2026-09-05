@@ -8,7 +8,8 @@ import {
   type Entry
 } from '@zip.js/zip.js';
 import { APP_VERSION } from '../constants';
-import { LocalBlobReference, Project, Session, SystemInstruction } from '../types';
+import { Project, Session, SystemInstruction } from '../types';
+import { iterateWorkspaceBlobReferences } from './workspaceBlobs';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 import {
   BackupSettings,
@@ -324,31 +325,6 @@ const getCounts = (sessions: Session[], projects: Project[] = []): {
   return { counts, uncachedGeneratedFileCount };
 };
 
-const getBlobReferences = (
-  sessions: Session[],
-  projects: Project[] = []
-): Map<string, LocalBlobReference> => {
-  const references = new Map<string, LocalBlobReference>();
-  sessions.forEach(session => {
-    session.messages.forEach(message => {
-      message.attachments?.forEach(attachment => {
-        if (attachment.localBlob) {
-          references.set(attachment.localBlob.sha256, attachment.localBlob);
-        }
-      });
-      message.generatedFiles?.forEach(file => {
-        if (file.localBlob) references.set(file.localBlob.sha256, file.localBlob);
-      });
-    });
-  });
-  projects.forEach(project => {
-    project.sources.forEach(source => {
-      references.set(source.localBlob.sha256, source.localBlob);
-    });
-  });
-  return references;
-};
-
 const createJsonEntry = (
   path: string,
   value: unknown
@@ -394,7 +370,10 @@ const createWorkspaceArchiveFromSnapshot = async (
   );
   const projects = snapshot.projects || [];
   const projectsEntry = createJsonEntry('workspace/projects.json', projects);
-  const blobReferences = getBlobReferences(snapshot.sessions, projects);
+  const blobReferences = new Map(Array.from(
+    iterateWorkspaceBlobReferences(snapshot.sessions, projects),
+    reference => [reference.sha256, reference] as const
+  ));
   const blobEntries = [...blobReferences.values()]
     .sort((left, right) => left.sha256.localeCompare(right.sha256))
     .map(reference => ({
@@ -795,7 +774,10 @@ export const inspectWorkspaceArchive = async (
         }
       });
     });
-    const referencedBlobHashes = getBlobReferences(orderedSessions, projects);
+    const referencedBlobHashes = new Set(Array.from(
+      iterateWorkspaceBlobReferences(orderedSessions, projects),
+      reference => reference.sha256
+    ));
     if (
       blobSizes.size !== referencedBlobHashes.size ||
       [...blobSizes.keys()].some(hash => !referencedBlobHashes.has(hash))

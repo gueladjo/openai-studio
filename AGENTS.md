@@ -38,6 +38,7 @@ Use this map to start a change at the narrowest boundary:
 | Persisted session/settings/instruction/project/remote-state fields, bounds, IDs, and references | `services/workspaceSchema.ts` | `services/workspaceSchema.test.ts`; add `services/storage.integration.test.ts` when the public storage flow changes |
 | OPFS/IndexedDB selection, current-format backend migration decisions, and Electron fallback policy | `services/storageBackend.ts` | `services/storageBackend.test.ts`; `services/storage.integration.test.ts` for migration copying and rollback |
 | Immutable objects, alternating manifests, complete-generation validation, pinning, and GC | `services/workspaceGenerationStore.ts`; manifest types in `services/workspaceGeneration.ts` | `services/storage.integration.test.ts` |
+| Attachment, generated-file, and project-source blob traversal | `services/workspaceBlobs.ts` | `services/storage.integration.test.ts`; `services/workspaceArchive.test.ts`; `services/workspaceMerge.test.ts` |
 | Portable ZIP layout, hashes, path/size limits, and merge/restore inspection | `services/workspaceArchive.ts` | `services/workspaceArchive.test.ts` |
 | Whole-chat backup merge, collision remapping, instruction reuse, ordering, and imported-blob selection | `services/workspaceMerge.ts` | `services/workspaceMerge.test.ts`; `services/storage.integration.test.ts` |
 | Mandatory recovery-point creation and merge/restore undo | `services/workspaceRestore.ts` | `services/storage.integration.test.ts` |
