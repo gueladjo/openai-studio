@@ -300,7 +300,7 @@ export type OpenAIResponsesStreamEvent = ResponseStreamEvent;
 export type OpenAIResponsesUsage = ResponseUsage;
 
 export const DEFAULT_CONFIG: ChatConfig = {
-  model: ModelId.GPT_5_6_SOL,
+  model: ModelId.GPT_6_ASTRA,
   reasoningEffort: 'medium',
   textVerbosity: 'medium',
   tools: {

@@ -3,8 +3,7 @@
 ## Status And Authority
 
 - Status: implemented current behavior and approved constraints.
-- Last meaningful update: 2026-09-04, clarifying supported storage/archive
-  formats, current-format backend migration, and optional-field defaults.
+- Last meaningful update: 2026-09-05, making GPT-6 Astra the new-chat default.
 - Last verified against code and tests: 2026-08-03.
 
 This document is authoritative for intended application behavior, architecture,
@@ -94,8 +93,8 @@ chats hide this picker because their project instructions are resolved live.
 Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
 existing chats in supported workspace formats remain loadable. GPT-6 Astra is
-selectable with Low, Medium, High, Xhigh, and Max reasoning; Medium is its fallback
-for unsupported saved efforts. GPT-5.6 Sol remains the new-chat default.
+the new-chat default. It is selectable with Low, Medium, High, Xhigh, and Max
+reasoning; Medium is its fallback for unsupported saved efforts.
 
 Web Search and Code Interpreter can be enabled per chat. The Web Search card is
 an accessible disclosure that starts collapsed; its local disclosure state is

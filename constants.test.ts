@@ -117,6 +117,10 @@ describe('normalizeChatConfig', () => {
 });
 
 describe('model catalog', () => {
+  it('defaults new chats to GPT-6 Astra', () => {
+    expect(DEFAULT_CONFIG.model).toBe(ModelId.GPT_6_ASTRA);
+  });
+
   it('contains every ModelId exactly once with a valid default effort', () => {
     const modelIds = Object.values(ModelId);
 

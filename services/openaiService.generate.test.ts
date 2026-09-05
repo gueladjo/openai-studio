@@ -802,7 +802,11 @@ describe('generateResponse reasoning summaries', () => {
 
     await generateResponse(
       [userMessage],
-      { ...DEFAULT_CONFIG, reasoningEffort: 'none' },
+      {
+        ...DEFAULT_CONFIG,
+        model: ModelId.GPT_5_6_SOL,
+        reasoningEffort: 'none'
+      },
       'reasoning-disabled-key'
     );
 

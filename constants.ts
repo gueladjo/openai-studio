@@ -174,7 +174,7 @@ export const normalizeWebSearchOptions = (value: unknown): WebSearchOptions => {
 };
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
-  return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[ModelId.GPT_5_6_SOL];
+  return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[DEFAULT_CONFIG.model];
 };
 
 export const getModelInstructions = (

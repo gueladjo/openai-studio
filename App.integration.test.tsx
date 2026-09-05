@@ -776,7 +776,7 @@ describe('App workspace and request lifecycle', () => {
       role: 'assistant',
       status: 'error',
       model: DEFAULT_CONFIG.model,
-      modelName: 'GPT-5.6 Sol',
+      modelName: 'GPT-6 Astra',
       reasoningEffort: DEFAULT_CONFIG.reasoningEffort
     });
   });
@@ -1243,7 +1243,7 @@ describe('App workspace and request lifecycle', () => {
         }],
         status: 'complete',
         openaiResponseId: 'resp-complete',
-        modelName: 'GPT-5.6 Sol'
+        modelName: 'GPT-6 Astra'
       })
     ]);
     expect(sessionA?.messages.at(-1)?.content).not.toContain(
@@ -1281,7 +1281,7 @@ describe('App workspace and request lifecycle', () => {
     expect(failedSession?.messages.at(-1)).toMatchObject({
       content: 'Useful partial output.\n\nError: Connection lost.',
       status: 'error',
-      modelName: 'GPT-5.6 Sol'
+      modelName: 'GPT-6 Astra'
     });
   });
 
@@ -1324,7 +1324,7 @@ describe('App workspace and request lifecycle', () => {
       }],
       thinking: 'Unflushed reasoning.',
       status: 'stopped',
-      modelName: 'GPT-5.6 Sol'
+      modelName: 'GPT-6 Astra'
     });
 
     await act(async () => {
