@@ -383,6 +383,13 @@ queue. The separate project-operation owner serializes every project-source
 mutation and rejects persistence from an invalidated workspace epoch. Restore
 and undo acquire the workspace-mutation barrier before their first asynchronous
 flush, so new project work cannot enter between a busy check and replacement.
+App's restore and merge handlers share `runWorkspaceArchiveMutation`, which
+owns queue admission, the save flush, operation invalidation, archive progress
+and cancellation, revision publication, guarded reload, and cleanup. Restore
+keeps its preview/confirmation and may invalidate active responses; merge starts
+immediately from file selection and requires idle responses. Both exclude
+project work. Merge retains its post-action backup evaluation. Undo and Electron
+close retain their separate workflows on the existing operation queue.
 
 Source-library additions/removals, permanent project deletion, and remote
 cleanup-journal transitions save immediately. A project deletion uses an

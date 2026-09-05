@@ -2986,6 +2986,61 @@ function App() {
     }
   };
 
+  const runWorkspaceArchiveMutation = (
+    action: WorkspaceRecoveryAction,
+    file: File
+  ): Promise<void> => enqueueDestructiveOperation(async () => {
+    if (action === 'merge') {
+      if (
+        !workspaceCanWriteRef.current ||
+        activeRequestsRef.current.size > 0 ||
+        processingSessionIdsRef.current.size > 0 ||
+        projectOperationOwnerRef.current!.isBusy
+      ) {
+        throw new Error('Finish active responses before merging a backup.');
+      }
+    } else if (projectOperationOwnerRef.current!.isBusy) {
+      throw new Error('Wait for project source work to finish before restoring a workspace.');
+    }
+    await flushPendingSaves();
+    invalidateWorkspaceOperations();
+    const operation = operationRegistryRef.current.begin({
+      id: crypto.randomUUID(),
+      kind: `workspace-${action}`
+    });
+    const handle = dirHandleRef.current;
+    try {
+      if (!handle || !workspaceCanWriteRef.current) {
+        throw createOperationAbortError();
+      }
+      if (action === 'merge') archiveAbortRef.current?.abort();
+      archiveAbortRef.current = operation.controller;
+      const mutate = action === 'restore' ? restoreWorkspaceArchive : mergeWorkspaceArchive;
+      const result = await mutate(handle, file, {
+        filename: file.name,
+        signal: operation.controller.signal,
+        onProgress: setArchiveProgress
+      });
+      if (archiveAbortRef.current === operation.controller) {
+        archiveAbortRef.current = null;
+        setArchiveProgress(null);
+      }
+      workspaceCoordinatorRef.current?.publishUpdate(result.revision);
+      await loadWorkspaceData(
+        handle,
+        'writer',
+        () => isOperationCurrent(operation, false)
+      );
+      setUndoWorkspaceAction(action);
+    } finally {
+      if (archiveAbortRef.current === operation.controller) {
+        archiveAbortRef.current = null;
+      }
+      setArchiveProgress(null);
+      operationRegistryRef.current.complete(operation);
+    }
+  });
+
   const confirmWorkspaceRestore = async () => {
     const pending = pendingRestore;
     if (!pending || !dirHandleRef.current) return;
@@ -2996,46 +3051,7 @@ function App() {
     setPendingRestore(null);
 
     try {
-      await enqueueDestructiveOperation(async () => {
-        if (projectOperationOwnerRef.current!.isBusy) {
-          throw new Error('Wait for project source work to finish before restoring a workspace.');
-        }
-        await flushPendingSaves();
-        invalidateWorkspaceOperations();
-        const operation = operationRegistryRef.current.begin({
-          id: crypto.randomUUID(),
-          kind: 'workspace-restore'
-        });
-        const handle = dirHandleRef.current;
-        try {
-          if (!handle || !workspaceCanWriteRef.current) {
-            throw createOperationAbortError();
-          }
-          archiveAbortRef.current = operation.controller;
-          await restoreWorkspaceArchive(handle, pending.file, {
-            filename: pending.file.name,
-            signal: operation.controller.signal,
-            onProgress: setArchiveProgress
-          });
-          if (archiveAbortRef.current === operation.controller) {
-            archiveAbortRef.current = null;
-            setArchiveProgress(null);
-          }
-          workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
-          await loadWorkspaceData(
-            handle,
-            'writer',
-            () => isOperationCurrent(operation, false)
-          );
-          setUndoWorkspaceAction('restore');
-        } finally {
-          if (archiveAbortRef.current === operation.controller) {
-            archiveAbortRef.current = null;
-          }
-          setArchiveProgress(null);
-          operationRegistryRef.current.complete(operation);
-        }
-      });
+      await runWorkspaceArchiveMutation('restore', pending.file);
     } catch (error) {
       if (!isAbortError(error)) {
         alert(`Workspace restore failed: ${getErrorMessage(error)}`);
@@ -3056,52 +3072,7 @@ function App() {
     }
 
     try {
-      await enqueueDestructiveOperation(async () => {
-        if (
-          !workspaceCanWriteRef.current ||
-          activeRequestsRef.current.size > 0 ||
-          processingSessionIdsRef.current.size > 0 ||
-          projectOperationOwnerRef.current!.isBusy
-        ) {
-          throw new Error('Finish active responses before merging a backup.');
-        }
-        await flushPendingSaves();
-        invalidateWorkspaceOperations();
-        const operation = operationRegistryRef.current.begin({
-          id: crypto.randomUUID(),
-          kind: 'workspace-merge'
-        });
-        const handle = dirHandleRef.current;
-        try {
-          if (!handle || !workspaceCanWriteRef.current) {
-            throw createOperationAbortError();
-          }
-          archiveAbortRef.current?.abort();
-          archiveAbortRef.current = operation.controller;
-          const result = await mergeWorkspaceArchive(handle, file, {
-            filename: file.name,
-            signal: operation.controller.signal,
-            onProgress: setArchiveProgress
-          });
-          if (archiveAbortRef.current === operation.controller) {
-            archiveAbortRef.current = null;
-            setArchiveProgress(null);
-          }
-          workspaceCoordinatorRef.current?.publishUpdate(result.revision);
-          await loadWorkspaceData(
-            handle,
-            'writer',
-            () => isOperationCurrent(operation, false)
-          );
-          setUndoWorkspaceAction('merge');
-        } finally {
-          if (archiveAbortRef.current === operation.controller) {
-            archiveAbortRef.current = null;
-          }
-          setArchiveProgress(null);
-          operationRegistryRef.current.complete(operation);
-        }
-      });
+      await runWorkspaceArchiveMutation('merge', file);
       await backupSchedulerRef.current?.evaluate();
     } catch (error) {
       if (!isAbortError(error)) {

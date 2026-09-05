@@ -442,7 +442,7 @@ describe('App workspace and request lifecycle', () => {
     }));
     mocks.readWorkspaceSnapshot.mockReset().mockResolvedValue({});
     mocks.readLocalBlob.mockReset().mockResolvedValue(null);
-    mocks.restoreWorkspaceArchive.mockReset().mockResolvedValue(undefined);
+    mocks.restoreWorkspaceArchive.mockReset().mockResolvedValue({ revision: 1 });
     mocks.storeAttachment.mockReset();
     mocks.storeLocalBlob.mockReset().mockResolvedValue({
       sha256: 'a'.repeat(64),
@@ -523,6 +523,21 @@ describe('App workspace and request lifecycle', () => {
   const getProjectHomeProps = (): CapturedProjectHomeProps => {
     if (!mocks.projectHomeProps) throw new Error('ProjectHome props were not captured.');
     return mocks.projectHomeProps;
+  };
+
+  const startArchiveMutation = async (action: 'restore' | 'merge'): Promise<void> => {
+    const archive = new File(['verified archive'], `${action}.zip`, { type: 'application/zip' });
+    if (action === 'restore') {
+      await act(async () => { await getSidebarProps().onImportData(archive); });
+      expect(mocks.restoreWorkspaceArchive).not.toHaveBeenCalled();
+      const confirm = Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Create recovery point'));
+      expect(confirm).toBeDefined();
+      await act(async () => { confirm!.click(); });
+    } else {
+      await act(async () => { void getSidebarProps().onMergeData(archive); });
+    }
+    await flushMicrotasks();
   };
 
   const getPersistedSessionWrites = (): Session[][] => (
@@ -934,7 +949,7 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.projectSourceServiceKeys).toContain('bundled-electron-key');
   });
 
-  it('owns project reconciliation before workspace replacement can start', async () => {
+  it.each(['restore', 'merge'] as const)('owns project reconciliation before %s can start', async action => {
     const project = createProject();
     const reconciliation = createDeferred<ProjectRemoteState>();
     mocks.loadedProjects = [project];
@@ -951,14 +966,9 @@ describe('App workspace and request lifecycle', () => {
 
     expect(getProjectHomeProps().sourceWorkBusy).toBe(true);
     expect(getSidebarProps().mergeDisabled).toBe(true);
-    await act(async () => {
-      await getSidebarProps().onMergeData(new File(
-        ['verified archive'],
-        'merge.zip',
-        { type: 'application/zip' }
-      ));
-    });
+    await startArchiveMutation(action);
     expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
+    expect(mocks.restoreWorkspaceArchive).not.toHaveBeenCalled();
 
     await act(async () => {
       reconciliation.resolve({ indexes: {}, cleanupTombstones: [] });
@@ -1465,6 +1475,7 @@ describe('App workspace and request lifecycle', () => {
     mocks.generateResponse.mockReturnValue(response.promise);
     mocks.restoreWorkspaceArchive.mockImplementationOnce(async () => {
       mocks.loadedSessions = [replacement];
+      return { revision: ++mocks.currentRevision };
     });
 
     await renderApp();
@@ -1563,10 +1574,11 @@ describe('App workspace and request lifecycle', () => {
     expect(getSidebarProps().undoWorkspaceAction).toBeNull();
   });
 
-  it('cancels merge validation from the shared archive progress overlay', async () => {
-    const merge = createDeferred<never>();
+  it.each(['restore', 'merge'] as const)('cancels %s from the archive progress overlay', async action => {
+    const mutation = createDeferred<never>();
     let signal: AbortSignal | undefined;
-    mocks.mergeWorkspaceArchive.mockImplementationOnce(
+    const mutate = action === 'restore' ? mocks.restoreWorkspaceArchive : mocks.mergeWorkspaceArchive;
+    mutate.mockImplementationOnce(
       async (_handle, _archive, options) => {
         signal = options.signal;
         options.onProgress({
@@ -1576,7 +1588,7 @@ describe('App workspace and request lifecycle', () => {
           completedBytes: 5,
           totalBytes: 10
         });
-        return merge.promise;
+        return mutation.promise;
       }
     );
 
@@ -1584,16 +1596,8 @@ describe('App workspace and request lifecycle', () => {
     await finishInitialization();
     await drainInitialSaves();
 
-    let mergeRequest!: Promise<void>;
-    await act(async () => {
-      mergeRequest = getSidebarProps().onMergeData(new File(
-        ['verified archive'],
-        'merge.zip',
-        { type: 'application/zip' }
-      ));
-      await Promise.resolve();
-    });
-    await flushMicrotasks();
+    await startArchiveMutation(action);
+    mocks.readWorkspaceState.mockClear();
     expect(getSidebarProps().mergeDisabled).toBe(true);
     const cancel = Array.from(container.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === 'Cancel');
@@ -1601,15 +1605,20 @@ describe('App workspace and request lifecycle', () => {
 
     await act(async () => {
       cancel?.click();
-      merge.reject(new DOMException('Cancelled', 'AbortError'));
-      await mergeRequest;
+      mutation.reject(new DOMException('Cancelled', 'AbortError'));
     });
+    await flushMicrotasks();
     expect(signal?.aborted).toBe(true);
     expect(window.alert).not.toHaveBeenCalled();
+    expect(mocks.readWorkspaceState).not.toHaveBeenCalled();
+    expect(getSidebarProps().undoWorkspaceAction).toBeNull();
+    expect(getSidebarProps().mergeDisabled).toBe(false);
+    expect(container.textContent).not.toContain('Validating');
   });
 
-  it('reports merge failures without reloading the workspace', async () => {
-    mocks.mergeWorkspaceArchive.mockRejectedValueOnce(
+  it.each(['restore', 'merge'] as const)('reports %s failures without reloading the workspace', async action => {
+    const mutate = action === 'restore' ? mocks.restoreWorkspaceArchive : mocks.mergeWorkspaceArchive;
+    mutate.mockRejectedValueOnce(
       new Error('Archive digest mismatch.')
     );
 
@@ -1618,19 +1627,72 @@ describe('App workspace and request lifecycle', () => {
     await drainInitialSaves();
     const sessionsBefore = structuredClone(getSidebarProps().sessions);
 
-    await act(async () => {
-      await getSidebarProps().onMergeData(new File(
-        ['corrupt archive'],
-        'merge.zip',
-        { type: 'application/zip' }
-      ));
-    });
+    mocks.readWorkspaceState.mockClear();
+    await startArchiveMutation(action);
 
     expect(window.alert).toHaveBeenCalledWith(
-      'Workspace merge failed: Archive digest mismatch.'
+      `Workspace ${action} failed: Archive digest mismatch.`
     );
+    expect(mocks.readWorkspaceState).not.toHaveBeenCalled();
     expect(getSidebarProps().sessions).toEqual(sessionsBefore);
     expect(getSidebarProps().undoWorkspaceAction).toBeNull();
+  });
+
+  it.each(['restore', 'merge'] as const)('ignores late %s completion after writer loss', async action => {
+    const mutation = createDeferred<{ revision: number }>();
+    const mutate = action === 'restore' ? mocks.restoreWorkspaceArchive : mocks.mergeWorkspaceArchive;
+    mutate.mockReturnValueOnce(mutation.promise);
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    await startArchiveMutation(action);
+    const signal = mutate.mock.calls[0][2].signal as AbortSignal;
+    await act(async () => {
+      mocks.coordinator.canWrite = false;
+      mocks.coordinator.currentRole = 'reader';
+      mocks.coordinator.subscribeToRole.mock.calls[0][0]('reader');
+    });
+    await flushMicrotasks();
+    const readerSessions = getSidebarProps().sessions;
+    mocks.readWorkspaceState.mockClear();
+    await act(async () => {
+      mocks.loadedSessions = [createSession('late-mutation', 'Stale result')];
+      mutation.resolve({ revision: 99 });
+    });
+    await flushMicrotasks();
+    expect(signal.aborted).toBe(true);
+    expect(mocks.readWorkspaceState).not.toHaveBeenCalled();
+    expect(getSidebarProps().sessions).toEqual(readerSessions);
+    expect(getSidebarProps().undoWorkspaceAction).toBeNull();
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
+  it.each(['restore', 'merge'] as const)('blocks new project work while %s flushes saves', async action => {
+    const save = createDeferred<number>();
+    const project = createProject();
+    mocks.loadedProjects = [project];
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    mocks.writeWorkspaceState.mockReturnValueOnce(save.promise);
+    await act(async () => { getSidebarProps().onNewSession(); });
+    await startArchiveMutation(action);
+    expect(mocks.writeWorkspaceState).toHaveBeenCalled();
+    expect(mocks.restoreWorkspaceArchive).not.toHaveBeenCalled();
+    expect(mocks.mergeWorkspaceArchive).not.toHaveBeenCalled();
+    await act(async () => { getSidebarProps().onSelectProject(project.id); });
+    await act(async () => {
+      getProjectHomeProps().onAddSources([new File(['source'], 'source.txt')]);
+    });
+    await flushMicrotasks();
+    expect(mocks.projectSourceReconcile).not.toHaveBeenCalled();
+    expect(mocks.projectSourceIngest).not.toHaveBeenCalled();
+    expect(mocks.storeLocalBlob).not.toHaveBeenCalled();
+    await act(async () => { save.resolve(2); });
+    await flushMicrotasks();
+    const mutate = action === 'restore' ? mocks.restoreWorkspaceArchive : mocks.mergeWorkspaceArchive;
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(getSidebarProps().undoWorkspaceAction).toBe(action);
   });
 
   it('disables merge while a response is active', async () => {
