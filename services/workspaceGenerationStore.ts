@@ -319,7 +319,15 @@ export class WorkspaceGenerationStore {
     manifest.blobs.forEach(reference => {
       stagedBlobHashes.delete(reference.sha256);
     });
-    await this.garbageCollect();
+    try {
+      await this.garbageCollect();
+    } catch (error) {
+      // Publication already succeeded; maintenance must not invalidate its revision.
+      console.warn(
+        'Workspace saved, but garbage collection failed; cleanup will retry on a later save.',
+        error
+      );
+    }
     return verified;
   }
 

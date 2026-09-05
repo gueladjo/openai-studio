@@ -534,6 +534,10 @@ slot, reads the resulting generation back, and only then garbage-collects.
 Unchanged content-addressed objects are reused. Garbage collection retains both
 valid manifests, staged bytes awaiting publication, and content pinned by an
 active `readWorkspaceSnapshot()` until its release callback runs.
+Once publication is verified, garbage-collection failures are logged without
+rejecting the save or withholding its committed revision. A later save retries
+cleanup, so a transient maintenance failure cannot strand the writer on a stale
+revision.
 
 On a genuinely empty store, the writer publishes an empty schema-v5 generation;
 a reader cannot initialize it. Earlier canonical files, `.bak` records,

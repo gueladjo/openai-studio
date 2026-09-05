@@ -774,6 +774,35 @@ describe('storage public contracts', () => {
     expect(objects.names().length).toBeLessThanOrEqual(6);
   });
 
+  it('keeps committed revisions writable when garbage collection fails', async () => {
+    await seedWorkspace([createSession('Protected')]);
+    const orphanPath = `data/objects/${'a'.repeat(64)}.json`;
+    await fileSystem.writeText(orphanPath, '{}');
+    const objects = await fileSystem.getDirectory('data/objects');
+    const remove = vi.spyOn(objects, 'removeEntry').mockRejectedValueOnce(
+      new Error('Simulated garbage collection failure.')
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const previousRevision = storage.getWorkspaceRevision();
+
+    await expect(writeField('settings', { theme: 'light', apiKey: 'saved' }))
+      .resolves.toBe(previousRevision + 1);
+    expect(storage.getWorkspaceRevision()).toBe(previousRevision + 1);
+    await expect(readField('settings')).resolves.toEqual({ theme: 'light', apiKey: 'saved' });
+    expect(warn).toHaveBeenCalledWith(
+      'Workspace saved, but garbage collection failed; cleanup will retry on a later save.',
+      expect.any(Error)
+    );
+    expect(remove).toHaveBeenCalled();
+
+    await expect(writeField('settings', { theme: 'dark', apiKey: 'next' }))
+      .resolves.toBe(previousRevision + 2);
+    await expect(fileSystem.readText(orphanPath)).resolves.toBeNull();
+    await storage.synchronizeWorkspaceRevision(handle);
+    await expect(readField('settings')).resolves.toEqual({ theme: 'dark', apiKey: 'next' });
+    warn.mockRestore();
+  });
+
   it('rejects a stale writer before overwriting workspace data', async () => {
     await writeField('settings',
       { theme: 'dark', apiKey: 'first' }
