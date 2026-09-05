@@ -51,7 +51,7 @@ class MemoryFileHandle {
         }
       },
       close: async (): Promise<void> => {
-        this.data = nextData;
+        this.data = this.fileSystem.applyWrite(this.path, nextData);
         this.lastModified = Date.now();
       }
     };
@@ -130,6 +130,18 @@ class MemoryDirectoryHandle {
 class MemoryFileSystem {
   readonly root = new MemoryDirectoryHandle('', '', this);
   private failingWrite: RegExp | null = null;
+  private replacementWrite: { pattern: RegExp; text: string } | null = null;
+
+  replaceNextWrite(pattern: RegExp, text: string): void {
+    this.replacementWrite = { pattern, text };
+  }
+
+  applyWrite(path: string, data: Blob): Blob {
+    if (!this.replacementWrite?.pattern.test(path)) return data;
+    const { text } = this.replacementWrite;
+    this.replacementWrite = null;
+    return new Blob([text]);
+  }
 
   failNextWrite(pattern: RegExp): void {
     this.failingWrite = pattern;
@@ -773,6 +785,38 @@ describe('storage public contracts', () => {
     const objects = await fileSystem.getDirectory('data/objects');
     expect(objects.names().length).toBeLessThanOrEqual(6);
   });
+
+  it.each(['truncated', 'empty', 'substituted'])(
+    'rejects an acknowledged %s manifest write before collecting any objects',
+    async corruption => {
+      await seedWorkspace([createSession('Protected')]);
+      const previousRevision = storage.getWorkspaceRevision();
+      const previousSettings = await readField('settings');
+      const manifests = await Promise.all(['a', 'b'].map(slot => (
+        fileSystem.readText(`data/workspace_manifest_${slot}.json`)
+      )));
+      const previousManifest = manifests.find(text => (
+        text && JSON.parse(text).revision === previousRevision
+      ))!;
+      const orphanPath = `data/objects/${'a'.repeat(64)}.json`;
+      await fileSystem.writeText(orphanPath, '{}');
+      fileSystem.replaceNextWrite(
+        /workspace_manifest_[ab]\.json$/,
+        corruption === 'substituted' ? previousManifest : corruption === 'empty' ? '' : '{'
+      );
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(writeField('settings', { theme: 'light', apiKey: 'changed' }))
+        .rejects.toThrow('manifest failed read-back verification');
+      expect(storage.getWorkspaceRevision()).toBe(previousRevision);
+      await expect(fileSystem.readText(orphanPath)).resolves.toBe('{}');
+      await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(previousRevision);
+      await expect(readField('settings')).resolves.toEqual(previousSettings);
+      await expect(writeField('settings', { theme: 'light', apiKey: 'retry' }))
+        .resolves.toBe(previousRevision + 1);
+      await expect(fileSystem.readText(orphanPath)).resolves.toBeNull();
+    }
+  );
 
   it('keeps committed revisions writable when garbage collection fails', async () => {
     await seedWorkspace([createSession('Protected')]);

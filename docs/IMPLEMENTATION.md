@@ -541,7 +541,11 @@ older generation. It never combines records from different revisions. If both
 manifests are unusable, loading fails instead of publishing defaults.
 
 A save verifies new objects and blobs before publishing the alternate manifest
-slot, reads the resulting generation back, and only then garbage-collects.
+slot, reads that slot back and requires its exact serialized bytes to match,
+parses and validates the persisted generation, and only then garbage-collects.
+A missing, truncated, or substituted manifest rejects the save without advancing
+the facade revision or collecting objects; the preceding complete generation
+remains available for recovery and retry.
 Unchanged content-addressed objects are reused. Garbage collection retains both
 valid manifests, staged bytes awaiting publication, and content pinned by an
 active `readWorkspaceSnapshot()` until its release callback runs.

@@ -313,9 +313,17 @@ export class WorkspaceGenerationStore {
     const nextSlot = current?.slot === WORKSPACE_MANIFEST_SLOTS[0]
       ? WORKSPACE_MANIFEST_SLOTS[1]
       : WORKSPACE_MANIFEST_SLOTS[0];
-    await this.adapter.writeText(nextSlot, serializeJson(manifest));
+    const manifestText = serializeJson(manifest);
+    await this.adapter.writeText(nextSlot, manifestText);
+    const storedManifestText = await this.adapter.readText(nextSlot);
+    if (storedManifestText !== manifestText) {
+      throw new WorkspaceGenerationError('The workspace manifest failed read-back verification.');
+    }
 
-    const verified = await this.validateGeneration(nextSlot, manifest);
+    const verified = await this.validateGeneration(
+      nextSlot,
+      parseWorkspaceGenerationManifest(storedManifestText, nextSlot)
+    );
     manifest.blobs.forEach(reference => {
       stagedBlobHashes.delete(reference.sha256);
     });
