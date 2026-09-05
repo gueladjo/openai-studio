@@ -1728,6 +1728,46 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.writeWorkspaceState).toHaveBeenCalledTimes(2);
   });
 
+  it('flushes unrendered output on browser unload with the real workspace coordinator', async () => {
+    const { WorkspaceCoordinator } = await vi.importActual<
+      typeof import('./services/workspaceSync')
+    >('./services/workspaceSync');
+    vi.stubGlobal('BroadcastChannel', undefined);
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: (_name: string, _options: LockOptions, callback: LockGrantedCallback<void>) => (
+          Promise.resolve(callback({ name: 'workspace', mode: 'exclusive' } as Lock))
+        )
+      }
+    });
+    const coordinator = await WorkspaceCoordinator.create();
+    mocks.createCoordinator.mockResolvedValue(coordinator);
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Reload while streaming.', []);
+    });
+    await flushMicrotasks();
+    mocks.writeWorkspaceState.mockClear();
+    await act(async () => {
+      getGenerateOptions().onTextDelta?.('Final checkpoint.');
+      window.dispatchEvent(new Event('beforeunload'));
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    await flushMicrotasks();
+
+    expect(coordinator.canWrite).toBe(true);
+    expect(getPersistedSessionWrites().at(-1)?.find(session => session.id === 'session-a')
+      ?.messages.at(-1)).toMatchObject({ content: 'Final checkpoint.', status: 'streaming' });
+    await act(async () => {
+      response.resolve(completedResult('Finished.'));
+      await response.promise;
+    });
+  });
+
   it('checkpoints partial output and saves it before confirming Electron close', async () => {
     const response = createDeferred<GenerateResult>();
     const save = createDeferred<number>();

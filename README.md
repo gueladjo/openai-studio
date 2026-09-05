@@ -244,6 +244,12 @@ different workspace even when the path is unchanged. If storage cannot be loaded
 or safely selected, the app reports the problem instead of opening an empty
 fallback workspace.
 
+Only one browser tab writes the workspace. The writer keeps ownership while
+attempting its final save on reload or close; in browsers without Web Locks,
+another tab may need up to ten seconds to become writable. Autosaves and
+visibility checkpoints reduce the risk of lost changes, but a browser shutdown
+cannot guarantee completion of an asynchronous save.
+
 The Settings workspace actions are:
 
 - **Backup** creates an integrity-checked ZIP containing conversations, projects,

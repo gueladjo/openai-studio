@@ -143,7 +143,6 @@ export class WorkspaceCoordinator {
 
     window.removeEventListener('storage', this.handleStorage);
     window.removeEventListener('focus', this.handleFocus);
-    window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.channel?.close();
     this.channel = null;
     this.roleListeners.clear();
@@ -163,7 +162,8 @@ export class WorkspaceCoordinator {
 
     window.addEventListener('storage', this.handleStorage);
     window.addEventListener('focus', this.handleFocus);
-    window.addEventListener('beforeunload', this.handleBeforeUnload);
+    // Keep ownership while App checkpoints on unload. Document destruction
+    // releases Web Locks; the fallback lease expires if disposal cannot run.
 
     await this.attemptToBecomeWriter();
 
@@ -345,7 +345,4 @@ export class WorkspaceCoordinator {
     if (!this.canWrite) void this.attemptToBecomeWriter();
   };
 
-  private handleBeforeUnload = (): void => {
-    this.relinquishWriter();
-  };
 }

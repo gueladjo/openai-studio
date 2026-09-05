@@ -122,4 +122,21 @@ describe('WorkspaceCoordinator', () => {
     writer.dispose();
     reader.dispose();
   });
+
+  it('keeps writer ownership through unload checkpoints until document disposal', async () => {
+    const writer = await WorkspaceCoordinator.create();
+    const reader = await WorkspaceCoordinator.create();
+    const checkpoint = vi.fn(() => writer.canWrite);
+    window.addEventListener('beforeunload', checkpoint);
+    window.dispatchEvent(new Event('beforeunload'));
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(checkpoint).toHaveReturnedWith(true);
+    expect(writer.canWrite).toBe(true);
+    expect(await reader.attemptToBecomeWriter()).toBe(false);
+    writer.dispose();
+    await vi.waitFor(() => expect(reader.canWrite).toBe(true));
+    reader.dispose();
+    window.removeEventListener('beforeunload', checkpoint);
+  });
 });

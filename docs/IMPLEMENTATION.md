@@ -345,7 +345,13 @@ retries failures after 500 ms, 1.5 seconds, and 5 seconds, and can be flushed
 explicitly.
 
 Pending data is flushed when the page becomes hidden, on `pagehide`, and on
-`beforeunload`. Electron's close handshake first stops and checkpoints active
+`beforeunload`. The coordinator retains writer ownership through these
+checkpoints instead of demoting the tab before App can flush. Explicit disposal
+releases ownership; document destruction releases Web Locks, and browsers using
+the fallback lease may take up to ten seconds to promote another tab. Browser
+termination cannot guarantee completion of asynchronous writes, so visibility
+checkpoints and ongoing autosaves remain necessary.
+Electron's close handshake first stops and checkpoints active
 responses, flushes the save queue, and awaits any due backup before confirming
 the close.
 
