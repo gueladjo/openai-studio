@@ -262,7 +262,19 @@ describe('ConfigPanel', () => {
   });
 
   it('selects Astra with its model-specific reasoning options', async () => {
-    const onConfigChange = await renderPanel();
+    const onConfigChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <ConfigPanelHarness
+          initialConfig={{
+            ...DEFAULT_CONFIG,
+            model: ModelId.GPT_5_6_SOL,
+            reasoningEffort: 'none'
+          }}
+          onConfigChange={onConfigChange}
+        />
+      );
+    });
     const modelPicker = Array.from(container.querySelectorAll('select')).find(
       select => select.querySelector(`option[value="${ModelId.GPT_6_ASTRA}"]`)
     )!;
@@ -275,7 +287,7 @@ describe('ConfigPanel', () => {
 
     expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
       model: ModelId.GPT_6_ASTRA,
-      reasoningEffort: 'medium'
+      reasoningEffort: 'max'
     }));
     expect(getButton('none')).toBeUndefined();
     expect(getButton('max')).toBeDefined();

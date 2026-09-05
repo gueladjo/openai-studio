@@ -38,7 +38,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_ASTRA,
-    defaultReasoningEffort: 'medium'
+    defaultReasoningEffort: 'max'
   },
   [ModelId.GPT_5_6_SOL]: {
     id: ModelId.GPT_5_6_SOL,

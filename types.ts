@@ -301,7 +301,7 @@ export type OpenAIResponsesUsage = ResponseUsage;
 
 export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_6_ASTRA,
-  reasoningEffort: 'medium',
+  reasoningEffort: 'max',
   textVerbosity: 'medium',
   tools: {
     webSearch: true,

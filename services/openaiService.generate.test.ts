@@ -753,7 +753,7 @@ describe('generateResponse reasoning summaries', () => {
 
     expect(createResponseMock).toHaveBeenCalledTimes(1);
     expect(createResponseMock.mock.calls[0][0].reasoning).toEqual({
-      effort: 'medium',
+      effort: 'max',
       summary: 'auto'
     });
     expect(onReasoningSummaryDelta.mock.calls).toEqual([
@@ -786,7 +786,7 @@ describe('generateResponse reasoning summaries', () => {
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     expect(createResponseMock.mock.calls[0][0].reasoning.summary).toBe('auto');
     expect(createResponseMock.mock.calls[1][0].reasoning).toEqual({
-      effort: 'medium'
+      effort: 'max'
     });
     expect(result.content).toBe('The answer is 42.');
     expect(result.thinking).toBe('');
