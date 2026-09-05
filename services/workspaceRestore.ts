@@ -27,7 +27,6 @@ export interface RestoreWorkspaceResult {
 interface WorkspaceRecoveryOptions {
   signal?: AbortSignal;
   onProgress?: (progress: BackupArchiveProgress) => void;
-  onRecoveryArchive?: (archive: Blob, filename: string) => Promise<void>;
 }
 
 const getRecoveryReason = (
@@ -74,11 +73,6 @@ export const runWithVerifiedWorkspaceRecovery = async <T>(
       onProgress: options.onProgress,
       retainBlobs: false
     });
-    const recoveryFilename = (
-      `openai-studio-recovery-${action}-${new Date(recovery.manifest.createdAt)
-        .toISOString().replace(/[:.]/g, '-')}.zip`
-    );
-
     recoveryWriteAttempted = true;
     await writeInternalRecoveryArchive(dirHandle, recoveryArchive);
     const stored = await readInternalRecoveryArchive(dirHandle);
@@ -92,7 +86,6 @@ export const runWithVerifiedWorkspaceRecovery = async <T>(
         `The pre-${action} recovery point failed read-back verification.`
       );
     }
-    await options.onRecoveryArchive?.(recoveryArchive, recoveryFilename);
 
     return {
       result: await operation(),
@@ -122,7 +115,6 @@ export const restoreWorkspaceArchive = async (
     filename?: string;
     signal?: AbortSignal;
     onProgress?: (progress: BackupArchiveProgress) => void;
-    onRecoveryArchive?: (archive: Blob, filename: string) => Promise<void>;
   } = {}
 ): Promise<RestoreWorkspaceResult> => {
   const target = await inspectWorkspaceArchive(archive, {
@@ -178,21 +170,3 @@ export const undoLastWorkspaceMutation = async (
   await clearInternalRecoveryArchive(dirHandle);
   return recovery.preview;
 };
-
-export const getLastWorkspaceRecoveryAction = async (
-  dirHandle: FileSystemDirectoryHandle
-): Promise<WorkspaceRecoveryAction | null> => {
-  const recoveryArchive = await readInternalRecoveryArchive(dirHandle);
-  if (!recoveryArchive) return null;
-  const recovery = await inspectWorkspaceArchive(recoveryArchive, {
-    retainBlobs: false
-  });
-  if (recovery.manifest.workspaceRevision >= getWorkspaceRevision()) {
-    return null;
-  }
-  if (recovery.manifest.reason === 'pre-merge') return 'merge';
-  if (recovery.manifest.reason === 'pre-restore') return 'restore';
-  return null;
-};
-
-export const undoLastWorkspaceRestore = undoLastWorkspaceMutation;

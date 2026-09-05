@@ -1177,7 +1177,7 @@ describe('storage public contracts', () => {
     const { createWorkspaceArchive } = await import('./workspaceArchive');
     const {
       restoreWorkspaceArchive,
-      undoLastWorkspaceRestore
+      undoLastWorkspaceMutation
     } = await import('./workspaceRestore');
     const archive = await createWorkspaceArchive({
       revision: 40,
@@ -1204,7 +1204,7 @@ describe('storage public contracts', () => {
     });
     expect(await storage.readInternalRecoveryArchive(handle)).not.toBeNull();
 
-    await undoLastWorkspaceRestore(handle);
+    await undoLastWorkspaceMutation(handle);
     await expect(readField('sessions')).resolves.toEqual(initialSessions);
     await expect(readField('settings')).resolves.toMatchObject({
       theme: 'dark',
@@ -1270,7 +1270,6 @@ describe('storage public contracts', () => {
     );
     const { mergeWorkspaceArchive } = await import('./workspaceMerge');
     const {
-      getLastWorkspaceRecoveryAction,
       undoLastWorkspaceMutation
     } = await import('./workspaceRestore');
     const archive = await createWorkspaceArchive({
@@ -1320,12 +1319,10 @@ describe('storage public contracts', () => {
       recoveryArchive!,
       { retainBlobs: false }
     )).preview.reason).toBe('pre-merge');
-    await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBe('merge');
 
     await undoLastWorkspaceMutation(handle);
     await expect(readField('sessions')).resolves.toEqual(initialSessions);
     await expect(storage.readInternalRecoveryArchive(handle)).resolves.toBeNull();
-    await expect(getLastWorkspaceRecoveryAction(handle)).resolves.toBeNull();
   });
 
   it('does not publish a merge when recovery or generation persistence fails', async () => {

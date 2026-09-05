@@ -1503,26 +1503,6 @@ export const generateResponse = async (
   }
 };
 
-// The remote endpoint only accepts responses created with `background: true`.
-export const cancelBackgroundResponse = async (
-  responseId: string,
-  providedApiKey?: string
-): Promise<void> => {
-  const apiKey = resolveOpenAIApiKey(providedApiKey);
-
-  if (!apiKey) {
-    throw new Error('OpenAI API Key is missing. Please enter it in the settings before cancelling a background response.');
-  }
-
-  const openai = new OpenAI({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-    maxRetries: 0
-  });
-
-  await openai.responses.cancel(responseId);
-};
-
 export const fetchGeneratedFileContent = async (
   generatedFile: GeneratedFile,
   providedApiKey?: string,

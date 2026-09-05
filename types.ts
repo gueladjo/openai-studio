@@ -1,17 +1,12 @@
 import type {
-  EasyInputMessage,
   Response,
   ResponseCreateParamsNonStreaming,
   ResponseCreateParamsStreaming,
   ResponseInputContent,
-  ResponseInputFile,
-  ResponseInputImage,
   ResponseInputItem,
-  ResponseInputText,
   ResponseOutputMessage,
   ResponseStreamEvent,
   ResponseUsage,
-  Tool,
   WebSearchPreviewTool,
   WebSearchTool
 } from 'openai/resources/responses/responses';
@@ -285,15 +280,8 @@ export interface PendingRequest {
 }
 
 // Responses API SDK type aliases
-export type OpenAIResponsesInputText = ResponseInputText;
-export type OpenAIResponsesInputImage = ResponseInputImage;
-export type OpenAIResponsesInputFile = ResponseInputFile;
 export type OpenAIResponsesContentPart = ResponseInputContent;
-export type OpenAIResponsesInputRole = EasyInputMessage['role'];
 export type OpenAIResponsesInput = ResponseInputItem;
-export type OpenAIWebSearchTool = WebSearchTool;
-export type OpenAICodeInterpreterTool = Extract<Tool, { type: 'code_interpreter' }>;
-export type OpenAIResponsesTool = Tool;
 export type OpenAIResponsesConfig = ResponseCreateParamsNonStreaming;
 export type OpenAIResponsesStreamingConfig = ResponseCreateParamsStreaming;
 export type OpenAIResponsesStreamEvent = ResponseStreamEvent;

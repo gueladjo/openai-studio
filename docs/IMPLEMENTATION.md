@@ -397,11 +397,11 @@ the user-entered value. The project uses OpenAI JavaScript SDK v7, whose
 development and build tooling requires Node.js 22 or newer; Responses API
 request, response, usage, and stream-event types remain direct SDK aliases.
 
-Streamed generation and background-response cancellation both set SDK
-`maxRetries: 0` to avoid ambiguous duplicate requests. Title generation and
-generated-file retrieval retain SDK default retry behavior. Optional reasoning-summary
-capability is retried only when the API explicitly rejects that option;
-unrelated or ambiguous failures are not retried.
+Streamed generation sets SDK `maxRetries: 0` to avoid ambiguous duplicate
+requests. Title generation and generated-file retrieval retain SDK default
+retry behavior. Optional reasoning-summary capability is retried only when the
+API explicitly rejects that option; unrelated or ambiguous failures are not
+retried.
 
 Conversation requests intentionally use `store: true`. When the immediately
 preceding assistant turn has an OpenAI response ID, the next request sends

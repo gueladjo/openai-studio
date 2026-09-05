@@ -479,7 +479,6 @@ export const mergeWorkspaceArchive = async (
     filename?: string;
     signal?: AbortSignal;
     onProgress?: (progress: BackupArchiveProgress) => void;
-    onRecoveryArchive?: (archive: Blob, filename: string) => Promise<void>;
   } = {}
 ): Promise<WorkspaceMergeResult> => {
   const target = await inspectWorkspaceArchive(archive, {

@@ -14,7 +14,6 @@ import {
 import { normalizeProjectDefaultConfig } from '../constants';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
-export const WORKSPACE_SCHEMA_VERSION = 1;
 export const MAX_WORKSPACE_BACKUP_BYTES = 512 * 1024 * 1024;
 
 const MAX_IDENTIFIER_LENGTH = 256;
