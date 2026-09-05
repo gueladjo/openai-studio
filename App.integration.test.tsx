@@ -1768,6 +1768,114 @@ describe('App workspace and request lifecycle', () => {
     });
   });
 
+  it.each(['success', 'save failure', 'cancel'] as const)(
+    'waits for project upload and durable remote IDs on Electron close: %s',
+    async outcome => {
+      const upload = createDeferred<void>();
+      const save = createDeferred<number>();
+      let requestClose: (() => void) | undefined;
+      const confirmClose = vi.fn();
+      const cancelClose = vi.fn();
+      window.electronAPI = {
+        minimize: vi.fn(), maximize: vi.fn(), close: vi.fn(),
+        isMaximized: vi.fn().mockResolvedValue(false),
+        onMaximizedChange: vi.fn(), writeClipboardText: vi.fn(),
+        onCloseRequested: callback => { requestClose = callback; return vi.fn(); },
+        confirmClose, cancelClose
+      };
+      const project = createProject();
+      mocks.loadedProjects = [project];
+      mocks.projectSourceIngest.mockImplementation(async ({ state, source, persist }) => {
+        await upload.promise;
+        const next: ProjectRemoteState = {
+          ...state,
+          indexes: {
+            [project.id]: {
+              projectId: project.id,
+              apiKeyFingerprint: 'fingerprint',
+              vectorStoreId: 'vector-close',
+              status: 'ready', usageBytes: 5,
+              files: { [source.id]: {
+                projectSourceId: source.id, status: 'ready', openaiFileId: 'file-close'
+              } }
+            }
+          }
+        };
+        await persist(next);
+        return next;
+      });
+      await renderApp();
+      await finishInitialization();
+      await drainInitialSaves();
+      await act(async () => getSidebarProps().onSelectProject(project.id));
+      await flushMicrotasks();
+      await act(async () => getProjectHomeProps().onAddSources([
+        new File(['notes'], 'notes.txt', { type: 'text/plain' })
+      ]));
+      await flushMicrotasks(24);
+      expect(mocks.projectSourceIngest).toHaveBeenCalledOnce();
+
+      await act(async () => requestClose?.());
+      await flushMicrotasks();
+      expect(confirmClose).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('Finishing project work');
+      await act(async () => getProjectHomeProps().onAddSources([
+        new File(['extra'], 'extra.txt', { type: 'text/plain' })
+      ]));
+      expect(getProjectHomeProps().project.sources).toHaveLength(1);
+
+      if (outcome === 'cancel') {
+        await act(async () => {
+          Array.from(container.querySelectorAll('button'))
+            .find(button => button.textContent === 'Keep working')?.click();
+        });
+        expect(cancelClose).toHaveBeenCalledOnce();
+      }
+      mocks.writeWorkspaceState.mockImplementationOnce(() => save.promise);
+      await act(async () => upload.resolve());
+      await flushMicrotasks();
+      expect(mocks.writeWorkspaceState).toHaveBeenLastCalledWith(
+        expect.anything(), expect.objectContaining({
+          projectRemoteState: expect.objectContaining({
+            indexes: expect.objectContaining({ [project.id]: expect.objectContaining({
+              vectorStoreId: 'vector-close'
+            }) })
+          })
+        })
+      );
+      expect(confirmClose).not.toHaveBeenCalled();
+      await act(async () => {
+        if (outcome === 'save failure') save.reject(new Error('Remote IDs not saved.'));
+        else save.resolve(10);
+      });
+      await flushMicrotasks(24);
+
+      if (outcome === 'success') {
+        expect(confirmClose).toHaveBeenCalledOnce();
+      } else {
+        expect(confirmClose).not.toHaveBeenCalled();
+        if (outcome === 'save failure') {
+          // Batch ingestion handles individual failures; close must still see the failed save.
+          expect(container.querySelector('[role="alertdialog"]')?.textContent)
+            .toContain('Remote IDs not saved.');
+          await act(async () => {
+            Array.from(container.querySelectorAll('[role="alertdialog"] button'))
+              .find(button => button.textContent?.trim() === 'Retry')
+              ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          });
+          await flushMicrotasks();
+          expect(confirmClose).not.toHaveBeenCalled();
+        } else {
+          await act(async () => getProjectHomeProps().onAddSources([
+            new File(['more'], 'more.txt', { type: 'text/plain' })
+          ]));
+          await flushMicrotasks(24);
+          expect(getProjectHomeProps().project.sources).toHaveLength(2);
+        }
+      }
+    }
+  );
+
   it('checkpoints partial output and saves it before confirming Electron close', async () => {
     const response = createDeferred<GenerateResult>();
     const save = createDeferred<number>();

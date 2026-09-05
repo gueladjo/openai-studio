@@ -278,7 +278,14 @@ Compatible Chromium browsers and Electron can opt into automatic backups by choo
 - do not delay the workspace becoming interactive while destination files are listed or validated;
 - never delete unrelated files in the selected folder.
 
-Electron waits for a due backup during close and offers Retry or Close Without Backup on failure. Browsers without the File System Access directory picker, including the iOS path, retain **Backup** (Share when available, download otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler history are device-local and excluded from archives.
+Electron waits for project-source work and its saved remote IDs, workspace saves,
+and any due backup before closing. **Keep working** cancels the close while work
+finishes. On failure, retry saving/backing up or choose **Keep working** to resolve
+failed project work; **Close without backup** can lose unsaved changes and remote
+cleanup records. Browsers without the File System Access directory picker,
+including the iOS path, retain **Backup** (Share when available, download
+otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler
+history are device-local and excluded from archives.
 
 The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text, labeling assistant progress and final-answer phases when available. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 

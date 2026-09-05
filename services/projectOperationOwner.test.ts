@@ -15,6 +15,65 @@ const createDeferred = <T,>() => {
 };
 
 describe('ProjectOperationOwner', () => {
+  it('pauses new work and drains all queued tasks before close can proceed', async () => {
+    const owner = new ProjectOperationOwner();
+    const first = createDeferred<void>();
+    const second = createDeferred<void>();
+    const firstRun = owner.enqueue({ kind: 'source-add' }, () => first.promise);
+    const secondRun = owner.enqueue({ kind: 'source-delete' }, () => second.promise);
+    const drained = vi.fn();
+    const close = owner.pauseAndDrain().then(drained);
+    await expect(owner.enqueue({ kind: 'reconcile' }, async () => undefined))
+      .rejects.toThrow('paused while closing');
+    first.resolve();
+    await firstRun;
+    expect(drained).not.toHaveBeenCalled();
+    second.resolve();
+    await Promise.all([secondRun, close]);
+    expect(drained).toHaveBeenCalledOnce();
+    owner.resume();
+    await expect(owner.enqueue({ kind: 'reconcile' }, async () => 'resumed'))
+      .resolves.toBe('resumed');
+  });
+
+  it('waits for every task after a failure and remembers it until close is cancelled', async () => {
+    const owner = new ProjectOperationOwner();
+    const first = createDeferred<void>();
+    const second = createDeferred<void>();
+    const failed = owner.enqueue({ kind: 'source-index' }, () => first.promise)
+      .catch(() => undefined);
+    const queued = owner.enqueue({ kind: 'remote-cleanup' }, () => second.promise);
+    const onFailure = vi.fn();
+    const close = owner.pauseAndDrain().catch(onFailure);
+    first.reject(new Error('Remote ID could not be saved.'));
+    await failed;
+    expect(onFailure).not.toHaveBeenCalled();
+    second.resolve();
+    await Promise.all([queued, close]);
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Remote ID could not be saved.'
+    }));
+    await expect(owner.pauseAndDrain()).rejects.toThrow('Remote ID could not be saved.');
+    owner.resume();
+    await expect(owner.pauseAndDrain()).resolves.toBeUndefined();
+  });
+
+  it('drains invalidated work until its asynchronous task actually settles', async () => {
+    const owner = new ProjectOperationOwner();
+    const task = createDeferred<void>();
+    const pending = owner.enqueue({ kind: 'source-index' }, () => task.promise)
+      .catch(() => undefined);
+    await Promise.resolve();
+    owner.invalidateWorkspace();
+    const settled = vi.fn();
+    const close = owner.pauseAndDrain().catch(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    task.resolve();
+    await Promise.all([pending, close]);
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ name: 'AbortError' }));
+  });
+
   it('owns queued work immediately and runs project mutations serially', async () => {
     const statuses: ProjectOperationStatus[] = [];
     const owner = new ProjectOperationOwner(status => statuses.push(status));

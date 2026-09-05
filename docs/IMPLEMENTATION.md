@@ -351,9 +351,17 @@ releases ownership; document destruction releases Web Locks, and browsers using
 the fallback lease may take up to ten seconds to promote another tab. Browser
 termination cannot guarantee completion of asynchronous writes, so visibility
 checkpoints and ongoing autosaves remain necessary.
-Electron's close handshake first stops and checkpoints active
-responses, flushes the save queue, and awaits any due backup before confirming
-the close.
+Electron's close handshake blocks new mutations, stops and checkpoints active
+responses, and pauses admission to the project-operation owner. It waits for
+every already-owned task to settle, including uploads, indexing, cleanup, and
+their remote-ID persistence, before entering the destructive-operation queue.
+Pending React state and save effects are committed before the final save flush
+and due backup. Only then may the renderer confirm close. Keep working cancels
+the close attempt and resumes project work; a cancelled attempt cannot confirm
+close when delayed work finishes. A project-task failure or remote-state save
+failure during draining remains a close error until cancellation, even when a
+batch operation handles the error internally. Retry can retry saves/backups;
+failed project work must be resolved after choosing Keep working.
 
 The operation registry owns response, title, archive-read, caching, and
 workspace-mutation lifetimes. Session deletion and workspace replacement
@@ -682,10 +690,10 @@ full validation occurs when backup details open, during explicit refreshes, and
 when rotation must classify existing files. Unrelated files are never rotated.
 Scheduled failures retry after one minute, five minutes, and thirty minutes.
 
-Electron close waits for a due backup. A save or due-backup failure leaves the
-window open and offers Retry, keep-open cancellation, or an explicit close
-without backup. The warning distinguishes the risk that unsaved in-memory data
-may also be lost.
+Electron close waits for project work, saves, and a due backup. A failure leaves
+the window open and offers Retry, keep-open cancellation, or an explicit close
+without backup. The warning covers loss of unsaved changes and remote cleanup
+records. Keep working is also available while close is waiting for project work.
 
 ## Web, PWA, Mobile, And Electron Constraints
 

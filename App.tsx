@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChatArea } from './components/ChatArea';
@@ -335,6 +336,7 @@ function App() {
   const [saveFailure, setSaveFailure] = useState<SaveQueueFailure<SaveKey> | null>(null);
   const [isRetryingSave, setIsRetryingSave] = useState(false);
   const [closeSaveError, setCloseSaveError] = useState<string | null>(null);
+  const [isClosing, setIsClosing] = useState(false);
   const [backupState, setBackupState] = useState<BackupSchedulerState>(
     DEFAULT_BACKUP_STATE
   );
@@ -362,6 +364,7 @@ function App() {
   const backupSchedulerRef = useRef<BackupScheduler | null>(null);
   const archiveAbortRef = useRef<AbortController | null>(null);
   const closeRequestPendingRef = useRef(false);
+  const closeAttemptRef = useRef(0);
   const initializationStartedRef = useRef(false);
   const operationRegistryRef = useRef(new OperationRegistry());
   const workspaceMutationBlockedRef = useRef(false);
@@ -369,7 +372,7 @@ function App() {
   const destructiveOperationQueueRef = useRef<SerializedOperationQueue | null>(null);
   if (!destructiveOperationQueueRef.current) {
     destructiveOperationQueueRef.current = new SerializedOperationQueue(isPending => {
-      workspaceMutationBlockedRef.current = isPending;
+      workspaceMutationBlockedRef.current = isPending || closeRequestPendingRef.current;
       setIsWorkspaceMutating(isPending);
     });
   }
@@ -1276,9 +1279,16 @@ function App() {
     assertProjectOperationCurrent(operation);
     const handle = dirHandleRef.current;
     if (!handle) throw new Error('Workspace storage is unavailable.');
-    const revision = await writeWorkspaceState(handle, {
-      projectRemoteState: state
-    });
+    let revision: number;
+    try {
+      revision = await writeWorkspaceState(handle, {
+        projectRemoteState: state
+      });
+    } catch (error) {
+      // Batch ingestion and key switching may handle this error inside their task.
+      projectOperationOwnerRef.current!.reportFailure(error);
+      throw error;
+    }
     assertProjectOperationCurrent(operation);
     projectRemoteStateRef.current = state;
     skipNextRemoteStateEffectSaveRef.current = true;
@@ -1780,7 +1790,8 @@ function App() {
       !effectiveApiKey ||
       !isWorkspaceLoaded ||
       !workspaceCanWriteRef.current ||
-      isWorkspaceMutating
+      isWorkspaceMutating ||
+      isClosing
     ) return;
     const fingerprint = fingerprintApiKey(effectiveApiKey);
     const reconciliationKey = `${project.id}:${fingerprint}`;
@@ -1828,6 +1839,7 @@ function App() {
     draftWorkspaceEpoch,
     isWorkspaceLoaded,
     isWorkspaceMutating,
+    isClosing,
     selectedProjectId
   ]);
 
@@ -2735,6 +2747,31 @@ function App() {
     }
   };
 
+  const finishPendingClose = useCallback(async () => {
+    const attempt = ++closeAttemptRef.current;
+    const isCurrent = () => (
+      closeRequestPendingRef.current && closeAttemptRef.current === attempt
+    );
+    try {
+      await projectOperationOwnerRef.current!.pauseAndDrain();
+      if (!isCurrent()) return;
+      // Project tasks may themselves enter this queue, so drain them first.
+      await enqueueDestructiveOperation(async () => {
+        if (!isCurrent()) return;
+        // Commit pending React updates and their save effects before flushing.
+        flushSync(() => setIsClosing(true));
+        await flushPendingSaves();
+        if (!isCurrent()) return;
+        await backupSchedulerRef.current?.runDueForClose();
+        if (isCurrent()) window.electronAPI?.confirmClose();
+      });
+    } catch (error) {
+      if (!isCurrent()) return;
+      console.error('Failed to finish workspace protection before closing.', error);
+      setCloseSaveError(getErrorMessage(error));
+    }
+  }, [enqueueDestructiveOperation, flushPendingSaves]);
+
   useEffect(() => {
     const electronApi = window.electronAPI;
     if (!electronApi?.onCloseRequested) return;
@@ -2742,6 +2779,8 @@ function App() {
     const unsubscribe = electronApi.onCloseRequested(() => {
       if (closeRequestPendingRef.current) return;
       closeRequestPendingRef.current = true;
+      workspaceMutationBlockedRef.current = true;
+      setIsClosing(true);
       setCloseSaveError(null);
 
       const activeRequests = new Map(activeRequestsRef.current);
@@ -2785,17 +2824,11 @@ function App() {
         scheduleSave('sessions', true);
       }
 
-      void flushPendingSaves()
-        .then(() => backupSchedulerRef.current?.runDueForClose())
-        .then(() => electronApi.confirmClose())
-        .catch(error => {
-          console.error('Failed to save or back up the workspace before closing.', error);
-          setCloseSaveError(getErrorMessage(error));
-        });
+      void finishPendingClose();
     });
 
     return unsubscribe;
-  }, [flushPendingSaves, scheduleSave]);
+  }, [finishPendingClose, scheduleSave]);
 
   const retryCloseAfterSaveFailure = async () => {
     const electronApi = window.electronAPI;
@@ -2803,12 +2836,7 @@ function App() {
 
     setIsRetryingSave(true);
     try {
-      await getSaveQueue().retryNow();
-      await backupSchedulerRef.current?.runDueForClose();
-      electronApi.confirmClose();
-    } catch (error) {
-      console.error('Failed to retry workspace save before closing.', error);
-      setCloseSaveError(getErrorMessage(error));
+      await finishPendingClose();
     } finally {
       setIsRetryingSave(false);
     }
@@ -2816,6 +2844,10 @@ function App() {
 
   const cancelCloseAfterSaveFailure = () => {
     closeRequestPendingRef.current = false;
+    closeAttemptRef.current += 1;
+    projectOperationOwnerRef.current!.resume();
+    workspaceMutationBlockedRef.current = destructiveOperationQueueRef.current!.isBlocking;
+    setIsClosing(false);
     setCloseSaveError(null);
     window.electronAPI?.cancelClose();
   };
@@ -3230,7 +3262,7 @@ function App() {
 
   // Determine if the CURRENT session is loading
   const isCurrentSessionProcessing = currentSessionId ? processingSessionIds.has(currentSessionId) : false;
-  const isWorkspaceInteractionReadOnly = isWorkspaceReadOnly || isWorkspaceMutating;
+  const isWorkspaceInteractionReadOnly = isWorkspaceReadOnly || isWorkspaceMutating || isClosing;
 
   if (isInitializing) {
     return (
@@ -3299,7 +3331,23 @@ function App() {
           </div>
         )}
 
-        {isWorkspaceMutating && (
+        {isClosing && !closeSaveError && (
+          <div
+            role="status"
+            className="flex flex-wrap items-center justify-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-xs font-medium text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
+          >
+            <span>Finishing project work and saving before closing…</span>
+            <button
+              type="button"
+              onClick={cancelCloseAfterSaveFailure}
+              className="rounded border border-blue-300 px-2 py-1 hover:bg-blue-100 dark:border-blue-700 dark:hover:bg-blue-900"
+            >
+              Keep working
+            </button>
+          </div>
+        )}
+
+        {isWorkspaceMutating && !isClosing && (
           <div
             role="status"
             className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-center text-xs font-medium text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
@@ -3678,7 +3726,7 @@ function App() {
                     Couldn’t finish close-time protection
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                    A workspace save or due backup failed. Retry, keep the app open, or explicitly close without the backup. If saving also failed, in-memory changes will be lost.
+                    Project work, a workspace save, or a due backup failed. Retry saving, or choose Keep working to resolve failed project work. Closing without the backup can lose unsaved changes and remote cleanup records.
                   </p>
                   <pre className="mt-3 max-h-28 overflow-auto rounded-md bg-red-50 p-3 text-xs text-red-900 dark:bg-red-950/30 dark:text-red-100">
                     {closeSaveError}

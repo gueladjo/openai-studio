@@ -41,6 +41,9 @@ export class ProjectOperationOwner {
   private tail: Promise<void> = Promise.resolve();
   private readonly operations = new Map<number, OwnedProjectOperation>();
   private readonly completedDedupeKeys = new Set<string>();
+  private readonly pendingTasks = new Set<Promise<unknown>>();
+  private paused = false;
+  private pauseFailure: { error: unknown } | null = null;
 
   constructor(
     private readonly onStatusChange: (
@@ -50,6 +53,21 @@ export class ProjectOperationOwner {
 
   get isBusy(): boolean {
     return this.operations.size > 0;
+  }
+
+  async pauseAndDrain(): Promise<void> {
+    this.paused = true;
+    await Promise.allSettled([...this.pendingTasks]);
+    if (this.pauseFailure) throw this.pauseFailure.error;
+  }
+
+  resume(): void {
+    this.paused = false;
+    this.pauseFailure = null;
+  }
+
+  reportFailure(error: unknown): void {
+    if (this.paused && !this.pauseFailure) this.pauseFailure = { error };
   }
 
   enqueue<T>(
@@ -68,6 +86,9 @@ export class ProjectOperationOwner {
     }: ProjectOperationOptions & { dedupeKey?: string },
     task: (operation: ProjectOperation) => Promise<T>
   ): Promise<T> | null {
+    if (this.paused) {
+      return Promise.reject(new Error('Project work is paused while closing.'));
+    }
     if (
       dedupeKey &&
       (
@@ -102,12 +123,17 @@ export class ProjectOperationOwner {
         }
         return result;
       });
-    const tracked = run.finally(() => {
+    const tracked = run.catch(error => {
+      this.reportFailure(error);
+      throw error;
+    }).finally(() => {
+      this.pendingTasks.delete(tracked);
       if (this.operations.get(operation.id) === operation) {
         this.operations.delete(operation.id);
         this.emitStatus();
       }
     });
+    this.pendingTasks.add(tracked);
     this.tail = tracked.then(
       () => undefined,
       () => undefined
