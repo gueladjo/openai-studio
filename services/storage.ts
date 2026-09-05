@@ -112,7 +112,7 @@ export class WorkspaceRevisionConflictError extends Error {
 }
 
 const isElectronDesktop = (): boolean => (
-  typeof window !== 'undefined' && Boolean((window as any).electronAPI)
+  typeof window !== 'undefined' && Boolean(window.electronAPI)
 );
 
 const isNotFoundError = (error: unknown): boolean => (

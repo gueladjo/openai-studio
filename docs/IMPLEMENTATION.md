@@ -735,6 +735,10 @@ behavior, scrolling, overflow, and light/dark themes at both sizes.
 Electron is a frameless, single-instance window. `nodeIntegration` is off and
 `contextIsolation` is on. The preload bridge is limited to window controls,
 clipboard writes, close coordination, and validated managed-backup operations.
+`electron/bridge.d.ts` owns the complete renderer bridge contract. The bridge
+is absent in web mode; Electron supplies every declared method from its matching
+preload. Renderer consumers and typed test doubles use this single declaration,
+and `electron/preload.test.ts` checks the exposed shape and backup adapter flow.
 New-window and external navigation are denied in the renderer and opened in the
 system browser under `electron/urlPolicy.js`.
 

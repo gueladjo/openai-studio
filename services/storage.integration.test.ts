@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
+import { createElectronBridgeMock } from '../test/electronBridge';
 import {
   DEFAULT_CONFIG,
   type FileAttachment,
@@ -1457,7 +1458,7 @@ describe('unsupported local workspace contract', () => {
     const localStorage = new MemoryStorage();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.stubGlobal('window', {
-      electronAPI: {},
+      electronAPI: createElectronBridgeMock(),
       localStorage,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn()
@@ -1647,7 +1648,7 @@ describe('storage backend migration contracts', () => {
   });
 
   it('refuses an IndexedDB fallback when Electron cannot use OPFS', async () => {
-    (window as any).electronAPI = {};
+    window.electronAPI = createElectronBridgeMock();
     vi.mocked(navigator.storage.getDirectory).mockRejectedValue(
       new Error('OPFS unavailable')
     );

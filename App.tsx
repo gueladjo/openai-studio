@@ -120,41 +120,6 @@ import {
 const MOBILE_BREAKPOINT_PX = 768;
 const isMobileViewport = (): boolean => window.innerWidth < MOBILE_BREAKPOINT_PX;
 
-// Add global declaration for Electron API
-declare global {
-  interface Window {
-    electronAPI?: {
-      minimize: () => void;
-      maximize: () => void;
-      close: () => void;
-      restoreFocusAfterDialog?: () => Promise<void>;
-      isMaximized: () => Promise<boolean>;
-      onMaximizedChange: (callback: (isMaximized: boolean) => void) => void;
-      writeClipboardText: (text: string) => Promise<void>;
-      onCloseRequested: (callback: () => void) => () => void;
-      confirmClose: () => void;
-      cancelClose: () => void;
-      chooseBackupDirectory?: () => Promise<boolean>;
-      getBackupDestinationStatus?: () => Promise<
-        'connected' | 'permission-required' | 'unavailable'
-      >;
-      writeBackupArchive?: (
-        filename: string,
-        readChunk: () => Promise<Uint8Array | null>,
-        expectedSize: number,
-        expectedSha256: string
-      ) => Promise<void>;
-      listBackupArchives?: () => Promise<Array<{
-        filename: string;
-        size: number;
-        lastModified: number;
-      }>>;
-      readBackupArchive?: (filename: string) => Promise<ArrayBuffer>;
-      deleteBackupArchive?: (filename: string) => Promise<void>;
-    }
-  }
-}
-
 type SaveKey =
   | 'sessions'
   | 'instructions'
@@ -2774,7 +2739,7 @@ function App() {
 
   useEffect(() => {
     const electronApi = window.electronAPI;
-    if (!electronApi?.onCloseRequested) return;
+    if (!electronApi) return;
 
     const unsubscribe = electronApi.onCloseRequested(() => {
       if (closeRequestPendingRef.current) return;

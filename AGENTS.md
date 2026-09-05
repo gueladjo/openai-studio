@@ -44,6 +44,7 @@ Use this map to start a change at the narrowest boundary:
 | Mandatory recovery-point creation and merge/restore undo | `services/workspaceRestore.ts` | `services/storage.integration.test.ts` |
 | Daily scheduling, read-back validation, retries, and three-file retention | `services/backupScheduler.ts` | `services/backupScheduler.test.ts` |
 | Web/Electron destination capability and managed-file policy | `services/backupDestination.ts`; `electron/backupFiles.js` | `electron/backupFiles.test.js`; `electron/main.test.js` |
+| Electron renderer bridge signatures and preload backup adaptation | `electron/bridge.d.ts`; `electron/preload.cjs` | `electron/preload.test.ts`; `App.integration.test.tsx` |
 | Cross-tab writer/reader ownership and reload coordination | `services/workspaceSync.ts` | `services/workspaceSync.test.ts` |
 | Debounced, versioned, retried, and flushed saves | `services/saveQueue.ts` | `services/saveQueue.test.ts` |
 | In-flight operation ownership and session/workspace invalidation | `services/operationRegistry.ts` | `services/operationRegistry.test.ts` |

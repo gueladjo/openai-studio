@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, Project } from '../types';
 import { ProjectHome } from './ProjectHome';
+import { createElectronBridgeMock } from '../test/electronBridge';
 
 const createProject = (): Project => {
   const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
@@ -56,9 +57,7 @@ describe('ProjectHome', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.electronAPI = {
-      restoreFocusAfterDialog: vi.fn().mockResolvedValue(undefined)
-    } as unknown as Window['electronAPI'];
+    window.electronAPI = createElectronBridgeMock();
   });
 
   afterEach(async () => {
@@ -99,7 +98,7 @@ describe('ProjectHome', () => {
     expect(window.electronAPI?.restoreFocusAfterDialog).toHaveBeenCalledTimes(1);
     expect(onAddSources).toHaveBeenCalledWith([source]);
 
-    vi.mocked(window.electronAPI!.restoreFocusAfterDialog!).mockClear();
+    vi.mocked(window.electronAPI!.restoreFocusAfterDialog).mockClear();
     await act(async () => {
       input.dispatchEvent(new Event('cancel'));
     });

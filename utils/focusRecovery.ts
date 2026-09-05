@@ -1,8 +1,5 @@
 export const restoreFocusAfterFileDialog = (): void => {
-  const restoreFocus = window.electronAPI?.restoreFocusAfterDialog;
-  if (!restoreFocus) return;
-
-  void restoreFocus().catch(error => {
+  void window.electronAPI?.restoreFocusAfterDialog().catch(error => {
     console.warn('Electron window focus could not be restored after a file dialog.', error);
   });
 };

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import React, { act } from 'react';
+import { createElectronBridgeMock } from './test/electronBridge';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   afterEach,
@@ -541,18 +542,9 @@ describe('App workspace and request lifecycle', () => {
     const backupStatus = createDeferred<
       'connected' | 'permission-required' | 'unavailable'
     >();
-    window.electronAPI = {
-      minimize: vi.fn(),
-      maximize: vi.fn(),
-      close: vi.fn(),
-      isMaximized: vi.fn().mockResolvedValue(false),
-      onMaximizedChange: vi.fn(),
-      writeClipboardText: vi.fn().mockResolvedValue(undefined),
-      onCloseRequested: vi.fn(() => vi.fn()),
-      confirmClose: vi.fn(),
-      cancelClose: vi.fn(),
+    window.electronAPI = createElectronBridgeMock({
       getBackupDestinationStatus: vi.fn(() => backupStatus.promise)
-    };
+    });
 
     await renderApp();
     await finishInitialization();
@@ -1689,10 +1681,7 @@ describe('App workspace and request lifecycle', () => {
   });
 
   it('keeps Electron writable and allows retry after a revision conflict', async () => {
-    Object.defineProperty(window, 'electronAPI', {
-      configurable: true,
-      value: {}
-    });
+    window.electronAPI = createElectronBridgeMock();
     await renderApp();
     await finishInitialization();
     await drainInitialSaves();
@@ -1776,13 +1765,10 @@ describe('App workspace and request lifecycle', () => {
       let requestClose: (() => void) | undefined;
       const confirmClose = vi.fn();
       const cancelClose = vi.fn();
-      window.electronAPI = {
-        minimize: vi.fn(), maximize: vi.fn(), close: vi.fn(),
-        isMaximized: vi.fn().mockResolvedValue(false),
-        onMaximizedChange: vi.fn(), writeClipboardText: vi.fn(),
+      window.electronAPI = createElectronBridgeMock({
         onCloseRequested: callback => { requestClose = callback; return vi.fn(); },
         confirmClose, cancelClose
-      };
+      });
       const project = createProject();
       mocks.loadedProjects = [project];
       mocks.projectSourceIngest.mockImplementation(async ({ state, source, persist }) => {
@@ -1881,20 +1867,13 @@ describe('App workspace and request lifecycle', () => {
     const save = createDeferred<number>();
     let requestClose: (() => void) | undefined;
     const confirmClose = vi.fn();
-    window.electronAPI = {
-      minimize: vi.fn(),
-      maximize: vi.fn(),
-      close: vi.fn(),
-      isMaximized: vi.fn().mockResolvedValue(false),
-      onMaximizedChange: vi.fn(),
-      writeClipboardText: vi.fn().mockResolvedValue(undefined),
+    window.electronAPI = createElectronBridgeMock({
       onCloseRequested: callback => {
         requestClose = callback;
         return vi.fn();
       },
-      confirmClose,
-      cancelClose: vi.fn()
-    };
+      confirmClose
+    });
     mocks.generateResponse.mockReturnValue(response.promise);
 
     await renderApp();

@@ -1,4 +1,5 @@
 import { sha256Blob } from './contentAddressing';
+import type { ElectronAPI } from '../electron/bridge';
 
 export const MANAGED_BACKUP_PREFIX = 'openai-studio-backup-';
 export const MANAGED_BACKUP_PATTERN =
@@ -217,24 +218,10 @@ class FileSystemAccessBackupDestination implements BackupDestination {
   }
 }
 
-interface ElectronBackupBridge {
-  chooseBackupDirectory(): Promise<boolean>;
-  getBackupDestinationStatus(): Promise<BackupDestinationStatus>;
-  writeBackupArchive(
-    filename: string,
-    readChunk: () => Promise<Uint8Array | null>,
-    expectedSize: number,
-    expectedSha256: string
-  ): Promise<void>;
-  listBackupArchives(): Promise<ManagedBackupFile[]>;
-  readBackupArchive(filename: string): Promise<ArrayBuffer>;
-  deleteBackupArchive(filename: string): Promise<void>;
-}
-
 class ElectronBackupDestination implements BackupDestination {
   readonly kind = 'electron' as const;
 
-  constructor(private readonly bridge: ElectronBackupBridge) {}
+  constructor(private readonly bridge: ElectronAPI) {}
 
   getStatus(): Promise<BackupDestinationStatus> {
     return this.bridge.getBackupDestinationStatus();
@@ -277,12 +264,9 @@ class ElectronBackupDestination implements BackupDestination {
   }
 }
 
-const getElectronBridge = (): ElectronBackupBridge | null => {
-  const bridge = typeof window !== 'undefined'
-    ? (window as any).electronAPI
-    : null;
-  return bridge?.getBackupDestinationStatus ? bridge as ElectronBackupBridge : null;
-};
+const getElectronBridge = (): ElectronAPI | null => (
+  typeof window !== 'undefined' ? window.electronAPI || null : null
+);
 
 export const loadBackupDestination = async (): Promise<BackupDestination | null> => {
   const electron = getElectronBridge();
