@@ -71,8 +71,147 @@ const createClient = () => ({
   }
 });
 
+const createInterruptedState = (): ProjectRemoteState => ({
+  indexes: {
+    [project.id]: {
+      projectId: project.id,
+      apiKeyFingerprint: fingerprint,
+      vectorStoreId: 'vector-1',
+      status: 'creating',
+      usageBytes: 0,
+      files: { [source.id]: {
+        projectSourceId: source.id,
+        openaiFileId: 'file-interrupted',
+        status: 'indexing'
+      } }
+    },
+    'other-project': {
+      projectId: 'other-project',
+      apiKeyFingerprint: fingerprint,
+      vectorStoreId: 'vector-other',
+      status: 'ready',
+      usageBytes: 0,
+      files: {}
+    }
+  },
+  cleanupTombstones: []
+});
+
 describe('project source service', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each([0, 1])('checks fresh aggregate usage before recovering a completed index: excess %i', async excess => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockImplementation(async id => ({
+      id, status: 'completed',
+      usage_bytes: id === 'vector-1' ? 100 : MAX_INDEXED_USAGE_BYTES - 100 + excess
+    }));
+    const state = createInterruptedState();
+    state.indexes['other-key'] = {
+      projectId: 'other-key', apiKeyFingerprint: 'different-key',
+      vectorStoreId: 'vector-other-key', status: 'ready',
+      usageBytes: MAX_INDEXED_USAGE_BYTES, files: {}
+    };
+    const persisted: ProjectRemoteState[] = [];
+    const service = new ProjectSourceService('key', client as never);
+    const next = await service.reconcile([project], state, fingerprint, async update => {
+      persisted.push(structuredClone(update));
+    });
+
+    expect(client.vectorStores.retrieve).toHaveBeenCalledWith('vector-other');
+    expect(client.vectorStores.retrieve).not.toHaveBeenCalledWith('vector-other-key');
+    expect(next.indexes['other-project'].usageBytes)
+      .toBe(MAX_INDEXED_USAGE_BYTES - 100 + excess);
+    const recovered = next.indexes[project.id].files[source.id];
+    if (excess) {
+      expect(recovered).toMatchObject({ status: 'failed', lastError: expect.stringContaining('900 MiB') });
+      expect(recovered.openaiFileId).toBeUndefined();
+      expect(client.files.delete).toHaveBeenCalledExactlyOnceWith('file-interrupted');
+      expect(persisted.every(update => update.indexes[project.id].files[source.id].status !== 'ready'))
+        .toBe(true);
+    } else {
+      expect(recovered).toMatchObject({ status: 'ready', openaiFileId: 'file-interrupted', indexedUsageBytes: 100 });
+      expect(client.files.delete).not.toHaveBeenCalled();
+    }
+    expect(state.indexes[project.id].files[source.id].status).toBe('indexing');
+  });
+
+  it('keeps an over-limit recovered File recorded and unavailable when rollback fails', async () => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockResolvedValue({
+      id: 'vector-1', status: 'completed', usage_bytes: MAX_INDEXED_USAGE_BYTES
+    });
+    const persist = vi.fn(async (_state: ProjectRemoteState) => undefined);
+    client.files.delete.mockImplementation(async () => {
+      expect(persist.mock.calls.at(-1)?.[0].indexes[project.id].files[source.id])
+        .toMatchObject({ status: 'failed', openaiFileId: 'file-interrupted' });
+      throw { status: 503, message: 'Cleanup unavailable.' };
+    });
+    const service = new ProjectSourceService('key', client as never);
+    const next = await service.reconcile([project], createInterruptedState(), fingerprint, persist);
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({
+      status: 'failed', openaiFileId: 'file-interrupted',
+      lastError: expect.stringContaining('Cleanup unavailable.')
+    });
+    const reloaded = await service.reconcile([project], next, fingerprint, persist);
+    expect(reloaded.indexes[project.id].files[source.id].status).toBe('failed');
+    expect(client.vectorStores.files.retrieve).toHaveBeenCalledOnce();
+  });
+
+  it('refuses recovery when another managed store usage cannot be verified', async () => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockImplementation(async id => {
+      if (id === 'vector-other') throw { status: 503, message: 'Usage unavailable.' };
+      return { id, status: 'completed', usage_bytes: 100 };
+    });
+    const service = new ProjectSourceService('key', client as never);
+    const next = await service.reconcile([project], createInterruptedState(), fingerprint, async () => undefined);
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({
+      status: 'failed', openaiFileId: 'file-interrupted', lastError: 'Usage unavailable.'
+    });
+    expect(client.files.delete).not.toHaveBeenCalled();
+  });
+
+  it('rechecks other managed stores after live indexing completes', async () => {
+    const client = createClient();
+    let completed = false;
+    client.vectorStores.files.createAndPoll.mockImplementation(async () => {
+      completed = true;
+      return { status: 'completed', usage_bytes: 100 };
+    });
+    client.vectorStores.retrieve.mockImplementation(async id => ({
+      id, status: 'completed',
+      usage_bytes: !completed ? 0 : id === 'vector-1' ? 100 : MAX_INDEXED_USAGE_BYTES
+    }));
+    const state = createInterruptedState();
+    state.indexes[project.id].files = {};
+    const service = new ProjectSourceService('key', client as never);
+    await expect(service.ingestSource({
+      project, source, blob: new Blob(['notes']), state,
+      apiKeyFingerprint: fingerprint, persist: async () => undefined
+    })).rejects.toMatchObject({ kind: 'quota' });
+    expect(client.files.delete).toHaveBeenCalledExactlyOnceWith('file-new');
+  });
+
+  it('preserves the File ID without deleting if quota rejection cannot be journaled', async () => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockResolvedValue({
+      id: 'vector-1', status: 'completed', usage_bytes: MAX_INDEXED_USAGE_BYTES
+    });
+    const service = new ProjectSourceService('key', client as never);
+    let rejectJournal = true;
+    const next = await service.reconcile([project], createInterruptedState(), fingerprint, async state => {
+      if (rejectJournal && state.indexes[project.id].files[source.id].status === 'failed') {
+        rejectJournal = false;
+        throw new Error('Quota rejection could not be saved.');
+      }
+    });
+    expect(client.files.delete).not.toHaveBeenCalled();
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({
+      status: 'failed', openaiFileId: 'file-interrupted',
+      lastError: 'Quota rejection could not be saved.'
+    });
+  });
 
   it('creates one lazy vector store and durably advances a searchable source to ready', async () => {
     const client = createClient();

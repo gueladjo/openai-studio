@@ -201,8 +201,10 @@ If expected automatic sources are unavailable, sending is blocked unless the
 user explicitly confirms a one-request send without project sources. Project
 instructions still apply. Upload/index work is sequential, the app uses OpenAI's
 reported vector-store `usage_bytes`, and app-managed indexed storage is capped
-at 900 MiB. If indexing crosses the cap, the new OpenAI File is deleted and the
-source is rejected.
+at 900 MiB. This check also applies when reopening a project recovers an
+interrupted upload. If indexing crosses the cap, the source is rejected and the
+new OpenAI File is deleted. If deletion fails, the rejected source retains its
+File ID so retry can finish cleanup.
 
 File Search is not necessarily free. As of this documentation update, OpenAI's
 [live pricing page](https://developers.openai.com/api/docs/pricing#built-in-tools)

@@ -30,6 +30,7 @@ export class ProjectSourceServiceError extends Error {
 
 type ProjectSourceClient = Pick<OpenAI, 'files' | 'vectorStores'>;
 type PersistRemoteState = (state: ProjectRemoteState) => Promise<void>;
+const INDEXED_USAGE_LIMIT_MESSAGE = 'Indexing would exceed the 900 MiB application limit.';
 
 const cloneState = (state: ProjectRemoteState): ProjectRemoteState => (
   JSON.parse(JSON.stringify(state)) as ProjectRemoteState
@@ -260,6 +261,41 @@ export class ProjectSourceService {
     return this.publish(next, persist);
   }
 
+  private async rejectOverLimitSource(
+    state: ProjectRemoteState,
+    projectId: string,
+    sourceId: string,
+    persist: PersistRemoteState
+  ): Promise<boolean> {
+    const index = state.indexes[projectId];
+    const totalUsage = Object.values(state.indexes)
+      .filter(value => value.apiKeyFingerprint === index.apiKeyFingerprint)
+      .reduce((sum, value) => sum + value.usageBytes, 0);
+    if (totalUsage <= MAX_INDEXED_USAGE_BYTES) return false;
+
+    const file = index.files[sourceId];
+    file.status = 'failed';
+    file.lastError = INDEXED_USAGE_LIMIT_MESSAGE;
+    index.status = 'failed';
+    // Persist rejection with its File ID before deletion, so interruption or a
+    // failed rollback cannot make this source ready or lose its cleanup handle.
+    await this.publish(state, persist);
+    try {
+      await this.deleteFile(file.openaiFileId!);
+    } catch (error) {
+      const classified = classifyProjectSourceError(error);
+      throw new ProjectSourceServiceError(
+        `${INDEXED_USAGE_LIMIT_MESSAGE} Cleanup failed: ${classified.message}`,
+        classified.kind,
+        classified.status
+      );
+    }
+    delete file.openaiFileId;
+    delete file.indexedUsageBytes;
+    await this.publish(state, persist);
+    return true;
+  }
+
   async ingestSource({
     project,
     source,
@@ -386,26 +422,11 @@ export class ProjectSourceService {
               : 'terminal'
           );
         }
-        const vectorStore = await this.client.vectorStores.retrieve(vectorStoreId);
+        next = await this.refreshUsage(next, apiKeyFingerprint, persist);
         index = next.indexes[project.id];
-        index.usageBytes = vectorStore.usage_bytes;
-        index.lastVerifiedAt = Date.now();
-        const totalUsage = Object.values(next.indexes)
-          .filter(value => value.apiKeyFingerprint === apiKeyFingerprint)
-          .reduce((sum, value) => sum + value.usageBytes, 0);
-        if (totalUsage > MAX_INDEXED_USAGE_BYTES) {
-          await this.deleteFile(uploaded.id);
+        if (await this.rejectOverLimitSource(next, project.id, source.id, persist)) {
           uploadedFileId = undefined;
-          index.files[source.id] = {
-            projectSourceId: source.id,
-            status: 'failed',
-            lastError: 'Indexing would exceed the 900 MiB application limit.'
-          };
-          next = await this.publish(next, persist);
-          throw new ProjectSourceServiceError(
-            'Indexing would exceed the 900 MiB application limit.',
-            'quota'
-          );
+          throw new ProjectSourceServiceError(INDEXED_USAGE_LIMIT_MESSAGE, 'quota');
         }
         index.files[source.id] = {
           projectSourceId: source.id,
@@ -493,7 +514,7 @@ export class ProjectSourceService {
   ): Promise<ProjectRemoteState> {
     let next = cloneState(state);
     for (const project of projects) {
-      const index = next.indexes[project.id];
+      let index = next.indexes[project.id];
       if (!index || index.apiKeyFingerprint !== apiKeyFingerprint) continue;
       if (index.vectorStoreId) {
         try {
@@ -538,6 +559,13 @@ export class ProjectSourceService {
               file.openaiFileId,
               { vector_store_id: index.vectorStoreId }
             );
+            if (remote.status === 'completed') {
+              next = await this.refreshUsage(next, apiKeyFingerprint, persist);
+              index = next.indexes[project.id];
+              if (await this.rejectOverLimitSource(next, project.id, source.id, persist)) {
+                continue;
+              }
+            }
             index.files[source.id] = {
               projectSourceId: source.id,
               openaiFileId: file.openaiFileId,

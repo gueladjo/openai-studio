@@ -213,8 +213,16 @@ local cleanup records before the new key is persisted.
 The app enforces a 900 MiB ceiling across app-managed vector-store
 `usage_bytes`, not raw source sizes. Before each searchable ingestion it refreshes
 usage for accessible app-managed stores, polls indexing to a terminal state,
-then reads actual usage. Crossing the ceiling deletes the newly uploaded File
-and marks the source failed. This application headroom does not guarantee that
+then refreshes actual usage across the matching key's managed stores before
+accepting the completed source. Reconciliation applies this same aggregate
+check before promoting an interrupted searchable source to ready, including
+stores belonging to projects that are not currently open. An unavailable usage
+check keeps the recovered source failed with its File ID available for retry.
+Crossing the ceiling durably marks the source failed with its File ID before
+deleting that File. Successful rollback clears the ID; a failed deletion keeps
+it recorded and unavailable for search so retry can finish cleanup. The same
+quota rejection path serves live ingestion and recovery. This application
+headroom does not guarantee that
 the OpenAI account remains inside its free allowance because unrelated vector
 stores also count and parsed chunks/embeddings can exceed source bytes.
 
