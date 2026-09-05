@@ -179,6 +179,7 @@ export const resolveProjectContext = (
       ? { vectorStoreId: index.vectorStoreId }
       : {}),
     analysisFileIds: analysisFiles,
+    searchSourceIds: readySearchSources.map(source => source.id),
     sourceIdByFileId
   };
 };

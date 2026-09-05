@@ -7,6 +7,7 @@ import {
   createEmptyProjectRemoteState,
   fingerprintApiKey,
   getProjectSourceAvailability,
+  resolveProjectContext,
 } from './projectSourceService';
 
 const fingerprint = 'a'.repeat(64);
@@ -347,6 +348,45 @@ describe('project source service', () => {
       lastError: expect.stringContaining('interrupted')
     });
     expect(client.files.create).not.toHaveBeenCalled();
+  });
+
+  it('excludes removed source IDs from search while their remote cleanup is pending', async () => {
+    const client = createClient();
+    client.files.delete.mockRejectedValue({ status: 503, message: 'Try again' });
+    const apiKey = 'matching-key';
+    const state: ProjectRemoteState = {
+      indexes: {
+        [project.id]: {
+          projectId: project.id,
+          apiKeyFingerprint: fingerprintApiKey(apiKey),
+          vectorStoreId: 'vector-1',
+          status: 'ready',
+          usageBytes: 100,
+          files: {
+            [source.id]: { projectSourceId: source.id, openaiFileId: 'file-kept', status: 'ready' }
+          }
+        }
+      },
+      cleanupTombstones: [{
+        id: 'cleanup-removed',
+        projectId: project.id,
+        projectSourceId: 'source-removed',
+        apiKeyFingerprint: fingerprintApiKey(apiKey),
+        openaiFileIds: ['file-removed'],
+        createdAt: 1
+      }]
+    };
+    let persisted = state;
+    await expect(new ProjectSourceService(apiKey, client as never).runCleanup(
+      state, 'cleanup-removed', async next => { persisted = next; }
+    )).rejects.toThrow('Try again');
+    expect(persisted.cleanupTombstones).toHaveLength(1);
+    expect(getProjectSourceAvailability(project, persisted, apiKey).ready).toBe(true);
+    expect(resolveProjectContext(project, persisted, apiKey)).toMatchObject({
+      vectorStoreId: 'vector-1',
+      searchSourceIds: [source.id]
+    });
+    expect(resolveProjectContext(project, persisted, 'different-key').searchSourceIds).toEqual([]);
   });
 
   it('blocks source context when the vector store is disconnected', () => {

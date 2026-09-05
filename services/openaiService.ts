@@ -1289,9 +1289,17 @@ export const generateResponse = async (
   }
 
   if (options.projectContext?.vectorStoreId) {
+    if (!options.projectContext.searchSourceIds?.length) {
+      throw new Error('Project File Search requires at least one retained source.');
+    }
     tools.push({
       type: 'file_search',
       vector_store_ids: [options.projectContext.vectorStoreId],
+      filters: {
+        type: 'in',
+        key: 'openai_studio_source_id',
+        value: options.projectContext.searchSourceIds
+      },
       max_num_results: 20
     });
   }

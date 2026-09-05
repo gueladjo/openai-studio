@@ -2321,7 +2321,8 @@ function App() {
       return {
         projectId: context.projectId,
         instructions: context.instructions,
-        analysisFileIds: []
+        analysisFileIds: [],
+        searchSourceIds: []
       };
     }
     return context;

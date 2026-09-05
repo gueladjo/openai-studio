@@ -1137,7 +1137,8 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.generateResponse.mock.calls[0][4].projectContext).toEqual({
       projectId: project.id,
       instructions: project.instructions,
-      analysisFileIds: []
+      analysisFileIds: [],
+      searchSourceIds: []
     });
   });
 

@@ -273,6 +273,7 @@ export interface ResolvedProjectContext {
   instructions: string;
   vectorStoreId?: string;
   analysisFileIds: string[];
+  searchSourceIds: string[];
   sourceIdByFileId?: Readonly<Record<string, string>>;
 }
 

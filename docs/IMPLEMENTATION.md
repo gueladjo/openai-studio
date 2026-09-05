@@ -188,6 +188,11 @@ Deleting a source immediately removes it from future context, atomically writes
 a durable cleanup tombstone, and deletes the underlying OpenAI File. A `404`
 delete is success. The project vector store remains. Retried indexing first
 deletes any previous failed File so retries cannot orphan duplicates.
+Every File Search request filters the vector store by the retained, ready
+project source IDs using their `openai_studio_source_id` attributes. Pending
+remote deletion therefore cannot reintroduce a removed source into new search
+results. A vector-store request without a nonempty source allowlist is rejected
+before the API call. This request-only context does not change persisted formats.
 
 Project deletion confirms chat/source counts and external-backup persistence,
 blocks active responses or source work, clears the merge/restore undo point,

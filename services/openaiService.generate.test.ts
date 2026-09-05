@@ -266,6 +266,7 @@ describe('OpenAI request contracts', () => {
           instructions: 'Use current project instructions.',
           vectorStoreId: 'vector-project-1',
           analysisFileIds: ['file-analysis-1'],
+          searchSourceIds: ['source-1'],
           sourceIdByFileId: {
             'file-search-source': 'source-1'
           }
@@ -281,6 +282,7 @@ describe('OpenAI request contracts', () => {
       tools: [{
         type: 'file_search',
         vector_store_ids: ['vector-project-1'],
+        filters: { type: 'in', key: 'openai_studio_source_id', value: ['source-1'] },
         max_num_results: 20
       }, {
         type: 'code_interpreter',
@@ -324,7 +326,8 @@ describe('OpenAI request contracts', () => {
           projectId: 'project-1',
           instructions: 'Project instructions.',
           vectorStoreId: 'vector-project-1',
-          analysisFileIds: []
+          analysisFileIds: [],
+          searchSourceIds: ['source-1']
         }
       }
     )).rejects.toBe(error);
@@ -333,8 +336,22 @@ describe('OpenAI request contracts', () => {
     expect(createResponseMock.mock.calls[0][0].tools).toEqual([{
       type: 'file_search',
       vector_store_ids: ['vector-project-1'],
+      filters: { type: 'in', key: 'openai_studio_source_id', value: ['source-1'] },
       max_num_results: 20
     }]);
+  });
+
+  it('refuses unfiltered project search when no retained source IDs are supplied', async () => {
+    await expect(generateResponse([userMessage], DEFAULT_CONFIG, 'project-key', undefined, {
+      projectContext: {
+        projectId: 'project-1',
+        instructions: '',
+        vectorStoreId: 'vector-project-1',
+        analysisFileIds: [],
+        searchSourceIds: []
+      }
+    })).rejects.toThrow('requires at least one retained source');
+    expect(createResponseMock).not.toHaveBeenCalled();
   });
 
   it('normalizes custom Web Search options and omits blank location fields', async () => {
