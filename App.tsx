@@ -3214,7 +3214,7 @@ function App() {
   if (workspaceLoadError) {
     return (
       <div className={isDarkMode ? 'dark' : ''}>
-        <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
+        <div className="flex flex-col h-dvh w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
           {window.electronAPI && (
             <div className="hidden md:block">
               <TitleBar isDarkMode={isDarkMode} />
@@ -3250,7 +3250,7 @@ function App() {
 
   return (
     <div className={isDarkMode ? 'dark' : ''}>
-      <div className="flex flex-col h-screen w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
+      <div className="flex flex-col h-dvh w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
         {/* Custom Title Bar - Electron desktop only */}
         {window.electronAPI && (
           <div className="hidden md:block">
@@ -3478,7 +3478,7 @@ function App() {
                     />
                   )}
                   <div
-                    className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 max-h-[85vh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
+                    className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 h-[85dvh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
                   >
                     <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
                       <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>

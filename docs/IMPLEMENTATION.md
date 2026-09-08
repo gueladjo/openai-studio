@@ -737,7 +737,11 @@ mobile drawer/sheet presentation through responsive classes, so crossing the
 breakpoint must not discard their local drafts or disclosure state. The project
 home and its single project-settings panel similarly adapt within the full main
 sheet. Layout changes must preserve hierarchy/search usability, keyboard send
-behavior, scrolling, overflow, and light/dark themes at both sizes.
+behavior, scrolling, overflow, and light/dark themes at both sizes. The app shell
+uses the dynamic viewport height. The mobile configuration sheet has a definite
+85dvh height, with a fixed close header and bottom safe-area padding; its remaining
+height bounds the scrollable settings panel so every tool stays reachable even
+when instruction or Web Search options are expanded.
 
 Electron is a frameless, single-instance window. `nodeIntegration` is off and
 `contextIsolation` is on. The preload bridge is limited to window controls,
