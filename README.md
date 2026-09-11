@@ -298,20 +298,9 @@ not deleted automatically later.
 
 ## Contributing
 
-The [implementation specification](docs/IMPLEMENTATION.md) describes the
-current architecture, intended behavior, failure contracts, and acceptance-test
-traceability. [AGENTS.md](AGENTS.md) provides the task-to-module map, command
-safety rules, focused test selection, and definition of done.
-
-For shared TypeScript or React changes, the ordinary finite checks are:
-
-```bash
-npm test
-npm run build
-npm run build:web
-```
-
-Run the focused contracts named in `AGENTS.md` while iterating, then the complete
-suite and affected builds before handoff. Keep tests isolated from live API
-quota, real browser storage, real user data, and workspace exports. Record
-pre-existing failures separately.
+Use [AGENTS.md](AGENTS.md) for task routing and completion criteria. The
+[implementation specification](docs/IMPLEMENTATION.md) owns architecture,
+behavior, recovery contracts, and test traceability; the
+[testing guide](CODEX_TESTING.md) provides focused commands, build selection,
+and platform checks. Select validation for the changed behavior and keep tests
+isolated from live API quota, real user storage, and workspace exports.

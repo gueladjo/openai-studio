@@ -834,10 +834,12 @@ The following tests are the executable contracts for this specification:
 | Electron navigation, window isolation, close coordination, managed IPC, streamed file publication, and partial cleanup | [urlPolicy.test.js](../electron/urlPolicy.test.js), [main.test.js](../electron/main.test.js), and [backupFiles.test.js](../electron/backupFiles.test.js) |
 | Web/Electron base paths, PWA navigation, and production secret exclusion | [buildPolicy.test.ts](../buildPolicy.test.ts) |
 
-Changes must extend the narrow contract first, then pass the full suite and the
-applicable Electron and web builds. Runtime smoke tests remain necessary for
-visible layout, browser/PWA behavior, Electron lifecycle, and real file-picker
-flows that unit tests cannot fully exercise.
+Use this table to select tests for affected contracts, not as a checklist for
+every change. [AGENTS.md](../AGENTS.md#definition-of-done) owns completion rules;
+[CODEX_TESTING.md](../CODEX_TESTING.md) owns commands and platform verification.
+Documentation-only edits need link/path/command and diff checks. Code changes
+need evidence proportional to the affected behavior; mocked tests do not prove
+browser/PWA, native Electron, or real file-picker behavior.
 
 ## Known Limitations And Unresolved Status
 
