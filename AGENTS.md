@@ -73,6 +73,3 @@ Completion includes updated affected contracts, an inspected diff without
 unrelated work or unintended artifacts, and an accurate validation report.
 Missing dependencies, sandbox failures, browser emulation, and untested native
 paths are limitations to report, not evidence of a pass.
-
-Instruction routing follows [OpenAI’s skills and prompts guidance](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra),
-reviewed September 11, 2026; no particular model or runtime setting is required.
