@@ -478,7 +478,10 @@ created with `background: true`.
 
 Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes
-redundant adjacent labels without corrupting surrounding prose.
+redundant adjacent labels without corrupting surrounding prose. Annotation
+offsets that would split a word or Markdown delimiter do not modify the text;
+matching Markdown source links still normalize to the annotation's stable
+citation number.
 
 Enabled Web Search requests use the normalized per-chat options for
 `search_context_size` and `user_location`. API-facing option types derive from

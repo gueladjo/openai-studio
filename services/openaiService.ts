@@ -497,6 +497,23 @@ const extractMarkdownLinkCitations = (
   };
 };
 
+const normalizeKnownMarkdownLinkCitations = (
+  content: string,
+  registry: CitationRegistry
+): string => {
+  const linkRegex = /(^|[^!])\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
+
+  return content.replace(linkRegex, (match, prefix, _title, url) => {
+    const citationNumber = registry.sourceIndexByUrl.get(getSourceKey(url));
+
+    if (!citationNumber) {
+      return match;
+    }
+
+    return `${prefix}${formatCitationMarkdownLink(citationNumber, url)}`;
+  });
+};
+
 export interface CitationRegistry {
   sources: Source[];
   sourceIndexByUrl: Map<string, number>;
@@ -537,6 +554,33 @@ interface CitationReplacement {
   citationNumbers: number[];
   urls: string[];
 }
+
+const WORD_CHARACTER = /[\p{L}\p{N}]/u;
+const MARKDOWN_DELIMITER = /[*_~`]/;
+
+const hasUnsafeCitationBoundary = (
+  text: string,
+  endIndex: number,
+  spanText: string
+): boolean => {
+  if (isCitationMarkerSpan(spanText) || endIndex >= text.length) {
+    return false;
+  }
+
+  const before = text[endIndex - 1] || '';
+  const after = text[endIndex] || '';
+  const startsMarkdownDelimitedWord = /^[*_~`]+[\p{L}\p{N}]/u.test(
+    text.slice(endIndex)
+  );
+
+  return (
+    (WORD_CHARACTER.test(before) && WORD_CHARACTER.test(after)) ||
+    (/\s/.test(before) && (
+      WORD_CHARACTER.test(after) || startsMarkdownDelimitedWord
+    )) ||
+    (before === after && MARKDOWN_DELIMITER.test(before))
+  );
+};
 
 const getOrAddCitationSource = (
   registry: CitationRegistry,
@@ -616,6 +660,9 @@ const buildCitationReplacements = (
     const citationSource = getOrAddCitationSource(registry, annotation);
     if (!citationSource) return;
 
+    const spanText = text.slice(startIndex, endIndex);
+    if (hasUnsafeCitationBoundary(text, endIndex, spanText)) return;
+
     const existingReplacement = replacementsBySpan.get(spanKey);
 
     if (existingReplacement) {
@@ -649,10 +696,6 @@ export const applyCitationAnnotations = (
   addFileCitationSources(annotations, registry);
   const replacements = buildCitationReplacements(text, annotations, registry);
 
-  if (replacements.length === 0) {
-    return text;
-  }
-
   let updatedText = '';
   let cursor = 0;
 
@@ -680,6 +723,8 @@ export const applyCitationAnnotations = (
   });
 
   updatedText += text.slice(cursor);
+
+  updatedText = normalizeKnownMarkdownLinkCitations(updatedText, registry);
 
   return stripAdjacentCitationSourceLabels(updatedText);
 };

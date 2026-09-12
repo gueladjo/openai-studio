@@ -181,6 +181,72 @@ describe('applyCitationAnnotations', () => {
     )).toBe(`Claim ${FIRST_MARKER}.`);
   });
 
+  it('does not insert a citation inside a word when an annotation endpoint is unsafe', () => {
+    const text = 'Your employee options have approximately $20,769 of intrinsic value.';
+    const endIndex = text.indexOf('have') + 'hav'.length;
+    const registry = createRegistry();
+
+    expect(applyCitationAnnotations(
+      text,
+      [{
+        type: 'url_citation',
+        start_index: 0,
+        end_index: endIndex,
+        title: 'StockAnalysis',
+        url: FIRST_URL
+      }],
+      registry
+    )).toBe(text);
+    expect(registry.sources).toEqual([
+      { kind: 'web', title: 'StockAnalysis', url: FIRST_URL }
+    ]);
+  });
+
+  it.each(['before', 'inside'] as const)(
+    'does not insert a citation %s Markdown delimiter characters',
+    (position) => {
+      const text = 'I used **FXAIX return** for the estimate.';
+      const endIndex = text.indexOf('**') + (position === 'inside' ? 1 : 0);
+
+      expect(applyCitationAnnotations(
+        text,
+        [{
+          type: 'url_citation',
+          start_index: 0,
+          end_index: endIndex,
+          title: 'StockAnalysis',
+          url: FIRST_URL
+        }],
+        createRegistry()
+      )).toBe(text);
+    }
+  );
+
+  it('normalizes a matching Markdown source link when its annotation endpoint is unsafe', () => {
+    const text = [
+      `The quote was $78.25. ([stockanalysis.com](${FIRST_URL}))`,
+      '',
+      'Your **2,040 NFLX employee options** have approximately $20,769 of intrinsic value.'
+    ].join('\n');
+    const endIndex = text.indexOf('have') + 'hav'.length;
+
+    expect(applyCitationAnnotations(
+      text,
+      [{
+        type: 'url_citation',
+        start_index: 0,
+        end_index: endIndex,
+        title: 'StockAnalysis',
+        url: FIRST_URL
+      }],
+      createRegistry()
+    )).toBe([
+      `The quote was $78.25. ${FIRST_MARKER}`,
+      '',
+      'Your **2,040 NFLX employee options** have approximately $20,769 of intrinsic value.'
+    ].join('\n'));
+  });
+
   it('ignores malformed and unsupported annotations without mutating the registry', () => {
     const text = 'Unchanged text.';
     const registry = createRegistry();
