@@ -118,7 +118,9 @@ citations, refusal or incomplete output, reasoning summaries, usage details
 including cache-read and cache-write token counts when reported, and generated
 Code Interpreter files. Math accepts dollar delimiters as well as `\(...\)`
 and `\[...\]`; delimiter normalization must not alter Markdown code spans or
-fenced code blocks.
+fenced code blocks. Dollar signs immediately followed by a digit are treated as
+currency text rather than math delimiters; use `\(...\)` for numeric-leading
+inline math.
 Generated files are cached into the shared local blob store when possible.
 Cached files remain downloadable without an API key. An uncached download
 requires the in-app key plus both remote container and file IDs. Cache failure

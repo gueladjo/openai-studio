@@ -193,6 +193,18 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).toContain('<p>Use ');
   });
 
+  it('does not treat currency amounts and intervening Markdown as TeX', () => {
+    const html = renderMarkdown(
+      'Your **2,040 NFLX employee options** have approximately ' +
+      '**$20,769 of intrinsic value**, calculated grant by grant at ' +
+      'NFLX’s $78.25 quote.'
+    );
+
+    expect(html).not.toContain('class="katex"');
+    expect(html).toContain('<strong>$20,769 of intrinsic value</strong>');
+    expect(html).toContain('NFLX’s $78.25 quote.');
+  });
+
   it('does not interpret TeX delimiters inside Markdown code', () => {
     const html = renderMarkdown(
       'Keep `\\(x\\)` and:\n\n```text\n\\[y\\]\n```'

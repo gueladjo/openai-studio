@@ -4,6 +4,7 @@ const escapeDollarSigns = (value: string): string => (
 
 const normalizePlainMarkdown = (value: string): string => (
   value
+    .replace(/(?<!\\)\$(?=\d)/g, '\\$')
     .replace(
       /(?<!\\)\\\[([\s\S]*?)(?<!\\)\\\]/g,
       (_match, math: string) => `\n\n$$\n${escapeDollarSigns(math).trim()}\n$$\n\n`
