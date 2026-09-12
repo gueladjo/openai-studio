@@ -222,6 +222,13 @@ body {
   white-space: pre;
 }
 
+.markdown-content .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2rem 0;
+}
+
 .markdown-content img {
   max-width: 100%;
   border-radius: 0.5rem;

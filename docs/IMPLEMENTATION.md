@@ -113,9 +113,12 @@ Images become `input_image` content parts. Other readable attachments become
 base64/data-URL `input_file` parts. Clipboard file paste follows the same
 validation path.
 
-Responses can render Markdown, citations, refusal or incomplete output,
-reasoning summaries, usage details including cache-read and cache-write token
-counts when reported, and generated Code Interpreter files.
+Responses can render GitHub Flavored Markdown, inline and display TeX math,
+citations, refusal or incomplete output, reasoning summaries, usage details
+including cache-read and cache-write token counts when reported, and generated
+Code Interpreter files. Math accepts dollar delimiters as well as `\(...\)`
+and `\[...\]`; delimiter normalization must not alter Markdown code spans or
+fenced code blocks.
 Generated files are cached into the shared local blob store when possible.
 Cached files remain downloadable without an API key. An uncached download
 requires the in-app key plus both remote container and file IDs. Cache failure

@@ -11,7 +11,9 @@ import React, {
 import { GeneratedFile, Message, Project, ProjectSource, Session, Source } from '../types';
 import { Send, Bot, User, Paperclip, X, FileText, ChevronDown, ChevronRight, Globe, Clock, MoreHorizontal, Copy, Check, AlertCircle, Upload, Download, Loader2, RefreshCw, RotateCcw, Square, Hash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { getModelConfig } from '../constants';
 import { getSourcePresentation } from '../utils/sourceUrls';
 import {
@@ -28,6 +30,7 @@ import {
   restoreFocusAfterFileDialog
 } from '../utils/focusRecovery';
 import { ProjectIconGlyph } from './ProjectIcon';
+import { normalizeMarkdownMath } from '../utils/markdownMath';
 
 interface ChatAreaProps {
   session: Session | null;
@@ -294,12 +297,7 @@ const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number
         </button>
         {isOpen && (
             <div className="mt-2 min-w-0 max-w-full pl-3 border-l-2 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 text-sm leading-relaxed markdown-content">
-                <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={markdownComponents}
-                >
-                    {text}
-                </ReactMarkdown>
+                <AssistantMarkdown>{text}</AssistantMarkdown>
             </div>
         )}
     </div>
@@ -360,12 +358,7 @@ const CommentaryBlock = ({
       </button>
       {isOpen && (
         <div className="markdown-content mt-2 min-w-0 max-w-full border-l-2 border-blue-200 pl-3 text-sm leading-relaxed text-gray-600 dark:border-blue-900 dark:text-gray-400">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={markdownComponents}
-          >
-            {text}
-          </ReactMarkdown>
+          <AssistantMarkdown>{text}</AssistantMarkdown>
         </div>
       )}
     </div>
@@ -880,6 +873,16 @@ export const markdownComponents = {
     }
 };
 
+export const AssistantMarkdown = ({ children }: { children: string }) => (
+  <ReactMarkdown
+    remarkPlugins={[remarkGfm, remarkMath]}
+    rehypePlugins={[rehypeKatex]}
+    components={markdownComponents}
+  >
+    {normalizeMarkdownMath(children)}
+  </ReactMarkdown>
+);
+
 interface MessageRowProps {
   message: Message;
   canRetry: boolean;
@@ -1072,12 +1075,9 @@ export const MessageRow = React.memo(({
                             <span>Thinking...</span>
                         </div>
                     ) : (
-                    <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={markdownComponents}
-                    >
+                    <AssistantMarkdown>
                         {assistantContent.primary}
-                    </ReactMarkdown>
+                    </AssistantMarkdown>
                     )}
                 </div>
                 ) : (

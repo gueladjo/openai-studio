@@ -4,18 +4,17 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import ReactMarkdown from 'react-markdown';
 import {
+  AssistantMarkdown,
   ChatArea,
   ContextWindowUsage,
   getResponseModelLabel,
-  markdownComponents,
   MessageRow
 } from './ChatArea';
 import { DEFAULT_CONFIG, Message, ModelId, Session } from '../types';
 
 const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
-  <ReactMarkdown components={markdownComponents}>{markdown}</ReactMarkdown>
+  <AssistantMarkdown>{markdown}</AssistantMarkdown>
 );
 
 const createSessionWithUsage = (
@@ -173,6 +172,35 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).toContain('<pre');
     expect(html.match(/<pre/g)).toHaveLength(1);
     expect(html).toContain('<code class="language-js">foo();');
+  });
+
+  it('renders bracket-delimited TeX, including a currency dollar sign', () => {
+    const html = renderMarkdown(
+      String.raw`\[ 8{,}100 \times \max(\text{NVDA price}-$170,0) \]`
+    );
+
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('8,100');
+    expect(html).toContain('NVDA price');
+    expect(html).toContain('$170');
+    expect(html).not.toContain('\\[');
+  });
+
+  it('renders parenthesis- and dollar-delimited inline TeX', () => {
+    const html = renderMarkdown(String.raw`Use \(x^2\) or $y^2$.`);
+
+    expect(html.match(/class="katex"/g)).toHaveLength(2);
+    expect(html).toContain('<p>Use ');
+  });
+
+  it('does not interpret TeX delimiters inside Markdown code', () => {
+    const html = renderMarkdown(
+      'Keep `\\(x\\)` and:\n\n```text\n\\[y\\]\n```'
+    );
+
+    expect(html).not.toContain('class="katex"');
+    expect(html).toContain('\\(x\\)');
+    expect(html).toContain('\\[y\\]');
   });
 });
 
