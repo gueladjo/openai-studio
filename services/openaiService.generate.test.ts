@@ -1135,6 +1135,67 @@ describe('generateResponse assistant phases', () => {
       }]
     });
   });
+
+  it('measures thinking time until primary output begins, ignoring progress commentary', async () => {
+    const commentaryOutput = createPhasedMessageOutput(
+      'msg-commentary',
+      'I will check the data.',
+      'commentary'
+    );
+    const finalOutput = createPhasedMessageOutput(
+      'msg-final',
+      'The data is valid.',
+      'final_answer'
+    );
+    const completedResponse = createCompletedResponse([
+      commentaryOutput,
+      finalOutput
+    ]);
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.output_item.added',
+      output_index: 0,
+      sequence_number: 1,
+      item: commentaryOutput
+    }, {
+      type: 'response.output_text.delta',
+      item_id: 'msg-commentary',
+      output_index: 0,
+      content_index: 0,
+      sequence_number: 2,
+      delta: 'I will check the data.',
+      logprobs: []
+    }, {
+      type: 'response.output_item.added',
+      output_index: 1,
+      sequence_number: 3,
+      item: finalOutput
+    }, {
+      type: 'response.output_text.delta',
+      item_id: 'msg-final',
+      output_index: 1,
+      content_index: 0,
+      sequence_number: 4,
+      delta: 'The data is valid.',
+      logprobs: []
+    }, {
+      type: 'response.completed',
+      sequence_number: 5,
+      response: completedResponse
+    }]));
+    const nowSpy = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(181_000);
+
+    const result = await generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'phase-timing-key'
+    );
+
+    expect(result.thinkingDuration).toBe(180_000);
+    expect(nowSpy).toHaveBeenCalledTimes(2);
+    nowSpy.mockRestore();
+  });
 });
 
 describe('generateResponse conversation history', () => {

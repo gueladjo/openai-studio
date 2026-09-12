@@ -147,7 +147,7 @@ export interface Message {
   thinking?: string;
   refusal?: string;
   incompleteReason?: ResponseIncompleteReason;
-  thinkingDuration?: number; // Time to first streamed output token in milliseconds
+  thinkingDuration?: number; // Time to first streamed primary output token in milliseconds
   usage?: OpenAIResponsesUsage;
   sources?: Source[];
   generatedFiles?: GeneratedFile[];

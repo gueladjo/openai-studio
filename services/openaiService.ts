@@ -1463,7 +1463,20 @@ export const generateResponse = async (
     let terminalStatus: GenerateResponseStreamState['terminalStatus'] | undefined;
     let activeReasoningSummaryPart: string | undefined;
     const outputPhases = new Map<number, AssistantPhase | undefined>();
-    let timeToFirstToken = 0;
+    let timeToFirstPrimaryToken: number | undefined;
+
+    const captureTimeToFirstPrimaryToken = (
+      delta: string,
+      outputIndex: number
+    ) => {
+      if (
+        timeToFirstPrimaryToken === undefined &&
+        delta.length > 0 &&
+        outputPhases.get(outputIndex) !== 'commentary'
+      ) {
+        timeToFirstPrimaryToken = getMonotonicTime() - startTime;
+      }
+    };
 
     for await (const event of stream) {
       if (options.signal?.aborted) {
@@ -1486,9 +1499,7 @@ export const generateResponse = async (
         streamedThinking += delta;
         options.onReasoningSummaryDelta?.(delta);
       } else if (event.type === 'response.output_text.delta') {
-        if (timeToFirstToken === 0 && event.delta.length > 0) {
-          timeToFirstToken = getMonotonicTime() - startTime;
-        }
+        captureTimeToFirstPrimaryToken(event.delta, event.output_index);
         streamedContent += event.delta;
         options.onTextDelta?.(
           event.delta,
@@ -1496,9 +1507,7 @@ export const generateResponse = async (
           outputPhases.get(event.output_index)
         );
       } else if (event.type === 'response.refusal.delta') {
-        if (timeToFirstToken === 0 && event.delta.length > 0) {
-          timeToFirstToken = getMonotonicTime() - startTime;
-        }
+        captureTimeToFirstPrimaryToken(event.delta, event.output_index);
         streamedContent += event.delta;
         streamedRefusal += event.delta;
         options.onTextDelta?.(
@@ -1527,7 +1536,7 @@ export const generateResponse = async (
 
     return parseGenerateResponse(
       completedResponse,
-      timeToFirstToken,
+      timeToFirstPrimaryToken ?? 0,
       normalizedConfig,
       {
         thinking: streamedThinking,

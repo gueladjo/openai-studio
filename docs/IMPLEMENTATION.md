@@ -472,11 +472,12 @@ The streamed lifecycle is:
    usage, model metadata, and incomplete reason.
 4. Reject a stream that ends without a terminal response.
 
-`thinkingDuration` is the time to the first streamed user-visible text token,
-not total request time, reasoning time, or chain-of-thought duration. Stopping
-aborts the foreground stream's request signal and retains partial content. It
-does not call `responses.cancel`; that remote endpoint is reserved for responses
-created with `background: true`.
+`thinkingDuration` is the time to the first streamed primary text token. A
+`commentary`-phase Progress update does not stop this timer; `final_answer` and
+legacy unphased output do. This is not total request time or chain-of-thought
+duration. Stopping aborts the foreground stream's request signal and retains
+partial content. It does not call `responses.cancel`; that remote endpoint is
+reserved for responses created with `background: true`.
 
 Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes
