@@ -62,16 +62,6 @@ export class ResponseStreamState {
     this.pendingThinking += delta;
   }
 
-  preview(): ResponseStreamSnapshot {
-    const outputs = new Map(this.outputMessages);
-    this.pendingOutputDeltas.forEach(delta => appendOutputDelta(outputs, delta));
-    return {
-      content: this.content + this.pendingContent,
-      outputMessages: orderedOutputs(outputs),
-      thinking: this.thinking + this.pendingThinking
-    };
-  }
-
   checkpoint(): ResponseStreamCheckpoint {
     const textChanged = this.pendingContent.length > 0 ||
       this.pendingOutputDeltas.length > 0;

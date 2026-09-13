@@ -82,7 +82,7 @@ import {
 } from './services/serializedOperationQueue';
 import {
   buildConversationFilename,
-  downloadTextFile,
+  downloadBlobFile,
   formatConversationMarkdown
 } from './utils/conversationExport';
 import { confirmChatDeletion } from './utils/chatDeletion';
@@ -161,17 +161,6 @@ type PortableBackupSavePicker = (options: {
     accept: Record<string, string[]>;
   }>;
 }) => Promise<PortableBackupFileHandle>;
-
-const downloadBlobFile = (filename: string, blob: Blob): void => {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-};
 
 const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
   sessions.forEach(session => {
@@ -2009,7 +1998,6 @@ function App() {
         content: responseText,
         outputMessages,
         thinking,
-        refusal,
         status: responseStatus,
         incompleteReason,
         sources,
@@ -2086,7 +2074,6 @@ function App() {
         status: responseStatus,
         openaiResponseId: responseId,
         thinking,
-        refusal,
         incompleteReason,
         thinkingDuration,
         usage,
@@ -2859,7 +2846,7 @@ function App() {
     try {
       const markdown = formatConversationMarkdown(currentSession);
       const filename = buildConversationFilename(currentSession.title);
-      downloadTextFile(filename, markdown);
+      downloadBlobFile(filename, new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
     } catch (e) {
       console.error("Conversation export failed", e);
       alert("Failed to export conversation.");

@@ -503,7 +503,9 @@ static model name used for historical labels and may carry an ordered
 `final_answer` phase. Aggregate `content` remains required even when
 `outputMessages` is present. `outputMessages` is optional within the supported
 formats; messages without it retain the aggregate representation used by
-partial/error handling.
+partial/error handling. Refusal text is part of `content`; the retired
+`refusal` message field and `generatedFiles[].source` are no longer written
+but remain accepted on older records.
 
 `Session.projectId` is an optional reference into `Project[]`. Project records
 own inline instructions, normalized defaults without `systemInstructionId`,

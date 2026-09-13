@@ -582,8 +582,7 @@ describe('OpenAI request contracts', () => {
       fileId: 'file-result',
       containerId: 'container-1',
       displayName: 'result.csv',
-      mimeType: 'text/csv',
-      source: 'container_file_citation'
+      mimeType: 'text/csv'
     }]);
   });
 
@@ -946,7 +945,6 @@ describe('generateResponse terminal output', () => {
     ]);
     expect(result).toMatchObject({
       content: refusal,
-      refusal,
       status: 'complete'
     });
   });

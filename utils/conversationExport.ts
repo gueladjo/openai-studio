@@ -4,6 +4,21 @@ const ATTACHMENT_PLACEHOLDER = '[Attachment omitted]';
 const FALLBACK_FILENAME = 'conversation';
 const INVALID_FILENAME_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f]/g;
 
+export const stripInvalidFilenameCharacters = (name: string): string => (
+  name.replace(INVALID_FILENAME_CHARACTERS, '').trim()
+);
+
+export const downloadBlobFile = (filename: string, blob: Blob): void => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
 const hasVisibleMessageContent = (content: string): boolean => content.trim().length > 0;
 
 export const formatConversationMarkdown = (session: Session): string => {
@@ -38,9 +53,7 @@ export const formatConversationMarkdown = (session: Session): string => {
 };
 
 const sanitizeFilenameSegment = (title: string): string => {
-  return title
-    .trim()
-    .replace(INVALID_FILENAME_CHARACTERS, '')
+  return stripInvalidFilenameCharacters(title)
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '');
@@ -51,24 +64,4 @@ export const buildConversationFilename = (title: string, date = new Date()): str
   const dateLabel = date.toISOString().slice(0, 10);
 
   return `${safeTitle}-${dateLabel}.md`;
-};
-
-export const downloadTextFile = (
-  filename: string,
-  content: string,
-  mimeType = 'text/markdown;charset=utf-8'
-): void => {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
 };

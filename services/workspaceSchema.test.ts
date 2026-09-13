@@ -272,11 +272,11 @@ describe('workspace runtime schema', () => {
     );
   });
 
-  it('accepts bounded refusal and incomplete-response metadata', () => {
+  it('tolerates the retired refusal field and validates incomplete-response metadata', () => {
     const backup = createBackup();
     const assistantMessage = backup.sessions[0].messages[1];
     assistantMessage.status = 'incomplete';
-    assistantMessage.refusal = 'I cannot help with that request.';
+    Object.assign(assistantMessage, { refusal: 'I cannot help with that request.' });
     assistantMessage.incompleteReason = 'content_filter';
 
     expect(parseWorkspace(backup).sessions[0].messages[1]).toMatchObject({

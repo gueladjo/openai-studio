@@ -296,7 +296,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
          </div>
 
          {showSettings && (
-            <div className="max-h-[70vh] min-h-0 overflow-y-auto px-4 pb-4 space-y-4 animate-in slide-in-from-bottom-2 duration-200">
+            <div className="max-h-[70vh] min-h-0 overflow-y-auto px-4 pb-4 space-y-4">
                 {/* Theme Toggle */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">

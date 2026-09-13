@@ -31,6 +31,7 @@ import {
 } from '../utils/focusRecovery';
 import { ProjectIconGlyph } from './ProjectIcon';
 import { normalizeMarkdownMath } from '../utils/markdownMath';
+import { downloadBlobFile, stripInvalidFilenameCharacters } from '../utils/conversationExport';
 
 interface ChatAreaProps {
   session: Session | null;
@@ -280,29 +281,62 @@ const formatThinkingLabel = (ms?: number): string => {
   return `Thought for ${minutes}m ${seconds}s`;
 };
 
-const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number }) => {
-  const [isOpen, setIsOpen] = useState(false);
+const DISCLOSURE_TONES = {
+  muted: {
+    button: 'text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300',
+    body: 'border-gray-200 dark:border-gray-800'
+  },
+  accent: {
+    button: 'text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300',
+    body: 'border-blue-200 dark:border-blue-900'
+  }
+};
+
+// Collapsible Markdown section; `collapseWhen` closes it once streaming ends.
+const DisclosureBlock = ({
+  label,
+  text,
+  tone,
+  defaultOpen = false,
+  collapseWhen = false
+}: {
+  label: string;
+  text: string;
+  tone: keyof typeof DISCLOSURE_TONES;
+  defaultOpen?: boolean;
+  collapseWhen?: boolean;
+}) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (collapseWhen) setIsOpen(false);
+  }, [collapseWhen]);
 
   if (!text) return null;
 
   return (
     <div className="mb-2 min-w-0 max-w-full">
-        <button
-            onClick={() => setIsOpen(!isOpen)}
-            aria-expanded={isOpen}
-            className="flex min-w-0 max-w-full items-center gap-1 text-sm text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-        >
-            <span>{formatThinkingLabel(durationMs)}</span>
-            {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
-        {isOpen && (
-            <div className="mt-2 min-w-0 max-w-full pl-3 border-l-2 border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 text-sm leading-relaxed markdown-content">
-                <AssistantMarkdown>{text}</AssistantMarkdown>
-            </div>
-        )}
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        aria-expanded={isOpen}
+        className={`flex min-w-0 max-w-full items-center gap-1 text-sm transition-colors ${DISCLOSURE_TONES[tone].button}`}
+      >
+        <span>{label}</span>
+        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {isOpen && (
+        <div className={`markdown-content mt-2 min-w-0 max-w-full border-l-2 pl-3 text-sm leading-relaxed text-gray-600 dark:text-gray-400 ${DISCLOSURE_TONES[tone].body}`}>
+          <AssistantMarkdown>{text}</AssistantMarkdown>
+        </div>
+      )}
     </div>
-    );
+  );
 };
+
+const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number }) => (
+  <DisclosureBlock label={formatThinkingLabel(durationMs)} text={text} tone="muted" />
+);
 
 const getAssistantContentPresentation = (message: Message): {
   commentary: string;
@@ -330,40 +364,35 @@ const getAssistantContentPresentation = (message: Message): {
   };
 };
 
-const CommentaryBlock = ({
-  text,
-  isStreaming
+const CommentaryBlock = ({ text, isStreaming }: { text: string; isStreaming: boolean }) => (
+  <DisclosureBlock
+    label="Progress"
+    text={text}
+    tone="accent"
+    defaultOpen={isStreaming}
+    collapseWhen={!isStreaming}
+  />
+);
+
+const DetailRow = ({
+  icon: Icon,
+  label,
+  value
 }: {
-  text: string;
-  isStreaming: boolean;
-}) => {
-  const [isOpen, setIsOpen] = useState(isStreaming);
-
-  useEffect(() => {
-    if (!isStreaming) setIsOpen(false);
-  }, [isStreaming]);
-
-  if (!text) return null;
-
-  return (
-    <div className="mb-2 min-w-0 max-w-full">
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        aria-expanded={isOpen}
-        className="flex min-w-0 max-w-full items-center gap-1 text-sm text-blue-600 transition-colors hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-      >
-        <span>Progress</span>
-        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-      </button>
-      {isOpen && (
-        <div className="markdown-content mt-2 min-w-0 max-w-full border-l-2 border-blue-200 pl-3 text-sm leading-relaxed text-gray-600 dark:border-blue-900 dark:text-gray-400">
-          <AssistantMarkdown>{text}</AssistantMarkdown>
-        </div>
-      )}
+  icon: typeof Bot;
+  label: string;
+  value: React.ReactNode;
+}) => (
+  <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
+    <Icon size={17} className="mt-0.5 flex-shrink-0 text-gray-500 dark:text-gray-400" />
+    <div>
+      <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
+        {label}
+      </div>
+      <div className="text-sm font-medium">{value}</div>
     </div>
-  );
-};
+  </div>
+);
 
 const ResponseDetailsMenu = ({ message }: { message: Message }) => {
     const [isOpen, setIsOpen] = useState(false);
@@ -446,32 +475,14 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                     </div>
 
                     <div className="mt-3 space-y-3">
-                        {modelLabel && (
-                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
-                                <Bot size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
-                                <div>
-                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
-                                        Model
-                                    </div>
-                                    <div className="text-sm font-medium">
-                                        {modelLabel}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+                        {modelLabel && <DetailRow icon={Bot} label="Model" value={modelLabel} />}
 
                         {hasThinkingDuration && (
-                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
-                                <Clock size={17} className="mt-0.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
-                                <div>
-                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
-                                        Thinking Time
-                                    </div>
-                                    <div className="text-sm font-medium">
-                                        {formatDuration(message.thinkingDuration!)}
-                                    </div>
-                                </div>
-                            </div>
+                            <DetailRow
+                                icon={Clock}
+                                label="Thinking Time"
+                                value={formatDuration(message.thinkingDuration!)}
+                            />
                         )}
 
                         {hasTokenUsage && (
@@ -506,17 +517,11 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                         )}
 
                         {typeof message.fileSearchCallCount === 'number' && (
-                            <div className="flex items-start gap-3 text-gray-700 dark:text-gray-200">
-                                <FileText size={17} className="mt-0.5 flex-shrink-0 text-gray-500 dark:text-gray-400" />
-                                <div>
-                                    <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 dark:text-gray-500">
-                                        File Search
-                                    </div>
-                                    <div className="text-sm font-medium">
-                                        {message.fileSearchCallCount} invocation{message.fileSearchCallCount === 1 ? '' : 's'}
-                                    </div>
-                                </div>
-                            </div>
+                            <DetailRow
+                                icon={FileText}
+                                label="File Search"
+                                value={`${message.fileSearchCallCount} invocation${message.fileSearchCallCount === 1 ? '' : 's'}`}
+                            />
                         )}
                     </div>
 
@@ -602,15 +607,7 @@ const SourcesBlock = ({ sources }: { sources: Source[] }) => {
                     }`;
 
                     if (!sourcePresentation.href) {
-                        return (
-                            <div
-                                key={idx}
-                                title={sourcePresentation.rawUrl}
-                                className={className}
-                            >
-                                {chipContent}
-                            </div>
-                        );
+                        return <div key={idx} title={sourcePresentation.rawUrl} className={className}>{chipContent}</div>;
                     }
 
                     return (
@@ -639,28 +636,9 @@ const getGeneratedFileLabel = (file: GeneratedFile): string => (
     file.displayName || file.filename || file.fileId || 'generated-file'
 );
 
-const getGeneratedFileDownloadName = (file: GeneratedFile): string => {
-    const label = getGeneratedFileLabel(file)
-        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
-        .trim();
-
-    return label || 'generated-file';
-};
-
-const saveBlobAsFile = (blob: Blob, filename: string): void => {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    window.setTimeout(() => {
-        URL.revokeObjectURL(url);
-    }, 0);
-};
+const getGeneratedFileDownloadName = (file: GeneratedFile): string => (
+    stripInvalidFilenameCharacters(getGeneratedFileLabel(file)) || 'generated-file'
+);
 
 const isFailedAssistantMessage = (message: Message): boolean => (
     message.role === 'assistant' &&
@@ -705,7 +683,7 @@ const GeneratedFilesBlock = ({
                 ? new Blob([blob], { type: file.mimeType })
                 : blob;
 
-            saveBlobAsFile(typedBlob, getGeneratedFileDownloadName(file));
+            downloadBlobFile(getGeneratedFileDownloadName(file), typedBlob);
             setDownloadState(fileKey, 'idle');
         } catch (error) {
             console.error('Failed to download generated file.', error);

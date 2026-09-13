@@ -96,15 +96,8 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   }
 };
 
-export const MODELS = [
-  MODEL_CONFIGS[ModelId.GPT_6_ASTRA],
-  MODEL_CONFIGS[ModelId.GPT_5_6_SOL],
-  MODEL_CONFIGS[ModelId.GPT_5_6_TERRA],
-  MODEL_CONFIGS[ModelId.GPT_5_6_LUNA],
-  MODEL_CONFIGS[ModelId.GPT_5_5],
-  MODEL_CONFIGS[ModelId.GPT_5_NANO],
-  MODEL_CONFIGS[ModelId.GPT_O3]
-];
+// Picker order is the declaration order of MODEL_CONFIGS.
+export const MODELS = Object.values(MODEL_CONFIGS);
 
 export const TEXT_VERBOSITY: TextVerbosity[] = ['low', 'medium', 'high'];
 export const WEB_SEARCH_CONTEXT_SIZES: WebSearchContextSize[] = [

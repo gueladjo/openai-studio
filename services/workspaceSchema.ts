@@ -288,7 +288,7 @@ const parseGeneratedFile = (value: unknown, path: string): GeneratedFile => {
     'containerId',
     'displayName',
     'mimeType',
-    'source',
+    'source', // retired: older records still carry it
     'localBlob'
   ]);
   assertString(file.filename, `${path}.filename`, MAX_SHORT_TEXT_LENGTH, false);
@@ -329,7 +329,7 @@ const parseMessage = (value: unknown, path: string, messageIds: Set<string>): Me
     'requestId',
     'openaiResponseId',
     'thinking',
-    'refusal',
+    'refusal', // retired: older records still carry it
     'incompleteReason',
     'thinkingDuration',
     'usage',

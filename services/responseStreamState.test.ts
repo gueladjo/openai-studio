@@ -17,38 +17,22 @@ const placeholder = (): Message => ({
 });
 
 describe('ResponseStreamState', () => {
-  it('previews pending deltas in output-index order without committing them', () => {
+  it('checkpoints text, phase, and thinking atomically in output-index order', () => {
     const state = new ResponseStreamState();
     state.appendText('answer', 2, 'final_answer');
-    state.appendText('note', 0, 'commentary');
-    state.appendThinking('reasoning');
-
-    expect(state.preview()).toEqual({
-      content: 'answernote',
-      outputMessages: [{
-        content: 'note',
-        phase: 'commentary'
-      }, {
-        content: 'answer',
-        phase: 'final_answer'
-      }],
-      thinking: 'reasoning'
-    });
-    expect(state.preview()).toEqual(state.preview());
-  });
-
-  it('checkpoints text, phase, and thinking atomically', () => {
-    const state = new ResponseStreamState();
     state.appendText('Part ', 1, 'commentary');
     state.appendText('one.', 1);
     state.appendThinking('Thought.');
 
     expect(state.checkpoint()).toEqual({
       snapshot: {
-        content: 'Part one.',
+        content: 'answerPart one.',
         outputMessages: [{
           content: 'Part one.',
           phase: 'commentary'
+        }, {
+          content: 'answer',
+          phase: 'final_answer'
         }],
         thinking: 'Thought.'
       },
@@ -70,23 +54,27 @@ describe('ResponseStreamState', () => {
 
     state.discardPending();
 
-    expect(state.preview()).toEqual({
-      content: 'kept',
-      outputMessages: [{ content: 'kept', phase: 'final_answer' }],
-      thinking: ''
+    expect(state.checkpoint()).toEqual({
+      snapshot: {
+        content: 'kept',
+        outputMessages: [{ content: 'kept', phase: 'final_answer' }],
+        thinking: ''
+      },
+      textChanged: false,
+      thinkingChanged: false
     });
   });
 
   it('applies useful partial state and supplies the stopped fallback', () => {
     const message = placeholder();
-    const empty = new ResponseStreamState().preview();
+    const empty = new ResponseStreamState().checkpoint().snapshot;
     expect(hasResponseStreamOutput(empty)).toBe(false);
     expect(applyResponseStreamSnapshot(message, empty, 'stopped', 2))
       .toMatchObject({ content: 'Stopped.', status: 'stopped', timestamp: 2 });
 
     const state = new ResponseStreamState();
     state.appendText('Partial.', 0, 'final_answer');
-    const snapshot = state.preview();
+    const snapshot = state.checkpoint().snapshot;
     expect(hasResponseStreamOutput(snapshot)).toBe(true);
     expect(responseStreamSnapshotMatchesMessage(message, snapshot)).toBe(false);
     const applied = applyResponseStreamSnapshot(message, snapshot, 'streaming');

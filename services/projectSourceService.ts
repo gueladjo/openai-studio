@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import {
   Project,
+  ProjectRemoteFile,
   ProjectRemoteIndex,
   ProjectRemoteState,
   ProjectSource,
@@ -8,6 +9,7 @@ import {
   ResolvedProjectContext
 } from '../types';
 import { sha256Text } from './contentAddressing';
+import { getOpenAIErrorDetails } from './openaiService';
 import { MAX_INDEXED_USAGE_BYTES } from '../utils/projectSources';
 
 export type ProjectSourceErrorKind =
@@ -36,40 +38,25 @@ const cloneState = (state: ProjectRemoteState): ProjectRemoteState => (
   JSON.parse(JSON.stringify(state)) as ProjectRemoteState
 );
 
-const getErrorDetails = (error: unknown): {
-  message: string;
-  status?: number;
-  code?: string;
-} => {
-  if (typeof error !== 'object' || error === null) {
-    return { message: String(error) };
-  }
-  const value = error as Record<string, unknown>;
-  const nested = typeof value.error === 'object' && value.error !== null
-    ? value.error as Record<string, unknown>
-    : undefined;
-  return {
-    message: (
-      typeof value.message === 'string'
-        ? value.message
-        : typeof nested?.message === 'string'
-          ? nested.message
-          : 'Project source operation failed.'
-    ),
-    ...(typeof value.status === 'number' ? { status: value.status } : {}),
-    ...(typeof value.code === 'string'
-      ? { code: value.code }
-      : typeof nested?.code === 'string'
-        ? { code: nested.code }
-        : {})
-  };
-};
+// Builds a registry record without undefined keys; errors are bounded to the
+// schema's short-text limit.
+const remoteFile = (
+  projectSourceId: string,
+  status: ProjectRemoteFile['status'],
+  fields: { openaiFileId?: string; indexedUsageBytes?: number; lastError?: string } = {}
+): ProjectRemoteFile => ({
+  projectSourceId,
+  status,
+  ...(fields.openaiFileId === undefined ? {} : { openaiFileId: fields.openaiFileId }),
+  ...(fields.indexedUsageBytes === undefined ? {} : { indexedUsageBytes: fields.indexedUsageBytes }),
+  ...(fields.lastError === undefined ? {} : { lastError: fields.lastError.slice(0, 4096) })
+});
 
 export const classifyProjectSourceError = (
   error: unknown
 ): ProjectSourceServiceError => {
   if (error instanceof ProjectSourceServiceError) return error;
-  const details = getErrorDetails(error);
+  const details = getOpenAIErrorDetails(error);
   const normalized = `${details.code || ''} ${details.message}`.toLowerCase();
   let kind: ProjectSourceErrorKind = 'terminal';
   if (details.status === 401 || details.status === 403) kind = 'authentication';
@@ -89,7 +76,7 @@ export const classifyProjectSourceError = (
 };
 
 export const isAlreadyDeletedError = (error: unknown): boolean => (
-  getErrorDetails(error).status === 404
+  getOpenAIErrorDetails(error).status === 404
 );
 
 export const fingerprintApiKey = (apiKey: string): string => sha256Text(apiKey);
@@ -327,14 +314,10 @@ export class ProjectSourceService {
     let previousFileId = index.files[source.id]?.openaiFileId;
     const previousIndexedUsageBytes = index.files[source.id]?.indexedUsageBytes;
     if (previousFileId) {
-      index.files[source.id] = {
-        projectSourceId: source.id,
+      index.files[source.id] = remoteFile(source.id, 'removing', {
         openaiFileId: previousFileId,
-        status: 'removing',
-        ...(previousIndexedUsageBytes === undefined
-          ? {}
-          : { indexedUsageBytes: previousIndexedUsageBytes })
-      };
+        indexedUsageBytes: previousIndexedUsageBytes
+      });
       next = await this.publish(next, persist);
       try {
         await this.deleteFile(previousFileId);
@@ -343,24 +326,17 @@ export class ProjectSourceService {
         const classified = classifyProjectSourceError(error);
         next = cloneState(next);
         index = next.indexes[project.id];
-        index.files[source.id] = {
-          projectSourceId: source.id,
+        index.files[source.id] = remoteFile(source.id, 'failed', {
           openaiFileId: previousFileId,
-          status: 'failed',
-          lastError: classified.message.slice(0, 4096),
-          ...(previousIndexedUsageBytes === undefined
-            ? {}
-            : { indexedUsageBytes: previousIndexedUsageBytes })
-        };
+          indexedUsageBytes: previousIndexedUsageBytes,
+          lastError: classified.message
+        });
         index.status = 'failed';
         await this.publish(next, persist);
         throw classified;
       }
     }
-    index.files[source.id] = {
-      projectSourceId: source.id,
-      status: 'uploading'
-    };
+    index.files[source.id] = remoteFile(source.id, 'uploading');
     next = await this.publish(next, persist);
 
     let uploadedFileId: string | undefined;
@@ -395,11 +371,11 @@ export class ProjectSourceService {
       });
       uploadedFileId = uploaded.id;
       index = next.indexes[project.id];
-      index.files[source.id] = {
-        projectSourceId: source.id,
-        openaiFileId: uploaded.id,
-        status: source.capability === 'file_search' ? 'indexing' : 'ready'
-      };
+      index.files[source.id] = remoteFile(
+        source.id,
+        source.capability === 'file_search' ? 'indexing' : 'ready',
+        { openaiFileId: uploaded.id }
+      );
       next = await this.publish(next, persist);
 
       if (source.capability === 'file_search') {
@@ -428,12 +404,10 @@ export class ProjectSourceService {
           uploadedFileId = undefined;
           throw new ProjectSourceServiceError(INDEXED_USAGE_LIMIT_MESSAGE, 'quota');
         }
-        index.files[source.id] = {
-          projectSourceId: source.id,
+        index.files[source.id] = remoteFile(source.id, 'ready', {
           openaiFileId: uploaded.id,
-          status: 'ready',
           indexedUsageBytes: indexed.usage_bytes
-        };
+        });
         index.status = 'ready';
         next = await this.publish(next, persist);
       }
@@ -443,18 +417,11 @@ export class ProjectSourceService {
       next = cloneState(next);
       index = next.indexes[project.id] || createRemoteIndex(project.id, apiKeyFingerprint);
       next.indexes[project.id] = index;
-      const existing = index.files[source.id];
-      index.files[source.id] = {
-        projectSourceId: source.id,
-        ...(uploadedFileId || previousFileId
-          ? { openaiFileId: uploadedFileId || previousFileId }
-          : {}),
-        status: 'failed',
-        lastError: classified.message.slice(0, 4096),
-        ...(existing?.indexedUsageBytes !== undefined
-          ? { indexedUsageBytes: existing.indexedUsageBytes }
-          : {})
-      };
+      index.files[source.id] = remoteFile(source.id, 'failed', {
+        openaiFileId: uploadedFileId || previousFileId,
+        indexedUsageBytes: index.files[source.id]?.indexedUsageBytes,
+        lastError: classified.message
+      });
       index.status = 'failed';
       await this.publish(next, persist);
       throw classified;
@@ -533,11 +500,11 @@ export class ProjectSourceService {
               .forEach(source => {
                 const file = index.files[source.id];
                 if (!file) return;
-                index.files[source.id] = {
-                  ...file,
-                  status: 'failed',
+                index.files[source.id] = remoteFile(source.id, 'failed', {
+                  openaiFileId: file.openaiFileId,
+                  indexedUsageBytes: file.indexedUsageBytes,
                   lastError: 'The project search index is unavailable; retry this source.'
-                };
+                });
               });
           }
         }
@@ -546,11 +513,9 @@ export class ProjectSourceService {
         const file = index.files[source.id];
         if (!file || file.status === 'ready' || file.status === 'failed') continue;
         if (!file.openaiFileId) {
-          index.files[source.id] = {
-            projectSourceId: source.id,
-            status: 'failed',
+          index.files[source.id] = remoteFile(source.id, 'failed', {
             lastError: 'Remote upload was interrupted before a File ID was saved.'
-          };
+          });
           continue;
         }
         try {
@@ -566,28 +531,30 @@ export class ProjectSourceService {
                 continue;
               }
             }
-            index.files[source.id] = {
-              projectSourceId: source.id,
-              openaiFileId: file.openaiFileId,
-              status: remote.status === 'completed'
+            index.files[source.id] = remoteFile(
+              source.id,
+              remote.status === 'completed'
                 ? 'ready'
                 : remote.status === 'failed' || remote.status === 'cancelled'
                   ? 'failed'
                   : 'indexing',
-              indexedUsageBytes: remote.usage_bytes,
-              ...(remote.last_error ? { lastError: remote.last_error.message } : {})
-            };
+              {
+                openaiFileId: file.openaiFileId,
+                indexedUsageBytes: remote.usage_bytes,
+                lastError: remote.last_error?.message
+              }
+            );
           } else {
             await this.client.files.retrieve(file.openaiFileId);
             index.files[source.id] = { ...file, status: 'ready' };
           }
         } catch (error) {
           const classified = classifyProjectSourceError(error);
-          index.files[source.id] = {
-            ...file,
-            status: 'failed',
-            lastError: classified.message.slice(0, 4096)
-          };
+          index.files[source.id] = remoteFile(source.id, 'failed', {
+            openaiFileId: file.openaiFileId,
+            indexedUsageBytes: file.indexedUsageBytes,
+            lastError: classified.message
+          });
         }
       }
     }

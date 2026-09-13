@@ -61,7 +61,6 @@ interface GenerateResponseResult {
   content: string;
   outputMessages?: AssistantOutputMessage[];
   thinking?: string;
-  refusal?: string;
   status: 'complete' | 'incomplete';
   incompleteReason?: ResponseIncompleteReason;
   sources?: Source[];
@@ -84,7 +83,7 @@ interface GenerateResponseOptions {
   projectContext?: ResolvedProjectContext;
 }
 
-interface OpenAIErrorDetails {
+export interface OpenAIErrorDetails {
   message: string;
   status?: number;
   code?: string;
@@ -258,8 +257,7 @@ const mapContainerFileCitationToGeneratedFile = (
     fileId,
     containerId,
     displayName: getGeneratedFileDisplayName(filename),
-    ...(mimeType ? { mimeType } : {}),
-    source: 'container_file_citation'
+    ...(mimeType ? { mimeType } : {})
   };
 };
 
@@ -276,62 +274,26 @@ const addGeneratedFile = (
   generatedFiles.push(generatedFile);
 };
 
-const collectGeneratedFilesFromValue = (
-  value: unknown,
-  generatedFiles: GeneratedFile[],
-  seenGeneratedFileKeys: Set<string>,
-  seenObjects: Set<object>
-): void => {
-  if (typeof value !== 'object' || value === null) return;
-
-  if (seenObjects.has(value)) return;
-  seenObjects.add(value);
-
-  if (isContainerFileCitationAnnotation(value)) {
-    const generatedFile = mapContainerFileCitationToGeneratedFile(value);
-
-    if (generatedFile) {
-      addGeneratedFile(generatedFiles, seenGeneratedFileKeys, generatedFile);
-    }
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((item) => {
-      collectGeneratedFilesFromValue(
-        item,
-        generatedFiles,
-        seenGeneratedFileKeys,
-        seenObjects
-      );
-    });
-    return;
-  }
-
-  Object.values(value).forEach((propertyValue) => {
-    collectGeneratedFilesFromValue(
-      propertyValue,
-      generatedFiles,
-      seenGeneratedFileKeys,
-      seenObjects
-    );
-  });
-};
-
+// Container file citations only occur as output_text annotations.
 const collectGeneratedFilesFromOutput = (
   output: ResponseOutputItem[] | undefined
 ): GeneratedFile[] => {
-  if (!output || !Array.isArray(output)) return [];
-
   const generatedFiles: GeneratedFile[] = [];
   const seenGeneratedFileKeys = new Set<string>();
-  const seenObjects = new Set<object>();
 
-  collectGeneratedFilesFromValue(
-    output,
-    generatedFiles,
-    seenGeneratedFileKeys,
-    seenObjects
-  );
+  output?.forEach(item => {
+    if (item.type !== 'message' || !Array.isArray(item.content)) return;
+    item.content.forEach(part => {
+      if (!isRecord(part) || !Array.isArray(part.annotations)) return;
+      part.annotations.forEach(annotation => {
+        if (!isContainerFileCitationAnnotation(annotation)) return;
+        const generatedFile = mapContainerFileCitationToGeneratedFile(annotation);
+        if (generatedFile) {
+          addGeneratedFile(generatedFiles, seenGeneratedFileKeys, generatedFile);
+        }
+      });
+    });
+  });
 
   return generatedFiles;
 };
@@ -729,30 +691,20 @@ export const applyCitationAnnotations = (
   return stripAdjacentCitationSourceLabels(updatedText);
 };
 
-interface ResponseOutputMessageContent {
-  content: string;
-  refusal: string;
-}
-
+// Refusal parts are rendered inline as ordinary content.
 const getResponseOutputMessageContent = (
   message: ResponseOutputMessage,
   citationRegistry?: CitationRegistry
-): ResponseOutputMessageContent => {
+): string => {
   const messageContent: unknown = message.content;
 
-  if (typeof messageContent === 'string') {
-    return { content: messageContent, refusal: '' };
-  }
-  if (!Array.isArray(messageContent)) {
-    return { content: '', refusal: '' };
-  }
+  if (typeof messageContent === 'string') return messageContent;
+  if (!Array.isArray(messageContent)) return '';
 
-  let refusal = '';
-  const content = messageContent.map((part) => {
+  return messageContent.map((part) => {
     if (!isRecord(part)) return '';
 
     if (part.type === 'refusal' && typeof part.refusal === 'string') {
-      refusal += part.refusal;
       return part.refusal;
     }
 
@@ -768,14 +720,7 @@ const getResponseOutputMessageContent = (
 
     return text;
   }).join('');
-
-  return { content, refusal };
 };
-
-const getResponseOutputMessageText = (
-  message: ResponseOutputMessage,
-  citationRegistry?: CitationRegistry
-): string => getResponseOutputMessageContent(message, citationRegistry).content;
 
 const getLongestBacktickRun = (content: string): number => {
   const backtickRuns = content.match(/`+/g);
@@ -985,7 +930,6 @@ const getReasoningSummaryText = (item: ResponseReasoningItem): string => (
 interface GenerateResponseStreamState {
   thinking: string;
   content: string;
-  refusal: string;
   terminalStatus: 'complete' | 'incomplete';
 }
 
@@ -998,7 +942,6 @@ const parseGenerateResponse = (
 ): GenerateResponseResult => {
   let thinking = '';
   let content = '';
-  let refusal = '';
   const outputMessages: AssistantOutputMessage[] = [];
   const rawSources: OpenAIResponseSource[] = [];
   const citationRegistry: CitationRegistry = {
@@ -1015,19 +958,12 @@ const parseGenerateResponse = (
   if (responseOutput) {
     for (const item of responseOutput) {
       if (item.type === 'message') {
-        const messageContent = getResponseOutputMessageContent(
-          item,
-          citationRegistry
-        );
-        content = appendMarkdownSection(
-          content,
-          messageContent.content
-        );
+        const messageContent = getResponseOutputMessageContent(item, citationRegistry);
+        content = appendMarkdownSection(content, messageContent);
         outputMessages.push({
-          content: messageContent.content,
+          content: messageContent,
           ...(item.phase ? { phase: item.phase } : {})
         });
-        refusal = appendMarkdownSection(refusal, messageContent.refusal);
       } else if (isReasoningResponseItem(item)) {
         thinking = appendMarkdownSection(thinking, getReasoningSummaryText(item));
       } else if (isCodeInterpreterResponseItem(item)) {
@@ -1047,9 +983,6 @@ const parseGenerateResponse = (
 
   if (!content && streamState.content) {
     content = streamState.content;
-  }
-  if (!refusal && streamState.refusal) {
-    refusal = streamState.refusal;
   }
 
   if (rawSources.length === 0) {
@@ -1093,7 +1026,6 @@ const parseGenerateResponse = (
     content,
     outputMessages: outputMessages.length > 0 ? outputMessages : undefined,
     thinking: thinking || streamState.thinking,
-    refusal: refusal || undefined,
     status: streamState.terminalStatus,
     incompleteReason: streamState.terminalStatus === 'incomplete'
       ? response.incomplete_details?.reason
@@ -1113,7 +1045,7 @@ const createAbortError = (): Error => {
   return error;
 };
 
-const getOpenAIErrorDetails = (error: unknown): OpenAIErrorDetails => {
+export const getOpenAIErrorDetails = (error: unknown): OpenAIErrorDetails => {
   const root = isRecord(error) ? error : undefined;
   const nestedError = root && isRecord(root.error) ? root.error : undefined;
   const status = root && typeof root.status === 'number' && Number.isFinite(root.status)
@@ -1459,7 +1391,6 @@ export const generateResponse = async (
     let completedResponse: OpenAIResponse | undefined;
     let streamedThinking = '';
     let streamedContent = '';
-    let streamedRefusal = '';
     let terminalStatus: GenerateResponseStreamState['terminalStatus'] | undefined;
     let activeReasoningSummaryPart: string | undefined;
     const outputPhases = new Map<number, AssistantPhase | undefined>();
@@ -1509,7 +1440,6 @@ export const generateResponse = async (
       } else if (event.type === 'response.refusal.delta') {
         captureTimeToFirstPrimaryToken(event.delta, event.output_index);
         streamedContent += event.delta;
-        streamedRefusal += event.delta;
         options.onTextDelta?.(
           event.delta,
           event.output_index,
@@ -1541,7 +1471,6 @@ export const generateResponse = async (
       {
         thinking: streamedThinking,
         content: streamedContent,
-        refusal: streamedRefusal,
         terminalStatus
       },
       options.projectContext
@@ -1636,7 +1565,7 @@ export const generateChatTitle = async (
     if (responseOutput) {
       for (const item of responseOutput) {
         if (item.type === 'message') {
-          title += getResponseOutputMessageText(item);
+          title += getResponseOutputMessageContent(item);
         }
       }
     } else {

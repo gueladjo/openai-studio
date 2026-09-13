@@ -37,7 +37,6 @@ export type TextVerbosity = 'low' | 'medium' | 'high';
 export interface ModelConfig {
   id: ModelId;
   name: string;
-  pickerName?: string;
   knowledgeCutoff: string;
   contextWindowTokens: number;
   supportsVerbosity: boolean;
@@ -114,7 +113,6 @@ export interface GeneratedFile {
   containerId: string;
   displayName?: string;
   mimeType?: string;
-  source?: 'container_file_citation';
   localBlob?: LocalBlobReference;
 }
 
@@ -145,7 +143,6 @@ export interface Message {
   requestId?: string;
   openaiResponseId?: string;
   thinking?: string;
-  refusal?: string;
   incompleteReason?: ResponseIncompleteReason;
   thinkingDuration?: number; // Time to first streamed primary output token in milliseconds
   usage?: OpenAIResponsesUsage;
