@@ -17,6 +17,7 @@ import {
   Project,
   ProjectRemoteState,
   ProjectSource,
+  RemoteCleanupTombstone,
   ResolvedProjectContext
 } from './types';
 import {
@@ -68,6 +69,7 @@ import {
   supportsAutomaticBackupDestination
 } from './services/backupDestination';
 import { WorkspaceCoordinator, WorkspaceRole } from './services/workspaceSync';
+import { serializeCanonicalJson } from './services/contentAddressing';
 import {
   SaveQueueFailure,
   VersionedSaveQueue
@@ -162,15 +164,17 @@ type PortableBackupSavePicker = (options: {
   }>;
 }) => Promise<PortableBackupFileHandle>;
 
+const revokePreviewUrls = (attachments: FileAttachment[] | undefined): void => {
+  attachments?.forEach(attachment => {
+    if (attachment.previewUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  });
+};
+
 const revokeAttachmentPreviewUrls = (sessions: Session[]): void => {
   sessions.forEach(session => {
-    session.messages.forEach(message => {
-      message.attachments?.forEach(attachment => {
-        if (attachment.previewUrl?.startsWith('blob:')) {
-          URL.revokeObjectURL(attachment.previewUrl);
-        }
-      });
-    });
+    session.messages.forEach(message => revokePreviewUrls(message.attachments));
   });
 };
 
@@ -335,14 +339,8 @@ function App() {
     return () => window.removeEventListener('resize', closeMobilePanelsOnDesktop);
   }, []);
 
-  useLayoutEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-
-  useLayoutEffect(() => {
-    currentSessionIdRef.current = currentSessionId;
-  }, [currentSessionId]);
-
+  // Refs are written by these setters before state so effects and async
+  // work read the committed value without a layout-effect mirror.
   const updateSessionsState = useCallback((
     update: React.SetStateAction<Session[]>
   ): Session[] => {
@@ -359,22 +357,28 @@ function App() {
     setCurrentSessionId(sessionId);
   }, []);
 
+  const updateProjectsState = useCallback((next: Project[]): void => {
+    projectsRef.current = next;
+    setProjects(next);
+  }, []);
+
+  // A state that was already written to disk skips the persist effect.
+  const commitProjectRemoteState = useCallback((
+    next: ProjectRemoteState,
+    alreadyPersisted: boolean
+  ): void => {
+    projectRemoteStateRef.current = next;
+    if (alreadyPersisted) skipNextRemoteStateEffectSaveRef.current = true;
+    setProjectRemoteState(next);
+  }, []);
+
+  const canMutateWorkspace = (): boolean => (
+    workspaceCanWriteRef.current && !workspaceMutationBlockedRef.current
+  );
+
   useLayoutEffect(() => {
     systemInstructionsRef.current = systemInstructions;
   }, [systemInstructions]);
-
-  useLayoutEffect(() => {
-    projectsRef.current = projects;
-  }, [projects]);
-
-  useLayoutEffect(() => {
-    projectRemoteStateRef.current = projectRemoteState;
-  }, [projectRemoteState]);
-
-  useLayoutEffect(() => {
-    dirHandleRef.current = dirHandle;
-    isWorkspaceLoadedRef.current = isWorkspaceLoaded;
-  }, [dirHandle, isWorkspaceLoaded]);
 
   useLayoutEffect(() => {
     settingsRef.current = {
@@ -407,29 +411,16 @@ function App() {
       throw new Error('This tab no longer has permission to save the workspace.');
     }
 
+    const changes = {
+      sessions: () => ({ sessions: sessionsRef.current }),
+      instructions: () => ({ instructions: systemInstructionsRef.current }),
+      settings: () => ({ settings: settingsRef.current }),
+      projects: () => ({ projects: projectsRef.current }),
+      projectRemoteState: () => ({ projectRemoteState: projectRemoteStateRef.current })
+    }[key]();
+
     try {
-      let revision: number;
-      if (key === 'sessions') {
-        revision = await writeWorkspaceState(handle, {
-          sessions: sessionsRef.current
-        });
-      } else if (key === 'instructions') {
-        revision = await writeWorkspaceState(handle, {
-          instructions: systemInstructionsRef.current
-        });
-      } else if (key === 'settings') {
-        revision = await writeWorkspaceState(handle, {
-          settings: settingsRef.current
-        });
-      } else if (key === 'projects') {
-        revision = await writeWorkspaceState(handle, {
-          projects: projectsRef.current
-        });
-      } else {
-        revision = await writeWorkspaceState(handle, {
-          projectRemoteState: projectRemoteStateRef.current
-        });
-      }
+      const revision = await writeWorkspaceState(handle, changes);
       workspaceCoordinatorRef.current?.publishUpdate(revision);
       void backupSchedulerRef.current?.evaluate().catch(() => undefined);
     } catch (error) {
@@ -594,6 +585,55 @@ function App() {
     await getSaveQueue().flush(keys);
   }, [getSaveQueue]);
 
+  // Commits every active stream's buffered output. 'streaming' skips
+  // sessions whose message already matches; 'stopped' also clears the
+  // pending marker so the turn is final.
+  const checkpointActiveRequests = useCallback((
+    requests: ReadonlyMap<string, ActiveChatRequest>,
+    status: 'streaming' | 'stopped'
+  ): void => {
+    const now = Date.now();
+    let changed = false;
+    const next = sessionsRef.current.map(session => {
+      const activeRequest = requests.get(session.id);
+      if (!activeRequest) return session;
+      const snapshot = activeRequest.streamState.checkpoint().snapshot;
+      if (status === 'streaming' && !hasResponseStreamOutput(snapshot)) return session;
+
+      let didUpdateMessage = false;
+      const messages = session.messages.map(message => {
+        if (
+          message.id !== activeRequest.assistantMessageId ||
+          (status === 'streaming' && responseStreamSnapshotMatchesMessage(message, snapshot))
+        ) {
+          return message;
+        }
+        didUpdateMessage = true;
+        return applyResponseStreamSnapshot(
+          message,
+          snapshot,
+          status,
+          status === 'stopped' ? now : message.timestamp
+        );
+      });
+      if (status === 'streaming' && !didUpdateMessage) return session;
+
+      changed = true;
+      return {
+        ...session,
+        messages,
+        lastModified: now,
+        ...(status === 'stopped' ? { pendingRequest: undefined } : {})
+      };
+    });
+    if (!changed) return;
+
+    forceImmediateSessionSaveRef.current = false;
+    skipNextSessionEffectSaveRef.current = true;
+    updateSessionsState(next);
+    scheduleSave('sessions', true);
+  }, [scheduleSave, updateSessionsState]);
+
   const retryPendingSaves = useCallback(async (): Promise<boolean> => {
     if (!workspaceCanWriteRef.current) return false;
 
@@ -719,25 +759,9 @@ function App() {
     let hasChanges = false;
     const normalizedSessions = loadedSessions.map(session => {
       const config = normalizeChatConfig(session.config);
-      const isNormalized = (
-        session.config?.model === config.model &&
-        session.config?.reasoningEffort === config.reasoningEffort &&
-        session.config?.textVerbosity === config.textVerbosity &&
-        session.config?.tools?.webSearch === config.tools.webSearch &&
-        session.config?.tools?.webSearchOptions?.searchContextSize ===
-          config.tools.webSearchOptions.searchContextSize &&
-        session.config?.tools?.webSearchOptions?.userLocation?.type ===
-          config.tools.webSearchOptions.userLocation?.type &&
-        session.config?.tools?.webSearchOptions?.userLocation?.city ===
-          config.tools.webSearchOptions.userLocation?.city &&
-        session.config?.tools?.webSearchOptions?.userLocation?.region ===
-          config.tools.webSearchOptions.userLocation?.region &&
-        session.config?.tools?.webSearchOptions?.userLocation?.country ===
-          config.tools.webSearchOptions.userLocation?.country &&
-        session.config?.tools?.codeInterpreter === config.tools.codeInterpreter
-      );
-
-      if (isNormalized) return session;
+      if (serializeCanonicalJson(config) === serializeCanonicalJson(session.config)) {
+        return session;
+      }
       hasChanges = true;
       return { ...session, config };
     });
@@ -804,10 +828,7 @@ function App() {
     if (!isStillCurrent()) throw createOperationAbortError();
     setDraftWorkspaceEpoch(epoch => epoch + 1);
     revokeAttachmentPreviewUrls(sessionsRef.current);
-    sessionsRef.current = cleanedSessions;
     systemInstructionsRef.current = nextInstructions;
-    projectsRef.current = loadedProjects;
-    projectRemoteStateRef.current = loadedProjectRemoteState;
     settingsRef.current = {
       theme: loadedSettings?.theme === 'light' ? 'light' : 'dark',
       apiKey: loadedSettings?.apiKey || '',
@@ -819,8 +840,8 @@ function App() {
 
     updateSessionsState(cleanedSessions);
     setSystemInstructions(nextInstructions);
-    setProjects(loadedProjects);
-    setProjectRemoteState(loadedProjectRemoteState);
+    updateProjectsState(loadedProjects);
+    commitProjectRemoteState(loadedProjectRemoteState, false);
     setSelectedProjectId(current => (
       current && loadedProjects.some(project => project.id === current)
         ? current
@@ -983,43 +1004,7 @@ function App() {
     if (!isWorkspaceLoaded) return;
 
     const flushForLifecycle = () => {
-      let hasStreamingChanges = false;
-      const checkpointedSessions = sessionsRef.current.map(session => {
-        const activeRequest = activeRequestsRef.current.get(session.id);
-        if (!activeRequest) return session;
-        const snapshot = activeRequest.streamState.checkpoint().snapshot;
-        if (!hasResponseStreamOutput(snapshot)) return session;
-
-        let didUpdateMessage = false;
-        const messages = session.messages.map(message => {
-          if (
-            message.id !== activeRequest.assistantMessageId ||
-            responseStreamSnapshotMatchesMessage(message, snapshot)
-          ) {
-            return message;
-          }
-
-          didUpdateMessage = true;
-          return applyResponseStreamSnapshot(message, snapshot, 'streaming');
-        });
-        if (!didUpdateMessage) return session;
-
-        hasStreamingChanges = true;
-        return {
-          ...session,
-          messages,
-          lastModified: Date.now()
-        };
-      });
-
-      if (hasStreamingChanges) {
-        sessionsRef.current = checkpointedSessions;
-        forceImmediateSessionSaveRef.current = false;
-        skipNextSessionEffectSaveRef.current = true;
-        updateSessionsState(checkpointedSessions);
-        scheduleSave('sessions', true);
-      }
-
+      checkpointActiveRequests(activeRequestsRef.current, 'streaming');
       void flushPendingSaves().catch(error => {
         console.error('Failed to flush workspace data before suspension.', error);
       });
@@ -1037,7 +1022,7 @@ function App() {
       window.removeEventListener('pagehide', flushForLifecycle);
       window.removeEventListener('beforeunload', flushForLifecycle);
     };
-  }, [flushPendingSaves, isWorkspaceLoaded, scheduleSave]);
+  }, [checkpointActiveRequests, flushPendingSaves, isWorkspaceLoaded]);
 
   useEffect(() => {
     if (!isWorkspaceLoaded) return;
@@ -1068,12 +1053,7 @@ function App() {
     .reduce((sum, index) => sum + index.usageBytes, 0);
 
   const createSession = (projectId?: string) => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace()) return;
 
     const project = projectId
       ? projectsRef.current.find(item => item.id === projectId)
@@ -1108,10 +1088,8 @@ function App() {
     updateCurrentSessionId(newSession.id);
   };
 
-  const createProjectSession = (projectId: string) => createSession(projectId);
-
   const createNewProject = () => {
-    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    if (!canMutateWorkspace()) return;
     const now = Date.now();
     const { systemInstructionId: _systemInstructionId, ...defaultConfig } =
       normalizeChatConfig(currentSession?.config || DEFAULT_CONFIG);
@@ -1125,20 +1103,20 @@ function App() {
       createdAt: now,
       updatedAt: now
     };
-    const next = [...projectsRef.current, project];
-    projectsRef.current = next;
-    setProjects(next);
+    updateProjectsState([...projectsRef.current, project]);
     setSelectedProjectId(project.id);
     scheduleSave('projects', true);
   };
 
   const updateProject = (updated: Project) => {
-    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
-    const next = projectsRef.current.map(project => (
+    if (!canMutateWorkspace()) return;
+    updateProjectsState(projectsRef.current.map(project => (
       project.id === updated.id ? updated : project
-    ));
-    projectsRef.current = next;
-    setProjects(next);
+    )));
+  };
+
+  const reportProjectError = (error: unknown): void => {
+    if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
   };
 
   const assertProjectOperationCurrent = (
@@ -1153,8 +1131,13 @@ function App() {
     state: ProjectRemoteState
   ): void => {
     assertProjectOperationCurrent(operation);
-    projectRemoteStateRef.current = state;
-    setProjectRemoteState(state);
+    commitProjectRemoteState(state, false);
+  };
+
+  const flushSavesForOperation = async (operation: ProjectOperation): Promise<void> => {
+    assertProjectOperationCurrent(operation);
+    await flushPendingSaves();
+    assertProjectOperationCurrent(operation);
   };
 
   const persistRemoteState = async (
@@ -1175,10 +1158,30 @@ function App() {
       throw error;
     }
     assertProjectOperationCurrent(operation);
-    projectRemoteStateRef.current = state;
-    skipNextRemoteStateEffectSaveRef.current = true;
-    setProjectRemoteState(state);
+    commitProjectRemoteState(state, true);
     workspaceCoordinatorRef.current?.publishUpdate(revision);
+  };
+
+  const runTombstoneCleanup = async (
+    operation: ProjectOperation,
+    state: ProjectRemoteState,
+    tombstone: RemoteCleanupTombstone | null
+  ): Promise<void> => {
+    const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
+    if (!tombstone || !cleanupKey) return;
+    await new ProjectSourceService(cleanupKey).runCleanup(
+      state,
+      tombstone.id,
+      next => persistRemoteState(operation, next)
+    );
+  };
+
+  const readProjectSourceBlob = async (source: ProjectSource): Promise<Blob> => {
+    const handle = dirHandleRef.current;
+    if (!handle) throw new Error('Workspace storage is unavailable.');
+    const blob = await readLocalBlob(handle, source.localBlob);
+    if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
+    return blob;
   };
 
   const indexProjectSourceNow = async (
@@ -1197,8 +1200,7 @@ function App() {
     if (!requestApiKey) {
       throw new Error('Add an API key in Settings to index project sources.');
     }
-    await flushPendingSaves();
-    assertProjectOperationCurrent(operation);
+    await flushSavesForOperation(operation);
     const service = new ProjectSourceService(requestApiKey);
     const state = await service.ingestSource({
       project,
@@ -1211,14 +1213,33 @@ function App() {
     setRemoteStateForOperation(operation, state);
   };
 
+  // Indexes each source in turn; the last failure becomes the project error
+  // while an abort stops the batch.
+  const indexProjectSources = async (
+    operation: ProjectOperation,
+    projectId: string,
+    entries: Array<{ source: ProjectSource; loadBlob: () => Promise<Blob> }>
+  ): Promise<void> => {
+    let lastError: string | null = null;
+    for (const { source, loadBlob } of entries) {
+      const blob = await loadBlob();
+      try {
+        await indexProjectSourceNow(operation, projectId, source, blob);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        lastError = getErrorMessage(error);
+      }
+    }
+    setProjectActionError(lastError);
+  };
+
   const addProjectSources = (projectId: string, files: File[]) => {
     const project = projectsRef.current.find(item => item.id === projectId);
     const handle = dirHandleRef.current;
     if (
       !project ||
       !handle ||
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
+      !canMutateWorkspace() ||
       projectOperationOwnerRef.current!.isBusy
     ) return;
 
@@ -1234,7 +1255,7 @@ function App() {
       { kind: 'source-add', sourceIds },
       async operation => {
         try {
-          const additions: Array<{ source: ProjectSource; blob: Blob }> = [];
+          const additions: Array<{ source: ProjectSource; loadBlob: () => Promise<Blob> }> = [];
           for (let index = 0; index < files.length; index += 1) {
             const file = files[index];
             const localBlob = await storeLocalBlob(handle, file, formats[index].mimeType);
@@ -1249,7 +1270,7 @@ function App() {
                 capability: formats[index].capability,
                 addedAt: Date.now()
               },
-              blob: file
+              loadBlob: async () => file
             });
           }
           const currentProject = projectsRef.current.find(item => item.id === projectId);
@@ -1262,28 +1283,13 @@ function App() {
           const nextProjects = projectsRef.current.map(item => (
             item.id === projectId ? updatedProject : item
           ));
-          projectsRef.current = nextProjects;
-          setProjects(nextProjects);
+          updateProjectsState(nextProjects);
           scheduleSave('projects', true);
           await flushPendingSaves(['projects']);
           assertProjectOperationCurrent(operation);
-          let ingestionError: string | null = null;
-          for (const addition of additions) {
-            try {
-              await indexProjectSourceNow(
-                operation,
-                projectId,
-                addition.source,
-                addition.blob
-              );
-            } catch (error) {
-              if (isAbortError(error)) throw error;
-              ingestionError = getErrorMessage(error);
-            }
-          }
-          setProjectActionError(ingestionError);
+          await indexProjectSources(operation, projectId, additions);
         } catch (error) {
-          if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+          reportProjectError(error);
           throw error;
         }
       }
@@ -1292,47 +1298,32 @@ function App() {
   };
 
   const retryProjectSource = (projectId: string, source: ProjectSource) => {
-    const handle = dirHandleRef.current;
     if (
-      !handle ||
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
+      !dirHandleRef.current ||
+      !canMutateWorkspace() ||
       projectOperationOwnerRef.current!.isBusy
     ) return;
     const pending = projectOperationOwnerRef.current!.enqueue(
       { kind: 'source-index', sourceIds: [source.id] },
       async operation => {
-        const blob = await readLocalBlob(handle, source.localBlob);
+        const blob = await readProjectSourceBlob(source);
         assertProjectOperationCurrent(operation);
-        if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
         await indexProjectSourceNow(operation, projectId, source, blob);
         setProjectActionError(null);
       }
     );
-    void pending.catch(error => {
-      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
-    });
+    void pending.catch(reportProjectError);
   };
 
   const downloadProjectSource = (source: ProjectSource) => {
-    const handle = dirHandleRef.current;
-    if (!handle) return;
-    void readLocalBlob(handle, source.localBlob)
-      .then(blob => {
-        if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
-        downloadBlobFile(source.name, blob);
-      })
+    void readProjectSourceBlob(source)
+      .then(blob => downloadBlobFile(source.name, blob))
       .catch(error => setProjectActionError(getErrorMessage(error)));
   };
 
   const loadProjectSourceFile = async (source: ProjectSource): Promise<File> => {
-    const handle = dirHandleRef.current;
-    if (!handle) throw new Error('Workspace storage is unavailable.');
-    const blob = await readLocalBlob(handle, source.localBlob);
-    if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
-    return new File([blob], source.name, {
-      type: source.mimeType || blob.type
-    });
+    const blob = await readProjectSourceBlob(source);
+    return new File([blob], source.name, { type: source.mimeType || blob.type });
   };
 
   const deleteProjectSource = (projectId: string, source: ProjectSource) => {
@@ -1344,17 +1335,11 @@ function App() {
       !window.confirm(`Delete "${source.name}" from this project? This also deletes its OpenAI File.`)
     ) return;
     const handle = dirHandleRef.current;
-    if (
-      !handle ||
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) return;
+    if (!handle || !canMutateWorkspace()) return;
     const pending = projectOperationOwnerRef.current!.enqueue(
       { kind: 'source-delete', sourceIds: [source.id] },
       operation => enqueueDestructiveOperation(async () => {
-        assertProjectOperationCurrent(operation);
-        await flushPendingSaves();
-        assertProjectOperationCurrent(operation);
+        await flushSavesForOperation(operation);
         const project = projectsRef.current.find(item => item.id === projectId);
         if (!project) throw createOperationAbortError();
         const index = projectRemoteStateRef.current.indexes[projectId];
@@ -1387,37 +1372,19 @@ function App() {
           projectRemoteState: nextRemoteState
         });
         assertProjectOperationCurrent(operation);
-        projectsRef.current = nextProjects;
-        setProjects(nextProjects);
-        projectRemoteStateRef.current = nextRemoteState;
-        skipNextRemoteStateEffectSaveRef.current = true;
-        setProjectRemoteState(nextRemoteState);
+        updateProjectsState(nextProjects);
+        commitProjectRemoteState(nextRemoteState, true);
         workspaceCoordinatorRef.current?.publishUpdate(revision);
-        const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
-        if (tombstone && cleanupKey) {
-          const service = new ProjectSourceService(cleanupKey);
-          await service.runCleanup(
-            nextRemoteState,
-            tombstone.id,
-            state => persistRemoteState(operation, state)
-          );
-        }
+        await runTombstoneCleanup(operation, nextRemoteState, tombstone);
       }, { blocksInteractions: false })
     );
-    void pending.catch(error => {
-      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
-    });
+    void pending.catch(reportProjectError);
   };
 
   const deleteProject = (projectId: string) => {
     const project = projectsRef.current.find(item => item.id === projectId);
     const handle = dirHandleRef.current;
-    if (
-      !project ||
-      !handle ||
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) return;
+    if (!project || !handle || !canMutateWorkspace()) return;
     if (projectOperationOwnerRef.current!.isBusy) {
       window.alert('Wait for project source uploads to finish before deleting a project.');
       return;
@@ -1440,9 +1407,7 @@ function App() {
         sourceIds: project.sources.map(source => source.id)
       },
       operation => enqueueDestructiveOperation(async () => {
-        assertProjectOperationCurrent(operation);
-        await flushPendingSaves();
-        assertProjectOperationCurrent(operation);
+        await flushSavesForOperation(operation);
         const index = projectRemoteStateRef.current.indexes[projectId];
         const tombstone = createProjectCleanupTombstone(projectId, index);
         const nextSessions = sessionsRef.current.filter(
@@ -1468,13 +1433,9 @@ function App() {
           projectRemoteState: nextRemoteState
         }, { publishTwice: true });
         assertProjectOperationCurrent(operation);
-        sessionsRef.current = nextSessions;
-        projectsRef.current = nextProjects;
-        projectRemoteStateRef.current = nextRemoteState;
         updateSessionsState(nextSessions);
-        setProjects(nextProjects);
-        skipNextRemoteStateEffectSaveRef.current = true;
-        setProjectRemoteState(nextRemoteState);
+        updateProjectsState(nextProjects);
+        commitProjectRemoteState(nextRemoteState, true);
         setSelectedProjectId(null);
         setUndoWorkspaceAction(null);
         if (currentSessionIdRef.current && memberSessions.some(
@@ -1483,29 +1444,19 @@ function App() {
           updateCurrentSessionId(nextSessions[0]?.id || null);
         }
         workspaceCoordinatorRef.current?.publishUpdate(revision);
-        const cleanupKey = resolveOpenAIApiKey(settingsRef.current.apiKey);
-        if (tombstone && cleanupKey) {
-          const service = new ProjectSourceService(cleanupKey);
-          try {
-            await service.runCleanup(
-              nextRemoteState,
-              tombstone.id,
-              state => persistRemoteState(operation, state)
-            );
-          } catch (error) {
-            if (isAbortError(error)) throw error;
-            setProjectActionError(`Project deletion pending: ${getErrorMessage(error)}`);
-          }
+        try {
+          await runTombstoneCleanup(operation, nextRemoteState, tombstone);
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          setProjectActionError(`Project deletion pending: ${getErrorMessage(error)}`);
         }
       })
     );
-    void pending.catch(error => {
-      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
-    });
+    void pending.catch(reportProjectError);
   };
 
   const retryRemoteCleanup = async (): Promise<void> => {
-    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    if (!canMutateWorkspace()) return;
     if (projectOperationOwnerRef.current!.isBusy) {
       setProjectActionError('Wait for project source work to finish before retrying cleanup.');
       return;
@@ -1546,7 +1497,7 @@ function App() {
   };
 
   const saveApiKey = async (nextApiKey: string): Promise<void> => {
-    if (!workspaceCanWriteRef.current || workspaceMutationBlockedRef.current) return;
+    if (!canMutateWorkspace()) return;
     if (projectOperationOwnerRef.current!.isBusy) {
       setProjectActionError('Wait for project source uploads to finish before changing API keys.');
       return;
@@ -1579,8 +1530,7 @@ function App() {
             'Switching API keys must first delete this app’s Files and vector stores under the old key. Continue?'
           )) return false;
           try {
-            await flushPendingSaves();
-            assertProjectOperationCurrent(projectOperation);
+            await flushSavesForOperation(projectOperation);
             const generatedTombstones = ownedIndexes.flatMap(index => {
               const tombstone = createProjectCleanupTombstone(index.projectId, index);
               return tombstone ? [tombstone] : [];
@@ -1656,7 +1606,7 @@ function App() {
       try {
         if (!(await operation)) return;
       } catch (error) {
-        if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
+        reportProjectError(error);
         return;
       }
     }
@@ -1668,10 +1618,9 @@ function App() {
 
   useEffect(() => {
     const project = projectsRef.current.find(item => item.id === selectedProjectId);
-    const handle = dirHandleRef.current;
     if (
       !project ||
-      !handle ||
+      !dirHandleRef.current ||
       !effectiveApiKey ||
       !isWorkspaceLoaded ||
       !workspaceCanWriteRef.current ||
@@ -1697,28 +1646,21 @@ function App() {
           state => persistRemoteState(operation, state)
         );
         setRemoteStateForOperation(operation, reconciled);
-        let reconciliationError: string | null = null;
-        for (const source of project.sources) {
-          if (source.capability === 'direct_attachment') continue;
-          if (projectRemoteStateRef.current.indexes[project.id]?.files[source.id]) {
-            continue;
+        const unindexedSources = project.sources.filter(source => (
+          source.capability !== 'direct_attachment' &&
+          !projectRemoteStateRef.current.indexes[project.id]?.files[source.id]
+        ));
+        await indexProjectSources(operation, project.id, unindexedSources.map(source => ({
+          source,
+          loadBlob: async () => {
+            const blob = await readProjectSourceBlob(source);
+            assertProjectOperationCurrent(operation);
+            return blob;
           }
-          const blob = await readLocalBlob(handle, source.localBlob);
-          assertProjectOperationCurrent(operation);
-          if (!blob) throw new Error(`Local source "${source.name}" is missing.`);
-          try {
-            await indexProjectSourceNow(operation, project.id, source, blob);
-          } catch (error) {
-            if (isAbortError(error)) throw error;
-            reconciliationError = getErrorMessage(error);
-          }
-        }
-        setProjectActionError(reconciliationError);
+        })));
       }
     );
-    void pending?.catch(error => {
-      if (!isAbortError(error)) setProjectActionError(getErrorMessage(error));
-    });
+    void pending?.catch(reportProjectError);
   }, [
     effectiveApiKey,
     draftWorkspaceEpoch,
@@ -1730,12 +1672,7 @@ function App() {
 
   const deleteSession = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace()) return;
 
     const deletedSession = sessionsRef.current.find(session => session.id === id);
     if (!deletedSession || !confirmChatDeletion()) return;
@@ -1773,13 +1710,7 @@ function App() {
   };
 
   const updateConfig = (newConfig: ChatConfig) => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
-      !currentSessionIdRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace() || !currentSessionIdRef.current) return;
     const targetSessionId = currentSessionIdRef.current;
     updateSessionsState(prev => prev.map(s =>
       s.id === targetSessionId ? { ...s, config: newConfig } : s
@@ -1787,12 +1718,7 @@ function App() {
   };
 
   const handleCreateSystemInstruction = () => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace()) return;
 
     const newId = crypto.randomUUID();
     const newInstruction: SystemInstruction = {
@@ -1807,42 +1733,17 @@ function App() {
   };
 
   const handleUpdateSystemInstruction = (updated: SystemInstruction) => {
-      if (
-        !workspaceCanWriteRef.current ||
-        workspaceMutationBlockedRef.current
-      ) {
-        return;
-      }
+      if (!canMutateWorkspace()) return;
       setSystemInstructions(prev => prev.map(si => si.id === updated.id ? updated : si));
   };
 
   const handleDeleteSystemInstruction = (id: string) => {
-      if (
-        !workspaceCanWriteRef.current ||
-        workspaceMutationBlockedRef.current
-      ) {
-        return;
-      }
+      if (!canMutateWorkspace()) return;
       setSystemInstructions(prev => prev.filter(si => si.id !== id));
       if (currentSession && currentSession.config.systemInstructionId === id) {
           updateConfig({ ...currentSession.config, systemInstructionId: undefined });
       }
   };
-
-  const createAssistantPlaceholder = (
-    id: string,
-    requestId: string,
-    modelSnapshot: AssistantModelSnapshot,
-    timestamp: number
-  ): Message => ({
-    id,
-    requestId,
-    role: 'assistant',
-    content: '',
-    status: 'streaming',
-    timestamp,
-    ...modelSnapshot
-  });
 
   const updateAssistantMessage = (
     sessionId: string,
@@ -2223,17 +2124,72 @@ function App() {
     return context;
   };
 
+  // Appends the assistant placeholder with its pending-request marker, then
+  // starts the response; the caller owns the operation and processing flag.
+  const launchAssistantTurn = ({
+    operation,
+    session,
+    messagesForApi,
+    requestId,
+    userMessageId,
+    assistantMessageId,
+    requestTimestamp,
+    projectContext,
+    draftTitle
+  }: {
+    operation: OperationRecord;
+    session: Session;
+    messagesForApi: Message[];
+    requestId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    requestTimestamp: number;
+    projectContext?: ResolvedProjectContext;
+    draftTitle?: string;
+  }): Promise<void> => {
+    const modelSnapshot = getAssistantModelSnapshot(session);
+    const assistantPlaceholder: Message = {
+      id: assistantMessageId,
+      requestId,
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      timestamp: requestTimestamp,
+      ...modelSnapshot
+    };
+    forceImmediateSessionSaveRef.current = true;
+    updateSessionsState(prev => prev.map(s => (
+      s.id !== session.id ? s : {
+        ...s,
+        messages: [...messagesForApi, assistantPlaceholder],
+        lastModified: requestTimestamp,
+        pendingRequest: {
+          id: requestId,
+          userMessageId,
+          assistantMessageId,
+          createdAt: requestTimestamp
+        },
+        ...(draftTitle !== undefined && s.messages.length === 0 ? { title: draftTitle } : {})
+      }
+    )));
+    return startAssistantResponse({
+      operation,
+      targetSessionId: session.id,
+      session,
+      messagesForApi,
+      requestId,
+      assistantMessageId,
+      modelSnapshot,
+      projectContext
+    });
+  };
+
   const handleSendMessage = async (
     targetSessionId: string,
     content: string,
     attachments: File[]
   ) => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current
-    ) {
-      return false;
-    }
+    if (!canMutateWorkspace()) return false;
 
     if (processingSessionIdsRef.current.has(targetSessionId)) return false;
     const initialSession = sessionsRef.current.find(s => s.id === targetSessionId);
@@ -2258,11 +2214,7 @@ function App() {
     try {
       const processedAttachments = await storeMessageAttachments(handle, attachments);
       if (!isOperationCurrent(operation)) {
-        processedAttachments.forEach(attachment => {
-          if (attachment.previewUrl?.startsWith('blob:')) {
-            URL.revokeObjectURL(attachment.previewUrl);
-          }
-        });
+        revokePreviewUrls(processedAttachments);
         throw createOperationAbortError();
       }
       const session = sessionsRef.current.find(s => s.id === targetSessionId);
@@ -2278,33 +2230,6 @@ function App() {
           ? { attachments: processedAttachments }
           : {})
       };
-      const modelSnapshot = getAssistantModelSnapshot(session);
-      const assistantPlaceholder = createAssistantPlaceholder(
-        assistantMessageId,
-        requestId,
-        modelSnapshot,
-        requestTimestamp
-      );
-
-      // 1. Optimistically update UI with user message + pending request marker
-      forceImmediateSessionSaveRef.current = true;
-      updateSessionsState(prev => prev.map(s => {
-        if (s.id === targetSessionId) {
-          return {
-            ...s,
-            messages: [...s.messages, newUserMessage, assistantPlaceholder],
-            lastModified: requestTimestamp,
-            pendingRequest: {
-              id: requestId,
-              userMessageId,
-              assistantMessageId,
-              createdAt: requestTimestamp
-            },
-            title: s.messages.length === 0 ? (content.slice(0, 30) + (content.length > 30 ? '...' : '')) : s.title
-          };
-        }
-        return s;
-      }));
 
       if (session.messages.length === 0) {
         const titlePrompt = content || (
@@ -2320,18 +2245,17 @@ function App() {
         void runChatTitleGeneration(titleOperation, targetSessionId, titlePrompt);
       }
 
-      // 2. Perform API Call Detached from current UI State
-      const messagesForApi = [...session.messages, newUserMessage];
       didStartResponse = true;
-      void startAssistantResponse({
+      void launchAssistantTurn({
         operation,
-        targetSessionId,
         session,
-        messagesForApi,
+        messagesForApi: [...session.messages, newUserMessage],
         requestId,
+        userMessageId,
         assistantMessageId,
-        modelSnapshot,
-        projectContext
+        requestTimestamp,
+        projectContext,
+        draftTitle: content.slice(0, 30) + (content.length > 30 ? '...' : '')
       });
       return true;
 
@@ -2372,13 +2296,7 @@ function App() {
   };
 
   const restartAssistantResponse = async (assistantMessageIndex: number) => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
-      !currentSessionIdRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace() || !currentSessionIdRef.current) return;
 
     const targetSessionId = currentSessionIdRef.current;
     if (processingSessionIdsRef.current.has(targetSessionId)) return;
@@ -2409,13 +2327,6 @@ function App() {
         ? { ...message, id: userMessageId }
         : message
     ));
-    const modelSnapshot = getAssistantModelSnapshot(session);
-    const assistantPlaceholder = createAssistantPlaceholder(
-      newAssistantMessageId,
-      requestId,
-      modelSnapshot,
-      requestTimestamp
-    );
     const operation = operationRegistryRef.current.begin({
       id: crypto.randomUUID(),
       kind: 'response',
@@ -2423,32 +2334,14 @@ function App() {
     });
 
     addProcessingSession(targetSessionId);
-    forceImmediateSessionSaveRef.current = true;
-
-    updateSessionsState(prev => prev.map(s => {
-      if (s.id !== targetSessionId) return s;
-
-      return {
-        ...s,
-        messages: [...messagesForApi, assistantPlaceholder],
-        lastModified: requestTimestamp,
-        pendingRequest: {
-          id: requestId,
-          userMessageId,
-          assistantMessageId: newAssistantMessageId,
-          createdAt: requestTimestamp
-        }
-      };
-    }));
-
-    await startAssistantResponse({
+    await launchAssistantTurn({
       operation,
-      targetSessionId,
       session,
       messagesForApi,
       requestId,
+      userMessageId,
       assistantMessageId: newAssistantMessageId,
-      modelSnapshot,
+      requestTimestamp,
       projectContext
     });
   };
@@ -2465,81 +2358,69 @@ function App() {
     await restartAssistantResponse(assistantMessageIndex);
   };
 
+  // The only editable turn is the final failed assistant reply and the user
+  // message right before it.
+  const findEditableFailedTurn = (
+    sessionId: string,
+    userMessageId: string
+  ): Message | null => {
+    const session = sessionsRef.current.find(item => item.id === sessionId);
+    const lastMessage = session?.messages[session.messages.length - 1];
+    const userMessage = session?.messages[session.messages.length - 2];
+    return (
+      lastMessage?.role === 'assistant' &&
+      lastMessage.status === 'error' &&
+      userMessage?.role === 'user' &&
+      userMessage.id === userMessageId
+    ) ? userMessage : null;
+  };
+
+  const updateFailedTurnAttachments = (
+    sessionId: string,
+    userMessageId: string,
+    attachments: (current: FileAttachment[] | undefined) => FileAttachment[] | undefined
+  ): void => {
+    forceImmediateSessionSaveRef.current = true;
+    updateSessionsState(prev => prev.map(item => (
+      item.id !== sessionId ? item : {
+        ...item,
+        messages: item.messages.map(message => (
+          message.id === userMessageId
+            ? { ...message, attachments: attachments(message.attachments) }
+            : message
+        )),
+        lastModified: Date.now()
+      }
+    )));
+  };
+
   const handleRemoveFailedAttachment = (
     userMessageId: string,
     attachmentIndex: number
   ) => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
-      !currentSessionIdRef.current
-    ) {
-      return;
-    }
+    if (!canMutateWorkspace() || !currentSessionIdRef.current) return;
 
     const targetSessionId = currentSessionIdRef.current;
-    const session = sessionsRef.current.find(item => item.id === targetSessionId);
-    const lastMessage = session?.messages[session.messages.length - 1];
-    const userMessage = session?.messages[session.messages.length - 2];
-    if (
-      lastMessage?.role !== 'assistant' ||
-      lastMessage.status !== 'error' ||
-      userMessage?.role !== 'user' ||
-      userMessage.id !== userMessageId
-    ) {
-      return;
-    }
+    const userMessage = findEditableFailedTurn(targetSessionId, userMessageId);
+    if (!userMessage) return;
 
-    const removedAttachment = userMessage.attachments?.[attachmentIndex];
-    forceImmediateSessionSaveRef.current = true;
-    updateSessionsState(prev => prev.map(item => {
-      if (item.id !== targetSessionId) return item;
-
-      return {
-        ...item,
-        messages: item.messages.map(message => (
-          message.id === userMessageId
-            ? {
-                ...message,
-                attachments: message.attachments?.filter(
-                  (_, index) => index !== attachmentIndex
-                )
-              }
-            : message
-        )),
-        lastModified: Date.now()
-      };
-    }));
-
-    if (removedAttachment?.previewUrl?.startsWith('blob:')) {
-      URL.revokeObjectURL(removedAttachment.previewUrl);
-    }
+    updateFailedTurnAttachments(targetSessionId, userMessageId, current => (
+      current?.filter((_, index) => index !== attachmentIndex)
+    ));
+    revokePreviewUrls(userMessage.attachments?.slice(attachmentIndex, attachmentIndex + 1));
   };
 
   const handleReplaceFailedAttachments = async (
     userMessageId: string,
     files: File[]
   ): Promise<string | undefined> => {
-    if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
-      !currentSessionIdRef.current
-    ) {
+    if (!canMutateWorkspace() || !currentSessionIdRef.current) {
       return 'This workspace is read-only.';
     }
 
     const targetSessionId = currentSessionIdRef.current;
-    const session = sessionsRef.current.find(item => item.id === targetSessionId);
-    const lastMessage = session?.messages[session.messages.length - 1];
-    const userMessage = session?.messages[session.messages.length - 2];
-    if (
-      lastMessage?.role !== 'assistant' ||
-      lastMessage.status !== 'error' ||
-      userMessage?.role !== 'user' ||
-      userMessage.id !== userMessageId
-    ) {
-      return 'This failed turn is no longer available to edit.';
-    }
+    const userMessage = findEditableFailedTurn(targetSessionId, userMessageId);
+    if (!userMessage) return 'This failed turn is no longer available to edit.';
 
     try {
       const handle = dirHandleRef.current;
@@ -2552,43 +2433,16 @@ function App() {
 
       try {
         const replacementAttachments = await storeMessageAttachments(handle, files);
-        const currentTarget = sessionsRef.current.find(item => item.id === targetSessionId);
-        const currentLastMessage = currentTarget?.messages[currentTarget.messages.length - 1];
-        const currentUserMessage = currentTarget?.messages[currentTarget.messages.length - 2];
         if (
           !isOperationCurrent(operation) ||
-          currentLastMessage?.role !== 'assistant' ||
-          currentLastMessage.status !== 'error' ||
-          currentUserMessage?.role !== 'user' ||
-          currentUserMessage.id !== userMessageId
+          !findEditableFailedTurn(targetSessionId, userMessageId)
         ) {
-          replacementAttachments.forEach(attachment => {
-            if (attachment.previewUrl?.startsWith('blob:')) {
-              URL.revokeObjectURL(attachment.previewUrl);
-            }
-          });
+          revokePreviewUrls(replacementAttachments);
           return 'This failed turn is no longer available to edit.';
         }
 
-        forceImmediateSessionSaveRef.current = true;
-        updateSessionsState(prev => prev.map(item => {
-          if (item.id !== targetSessionId) return item;
-
-          return {
-            ...item,
-            messages: item.messages.map(message => (
-              message.id === userMessageId
-                ? { ...message, attachments: replacementAttachments }
-                : message
-            )),
-            lastModified: Date.now()
-          };
-        }));
-        userMessage.attachments?.forEach(attachment => {
-          if (attachment.previewUrl?.startsWith('blob:')) {
-            URL.revokeObjectURL(attachment.previewUrl);
-          }
-        });
+        updateFailedTurnAttachments(targetSessionId, userMessageId, () => replacementAttachments);
+        revokePreviewUrls(userMessage.attachments);
         return undefined;
       } finally {
         operationRegistryRef.current.complete(operation);
@@ -2667,51 +2521,18 @@ function App() {
       setCloseSaveError(null);
 
       const activeRequests = new Map(activeRequestsRef.current);
-      const now = Date.now();
       operationRegistryRef.current.invalidateWorkspace();
-
-      activeRequests.forEach(request => {
-        request.controller.abort();
-      });
+      activeRequests.forEach(request => request.controller.abort());
       activeRequestsRef.current.clear();
       processingSessionIdsRef.current.clear();
       setProcessingSessionIds(new Set());
-
-      if (activeRequests.size > 0) {
-        const stoppedSessions = sessionsRef.current.map(session => {
-          const activeRequest = activeRequests.get(session.id);
-          if (!activeRequest) return session;
-          const snapshot = activeRequest.streamState.checkpoint().snapshot;
-
-          return {
-            ...session,
-            messages: session.messages.map(message => (
-              message.id === activeRequest.assistantMessageId
-                ? applyResponseStreamSnapshot(
-                    message,
-                    snapshot,
-                    'stopped',
-                    now
-                  )
-                : message
-            )),
-            pendingRequest: undefined,
-            lastModified: now
-          };
-        });
-
-        sessionsRef.current = stoppedSessions;
-        forceImmediateSessionSaveRef.current = false;
-        skipNextSessionEffectSaveRef.current = true;
-        updateSessionsState(stoppedSessions);
-        scheduleSave('sessions', true);
-      }
+      checkpointActiveRequests(activeRequests, 'stopped');
 
       void finishPendingClose();
     });
 
     return unsubscribe;
-  }, [finishPendingClose, scheduleSave]);
+  }, [checkpointActiveRequests, finishPendingClose]);
 
   const retryCloseAfterSaveFailure = async () => {
     const electronApi = window.electronAPI;
@@ -2733,10 +2554,6 @@ function App() {
     setIsClosing(false);
     setCloseSaveError(null);
     window.electronAPI?.cancelClose();
-  };
-
-  const quitWithoutSaving = () => {
-    window.electronAPI?.confirmClose();
   };
 
   useEffect(() => () => {
@@ -2855,8 +2672,7 @@ function App() {
 
   const handleImportData = async (file: File) => {
     if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
+      !canMutateWorkspace() ||
       !dirHandleRef.current
     ) {
       return;
@@ -2958,6 +2774,10 @@ function App() {
     }
   });
 
+  const reportRecoveryFailure = (label: string, error: unknown): void => {
+    if (!isAbortError(error)) alert(`${label} failed: ${getErrorMessage(error)}`);
+  };
+
   const confirmWorkspaceRestore = async () => {
     const pending = pendingRestore;
     if (!pending || !dirHandleRef.current) return;
@@ -2970,16 +2790,13 @@ function App() {
     try {
       await runWorkspaceArchiveMutation('restore', pending.file);
     } catch (error) {
-      if (!isAbortError(error)) {
-        alert(`Workspace restore failed: ${getErrorMessage(error)}`);
-      }
+      reportRecoveryFailure('Workspace restore', error);
     }
   };
 
   const handleMergeData = async (file: File) => {
     if (
-      !workspaceCanWriteRef.current ||
-      workspaceMutationBlockedRef.current ||
+      !canMutateWorkspace() ||
       activeRequestsRef.current.size > 0 ||
       processingSessionIdsRef.current.size > 0 ||
       projectOperationOwnerRef.current!.isBusy ||
@@ -2992,9 +2809,7 @@ function App() {
       await runWorkspaceArchiveMutation('merge', file);
       await backupSchedulerRef.current?.evaluate();
     } catch (error) {
-      if (!isAbortError(error)) {
-        alert(`Workspace merge failed: ${getErrorMessage(error)}`);
-      }
+      reportRecoveryFailure('Workspace merge', error);
     }
   };
 
@@ -3020,97 +2835,71 @@ function App() {
       setUndoWorkspaceAction(null);
       await backupSchedulerRef.current?.evaluate();
     } catch (error) {
-      alert(`Undo ${action || 'workspace change'} failed: ${getErrorMessage(error)}`);
+      reportRecoveryFailure(`Undo ${action || 'workspace change'}`, error);
     }
   };
 
-  const handleChooseBackupFolder = async () => {
+  const runBackupAction = async (action: () => Promise<void>): Promise<void> => {
     try {
+      await action();
+      setBackupActionError(null);
+    } catch (error) {
+      setBackupActionError(getErrorMessage(error));
+    }
+  };
+
+  const handleChooseBackupFolder = () => runBackupAction(async () => {
+    const destination = await chooseBackupDestination();
+    if (destination) await backupSchedulerRef.current?.setDestination(destination);
+  });
+
+  const handleReconnectBackupFolder = () => runBackupAction(async () => {
+    const destination = await loadBackupDestination();
+    if (!destination || !(await reconnectBackupDestination(destination))) {
+      throw new Error('Backup folder permission was not granted.');
+    }
+    await backupSchedulerRef.current?.setDestination(destination);
+    await backupSchedulerRef.current?.evaluate();
+  });
+
+  const handleToggleAutomaticBackups = (enabled: boolean) => runBackupAction(async () => {
+    if (enabled && backupState.destinationStatus === 'unavailable') {
       const destination = await chooseBackupDestination();
       if (!destination) return;
       await backupSchedulerRef.current?.setDestination(destination);
-      setBackupActionError(null);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
     }
+    await backupSchedulerRef.current?.setEnabled(enabled);
+  });
+
+  const handleRefreshManagedBackups = () => runBackupAction(async () => {
+    await backupSchedulerRef.current?.refresh();
+  });
+
+  const handleBackUpNow = () => runBackupAction(async () => {
+    await flushPendingSaves();
+    await backupSchedulerRef.current?.backUpNow();
+  });
+
+  const readManagedBackup = async (filename: string): Promise<Blob> => {
+    const archive = await backupSchedulerRef.current?.readBackup(filename);
+    if (!archive) throw new Error('The selected backup is unavailable.');
+    return archive;
   };
 
-  const handleReconnectBackupFolder = async () => {
-    try {
-      const destination = await loadBackupDestination();
-      if (!destination || !(await reconnectBackupDestination(destination))) {
-        throw new Error('Backup folder permission was not granted.');
-      }
-      await backupSchedulerRef.current?.setDestination(destination);
-      setBackupActionError(null);
-      await backupSchedulerRef.current?.evaluate();
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
+  const handleManagedBackupRestore = (filename: string) => runBackupAction(async () => {
+    const archive = await readManagedBackup(filename);
+    await handleImportData(new File([archive], filename, { type: 'application/zip' }));
+  });
 
-  const handleToggleAutomaticBackups = async (enabled: boolean) => {
-    try {
-      if (enabled && backupState.destinationStatus === 'unavailable') {
-        const destination = await chooseBackupDestination();
-        if (!destination) return;
-        await backupSchedulerRef.current?.setDestination(destination);
-      }
-      await backupSchedulerRef.current?.setEnabled(enabled);
-      setBackupActionError(null);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
-
-  const handleRefreshManagedBackups = async () => {
-    try {
-      await backupSchedulerRef.current?.refresh();
-      setBackupActionError(null);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
-
-  const handleBackUpNow = async () => {
-    try {
-      await flushPendingSaves();
-      await backupSchedulerRef.current?.backUpNow();
-      setBackupActionError(null);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
-
-  const handleManagedBackupRestore = async (filename: string) => {
-    try {
-      const archive = await backupSchedulerRef.current?.readBackup(filename);
-      if (!archive) throw new Error('The selected backup is unavailable.');
-      await handleImportData(new File([archive], filename, {
-        type: 'application/zip'
-      }));
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
-
-  const handleManagedBackupExport = async (filename: string) => {
-    try {
-      const archive = await backupSchedulerRef.current?.readBackup(filename);
-      if (!archive) throw new Error('The selected backup is unavailable.');
-      downloadBlobFile(filename, archive);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
-  };
+  const handleManagedBackupExport = (filename: string) => runBackupAction(async () => {
+    downloadBlobFile(filename, await readManagedBackup(filename));
+  });
 
   const handleManagedBackupDelete = async (filename: string) => {
     if (!window.confirm(`Delete managed backup "${filename}"?`)) return;
-    try {
+    await runBackupAction(async () => {
       await backupSchedulerRef.current?.deleteBackup(filename);
-    } catch (error) {
-      setBackupActionError(getErrorMessage(error));
-    }
+    });
   };
 
   // Determine if the CURRENT session is loading
@@ -3297,12 +3086,7 @@ function App() {
                 onDeleteSession={deleteSession}
                 isDarkMode={isDarkMode}
                 toggleTheme={() => {
-                  if (
-                    workspaceCanWriteRef.current &&
-                    !workspaceMutationBlockedRef.current
-                  ) {
-                    setIsDarkMode(!isDarkMode);
-                  }
+                  if (canMutateWorkspace()) setIsDarkMode(!isDarkMode);
                 }}
                 apiKey={apiKey}
                 onApiKeySave={saveApiKey}
@@ -3310,12 +3094,7 @@ function App() {
                 remoteCleanupError={projectActionError}
                 onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
                 onApiKeyChange={key => {
-                  if (
-                    workspaceCanWriteRef.current &&
-                    !workspaceMutationBlockedRef.current
-                  ) {
-                    setApiKey(key);
-                  }
+                  if (canMutateWorkspace()) setApiKey(key);
                 }}
                 onExportData={handleExportData}
                 onImportData={handleImportData}
@@ -3355,7 +3134,7 @@ function App() {
                 error={projectActionError}
                 readOnly={isWorkspaceInteractionReadOnly}
                 onUpdate={updateProject}
-                onNewChat={() => createProjectSession(selectedProject.id)}
+                onNewChat={() => createSession(selectedProject.id)}
                 onAddSources={files => addProjectSources(selectedProject.id, files)}
                 onDeleteSource={source => deleteProjectSource(selectedProject.id, source)}
                 onRetrySource={source => retryProjectSource(selectedProject.id, source)}
@@ -3597,7 +3376,7 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={quitWithoutSaving}
+                  onClick={() => window.electronAPI?.confirmClose()}
                   disabled={isRetryingSave}
                   className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/30"
                 >
