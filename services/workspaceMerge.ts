@@ -22,6 +22,7 @@ import {
   inspectWorkspaceArchive,
   stageWorkspaceArchiveBlobs
 } from './workspaceArchive';
+import { serializeCanonicalJson } from './contentAddressing';
 import { runWithVerifiedWorkspaceRecovery } from './workspaceRestore';
 import { iterateWorkspaceBlobReferences } from './workspaceBlobs';
 
@@ -43,23 +44,7 @@ export interface WorkspaceMergePlan {
   counts: WorkspaceMergeCounts;
 }
 
-const serializeCanonical = (value: unknown): string => JSON.stringify(
-  value,
-  (_key, nestedValue) => {
-    if (
-      typeof nestedValue !== 'object' ||
-      nestedValue === null ||
-      Array.isArray(nestedValue)
-    ) {
-      return nestedValue;
-    }
-    return Object.fromEntries(
-      Object.entries(nestedValue as Record<string, unknown>)
-        .filter(([key]) => key !== 'previewUrl')
-        .sort(([left], [right]) => left.localeCompare(right))
-    );
-  }
-);
+const serializeCanonical = (value: unknown): string => serializeCanonicalJson(value, ['previewUrl']);
 
 const instructionContentKey = (instruction: SystemInstruction): string => (
   serializeCanonical({

@@ -13,11 +13,14 @@ import {
 } from '../types';
 import { normalizeProjectDefaultConfig } from '../constants';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
+import { MAX_PROJECT_SOURCES } from '../utils/projectSources';
+import { SHA256_PATTERN } from './contentAddressing';
 
 export const MAX_WORKSPACE_BACKUP_BYTES = 512 * 1024 * 1024;
 
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_API_IDENTIFIER_LENGTH = 512;
+const MAX_MIME_TYPE_LENGTH = 512;
 const MAX_SHORT_TEXT_LENGTH = 4096;
 const MAX_URL_LENGTH = 16 * 1024;
 const MAX_MESSAGE_CONTENT_LENGTH = 16 * 1024 * 1024;
@@ -30,38 +33,22 @@ const MAX_SOURCES_PER_MESSAGE = 1_000;
 const MAX_GENERATED_FILES_PER_MESSAGE = 1_000;
 const MAX_INSTRUCTIONS = 10_000;
 export const MAX_PROJECTS = 10_000;
-export const MAX_PROJECT_SOURCES = 40;
 const MAX_TOKEN_COUNT = 1_000_000_000_000;
 const MAX_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_TIMESTAMP = 8_640_000_000_000_000;
 
 const LOCAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
-const MESSAGE_STATUSES = new Set([
-  'streaming',
-  'complete',
-  'incomplete',
-  'error',
-  'stopped'
-]);
+const MESSAGE_STATUSES = new Set(['streaming', 'complete', 'incomplete', 'error', 'stopped']);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const WEB_SEARCH_CONTEXT_SIZES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
-const PROJECT_ICONS = new Set([
-  'folder',
-  'briefcase',
-  'code',
-  'book',
-  'research',
-  'writing',
-  'health'
-]);
+const PROJECT_ICONS = new Set(['folder', 'briefcase', 'code', 'book', 'research', 'writing', 'health']);
 const PROJECT_SOURCE_CAPABILITIES = new Set(['file_search', 'code_interpreter', 'direct_attachment']);
 const PROJECT_REMOTE_STATUSES = new Set(['disconnected', 'creating', 'ready', 'failed', 'deleting']);
 const PROJECT_REMOTE_FILE_STATUSES = new Set(['uploading', 'indexing', 'ready', 'failed', 'removing']);
-const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface AppSettings {
   theme: 'dark' | 'light';
@@ -91,26 +78,24 @@ const assertRecord = (value: unknown, path: string): Record<string, unknown> => 
   return value as Record<string, unknown>;
 };
 
-const assertOnlyKeys = (
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string
-): void => {
-  const allowed = new Set(keys);
-  const unknownKey = Object.keys(value).find(key => !allowed.has(key));
-  if (unknownKey) fail(`${path}.${unknownKey}`, 'is not supported by this schema version');
-};
-
-const assertArray = (
+// Every persisted object is checked against its declared key list so unknown
+// fields are rejected at the storage boundary instead of silently dropped.
+const assertObject = (
   value: unknown,
   path: string,
-  maximumLength: number
-): unknown[] => {
+  keys: readonly string[]
+): Record<string, unknown> => {
+  const record = assertRecord(value, path);
+  const allowed = new Set(keys);
+  const unknownKey = Object.keys(record).find(key => !allowed.has(key));
+  if (unknownKey) fail(`${path}.${unknownKey}`, 'is not supported by this schema version');
+  return record;
+};
+
+const assertArray = (value: unknown, path: string, maximumLength: number): unknown[] => {
   if (!Array.isArray(value)) fail(path, 'must be an array');
   const array = value as unknown[];
-  if (array.length > maximumLength) {
-    fail(path, `must contain at most ${maximumLength} items`);
-  }
+  if (array.length > maximumLength) fail(path, `must contain at most ${maximumLength} items`);
   return array;
 };
 
@@ -123,9 +108,7 @@ const assertString = (
   if (typeof value !== 'string') fail(path, 'must be a string');
   const string = value as string;
   if (!allowEmpty && string.length === 0) fail(path, 'must not be empty');
-  if (string.length > maximumLength) {
-    fail(path, `must contain at most ${maximumLength} characters`);
-  }
+  if (string.length > maximumLength) fail(path, `must contain at most ${maximumLength} characters`);
   return string;
 };
 
@@ -135,9 +118,7 @@ const assertOptionalString = (
   maximumLength: number,
   allowEmpty = true
 ): string | undefined => (
-  value === undefined
-    ? undefined
-    : assertString(value, path, maximumLength, allowEmpty)
+  value === undefined ? undefined : assertString(value, path, maximumLength, allowEmpty)
 );
 
 const assertLocalId = (value: unknown, path: string): string => {
@@ -150,18 +131,21 @@ const assertOptionalLocalId = (value: unknown, path: string): string | undefined
   value === undefined ? undefined : assertLocalId(value, path)
 );
 
+const assertApiId = (value: unknown, path: string): string => (
+  assertString(value, path, MAX_API_IDENTIFIER_LENGTH, false)
+);
+
+const assertOptionalApiId = (value: unknown, path: string): string | undefined => (
+  assertOptionalString(value, path, MAX_API_IDENTIFIER_LENGTH, false)
+);
+
 const assertFiniteNumber = (
   value: unknown,
   path: string,
   minimum: number,
   maximum: number
 ): number => {
-  if (
-    typeof value !== 'number' ||
-    !Number.isFinite(value) ||
-    value < minimum ||
-    value > maximum
-  ) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
     fail(path, `must be a finite number between ${minimum} and ${maximum}`);
   }
   return value as number;
@@ -178,71 +162,80 @@ const assertSafeInteger = (
   return number;
 };
 
+const assertOptionalSafeInteger = (
+  value: unknown,
+  path: string,
+  minimum: number,
+  maximum: number
+): number | undefined => (
+  value === undefined ? undefined : assertSafeInteger(value, path, minimum, maximum)
+);
+
 const assertTimestamp = (value: unknown, path: string): number => (
   assertSafeInteger(value, path, 0, MAX_TIMESTAMP)
 );
 
-const assertUniqueId = (
-  ids: Set<string>,
-  id: string,
-  path: string
-): void => {
+const assertOptionalTimestamp = (value: unknown, path: string): number | undefined => (
+  value === undefined ? undefined : assertTimestamp(value, path)
+);
+
+const assertEnum = (value: unknown, path: string, allowed: ReadonlySet<string>): string => {
+  if (typeof value !== 'string' || !allowed.has(value)) fail(path, 'has an unsupported value');
+  return value as string;
+};
+
+const assertOptionalEnum = (
+  value: unknown,
+  path: string,
+  allowed: ReadonlySet<string>
+): string | undefined => (
+  value === undefined ? undefined : assertEnum(value, path, allowed)
+);
+
+const assertOptionalBoolean = (value: unknown, path: string): void => {
+  if (value !== undefined && typeof value !== 'boolean') fail(path, 'must be a boolean');
+};
+
+const assertSha256 = (value: unknown, path: string): string => {
+  if (typeof value !== 'string' || !SHA256_PATTERN.test(value)) {
+    fail(path, 'must be a lowercase SHA-256 digest');
+  }
+  return value as string;
+};
+
+const assertUniqueId = (ids: Set<string>, id: string, path: string): void => {
   if (ids.has(id)) fail(path, `duplicates the ID "${id}"`);
   ids.add(id);
 };
 
 const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
-  const usage = assertRecord(value, path);
-  assertOnlyKeys(
-    usage,
-    [
-      'input_tokens',
-      'input_tokens_details',
-      'output_tokens',
-      'output_tokens_details',
-      'total_tokens'
-    ],
-    path
-  );
+  const usage = assertObject(value, path, [
+    'input_tokens',
+    'input_tokens_details',
+    'output_tokens',
+    'output_tokens_details',
+    'total_tokens'
+  ]);
   assertSafeInteger(usage.input_tokens, `${path}.input_tokens`, 0, MAX_TOKEN_COUNT);
   assertSafeInteger(usage.output_tokens, `${path}.output_tokens`, 0, MAX_TOKEN_COUNT);
   assertSafeInteger(usage.total_tokens, `${path}.total_tokens`, 0, MAX_TOKEN_COUNT);
 
-  const inputDetails = assertRecord(
-    usage.input_tokens_details,
-    `${path}.input_tokens_details`
-  );
-  assertOnlyKeys(
-    inputDetails,
-    ['cached_tokens', 'cache_write_tokens'],
-    `${path}.input_tokens_details`
-  );
-  assertSafeInteger(
-    inputDetails.cached_tokens,
-    `${path}.input_tokens_details.cached_tokens`,
+  const inputPath = `${path}.input_tokens_details`;
+  const inputDetails = assertObject(usage.input_tokens_details, inputPath, [
+    'cached_tokens',
+    'cache_write_tokens'
+  ]);
+  assertSafeInteger(inputDetails.cached_tokens, `${inputPath}.cached_tokens`, 0, MAX_TOKEN_COUNT);
+  assertOptionalSafeInteger(
+    inputDetails.cache_write_tokens,
+    `${inputPath}.cache_write_tokens`,
     0,
     MAX_TOKEN_COUNT
   );
-  if (inputDetails.cache_write_tokens !== undefined) {
-    assertSafeInteger(
-      inputDetails.cache_write_tokens,
-      `${path}.input_tokens_details.cache_write_tokens`,
-      0,
-      MAX_TOKEN_COUNT
-    );
-  }
 
-  const outputDetails = assertRecord(
-    usage.output_tokens_details,
-    `${path}.output_tokens_details`
-  );
-  assertOnlyKeys(outputDetails, ['reasoning_tokens'], `${path}.output_tokens_details`);
-  assertSafeInteger(
-    outputDetails.reasoning_tokens,
-    `${path}.output_tokens_details.reasoning_tokens`,
-    0,
-    MAX_TOKEN_COUNT
-  );
+  const outputPath = `${path}.output_tokens_details`;
+  const outputDetails = assertObject(usage.output_tokens_details, outputPath, ['reasoning_tokens']);
+  assertSafeInteger(outputDetails.reasoning_tokens, `${outputPath}.reasoning_tokens`, 0, MAX_TOKEN_COUNT);
 
   return value as OpenAIResponsesUsage;
 };
@@ -250,7 +243,7 @@ const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
 const parseSource = (value: unknown, path: string): Source => {
   const source = assertRecord(value, path);
   if (source.kind === undefined) {
-    assertOnlyKeys(source, ['title', 'url'], path);
+    assertObject(source, path, ['title', 'url']);
     return {
       kind: 'web',
       title: assertString(source.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH),
@@ -258,145 +251,97 @@ const parseSource = (value: unknown, path: string): Source => {
     };
   }
   if (source.kind === 'web') {
-    assertOnlyKeys(source, ['kind', 'title', 'url'], path);
+    assertObject(source, path, ['kind', 'title', 'url']);
     assertString(source.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
     assertString(source.url, `${path}.url`, MAX_URL_LENGTH, false);
     return value as Source;
   }
   if (source.kind === 'file') {
-    assertOnlyKeys(source, ['kind', 'filename', 'fileId', 'projectSourceId'], path);
+    assertObject(source, path, ['kind', 'filename', 'fileId', 'projectSourceId']);
     assertString(source.filename, `${path}.filename`, MAX_SHORT_TEXT_LENGTH, false);
-    assertString(source.fileId, `${path}.fileId`, MAX_API_IDENTIFIER_LENGTH, false);
+    assertApiId(source.fileId, `${path}.fileId`);
     assertOptionalLocalId(source.projectSourceId, `${path}.projectSourceId`);
     return value as Source;
   }
   return fail(`${path}.kind`, 'has an unsupported value');
 };
 
-const parseLocalBlobReference = (
-  value: unknown,
-  path: string
-): LocalBlobReference => {
-  const reference = assertRecord(value, path);
-  assertOnlyKeys(reference, ['sha256', 'byteSize', 'mimeType'], path);
-  if (
-    typeof reference.sha256 !== 'string' ||
-    !SHA256_PATTERN.test(reference.sha256)
-  ) {
-    fail(`${path}.sha256`, 'must be a lowercase SHA-256 digest');
-  }
-  assertSafeInteger(
-    reference.byteSize,
-    `${path}.byteSize`,
-    0,
-    MAX_WORKSPACE_BACKUP_BYTES
-  );
-  assertOptionalString(reference.mimeType, `${path}.mimeType`, 512);
+const parseLocalBlobReference = (value: unknown, path: string): LocalBlobReference => {
+  const reference = assertObject(value, path, ['sha256', 'byteSize', 'mimeType']);
+  assertSha256(reference.sha256, `${path}.sha256`);
+  assertSafeInteger(reference.byteSize, `${path}.byteSize`, 0, MAX_WORKSPACE_BACKUP_BYTES);
+  assertOptionalString(reference.mimeType, `${path}.mimeType`, MAX_MIME_TYPE_LENGTH);
   return value as LocalBlobReference;
 };
 
+const parseOptionalLocalBlobReference = (
+  value: unknown,
+  path: string
+): LocalBlobReference | undefined => (
+  value === undefined ? undefined : parseLocalBlobReference(value, path)
+);
+
 const parseGeneratedFile = (value: unknown, path: string): GeneratedFile => {
-  const file = assertRecord(value, path);
-  assertOnlyKeys(
-    file,
-    [
-      'filename',
-      'fileId',
-      'containerId',
-      'displayName',
-      'mimeType',
-      'source',
-      'localBlob'
-    ],
-    path
-  );
+  const file = assertObject(value, path, [
+    'filename',
+    'fileId',
+    'containerId',
+    'displayName',
+    'mimeType',
+    'source',
+    'localBlob'
+  ]);
   assertString(file.filename, `${path}.filename`, MAX_SHORT_TEXT_LENGTH, false);
-  assertString(file.fileId, `${path}.fileId`, MAX_API_IDENTIFIER_LENGTH, false);
-  assertString(file.containerId, `${path}.containerId`, MAX_API_IDENTIFIER_LENGTH, false);
+  assertApiId(file.fileId, `${path}.fileId`);
+  assertApiId(file.containerId, `${path}.containerId`);
   assertOptionalString(file.displayName, `${path}.displayName`, MAX_SHORT_TEXT_LENGTH);
-  assertOptionalString(file.mimeType, `${path}.mimeType`, 512);
-  if (
-    file.source !== undefined &&
-    (
-      typeof file.source !== 'string' ||
-      !GENERATED_FILE_SOURCES.has(file.source)
-    )
-  ) {
-    fail(`${path}.source`, 'has an unsupported value');
-  }
-  if (file.localBlob !== undefined) {
-    parseLocalBlobReference(file.localBlob, `${path}.localBlob`);
-  }
+  assertOptionalString(file.mimeType, `${path}.mimeType`, MAX_MIME_TYPE_LENGTH);
+  assertOptionalEnum(file.source, `${path}.source`, GENERATED_FILE_SOURCES);
+  parseOptionalLocalBlobReference(file.localBlob, `${path}.localBlob`);
   return value as GeneratedFile;
 };
 
-const parseAttachment = (
-  value: unknown,
-  path: string
-): FileAttachment => {
-  const attachment = assertRecord(value, path);
-  assertOnlyKeys(
-    attachment,
-    ['name', 'type', 'size', 'localBlob'],
-    path
-  );
+const parseAttachment = (value: unknown, path: string): FileAttachment => {
+  const attachment = assertObject(value, path, ['name', 'type', 'size', 'localBlob']);
   assertString(attachment.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH);
-  assertString(attachment.type, `${path}.type`, 512);
-  if (attachment.size !== undefined) {
-    assertSafeInteger(
-      attachment.size,
-      `${path}.size`,
-      0,
-      MAX_WORKSPACE_BACKUP_BYTES
-    );
-  }
-  if (attachment.localBlob !== undefined) {
-    const localBlob = parseLocalBlobReference(
-      attachment.localBlob,
-      `${path}.localBlob`
-    );
-    if (
-      attachment.size !== undefined &&
-      attachment.size !== localBlob.byteSize
-    ) {
-      fail(`${path}.size`, 'must match localBlob.byteSize');
-    }
+  assertString(attachment.type, `${path}.type`, MAX_MIME_TYPE_LENGTH);
+  assertOptionalSafeInteger(attachment.size, `${path}.size`, 0, MAX_WORKSPACE_BACKUP_BYTES);
+  const localBlob = parseOptionalLocalBlobReference(attachment.localBlob, `${path}.localBlob`);
+  if (localBlob && attachment.size !== undefined && attachment.size !== localBlob.byteSize) {
+    fail(`${path}.size`, 'must match localBlob.byteSize');
   }
   return value as FileAttachment;
 };
 
-const parseMessage = (
-  value: unknown,
-  path: string,
-  messageIds: Set<string>
-): Message => {
-  const message = assertRecord(value, path);
-  assertOnlyKeys(
-    message,
-    [
-      'id',
-      'role',
-      'content',
-      'outputMessages',
-      'status',
-      'requestId',
-      'openaiResponseId',
-      'thinking',
-      'refusal',
-      'incompleteReason',
-      'thinkingDuration',
-      'usage',
-      'sources',
-      'generatedFiles',
-      'timestamp',
-      'attachments',
-      'model',
-      'modelName',
-      'reasoningEffort',
-      'fileSearchCallCount'
-    ],
-    path
-  );
+const parseOutputMessage = (value: unknown, path: string): void => {
+  const output = assertObject(value, path, ['content', 'phase']);
+  assertString(output.content, `${path}.content`, MAX_MESSAGE_CONTENT_LENGTH);
+  assertOptionalEnum(output.phase, `${path}.phase`, ASSISTANT_PHASES);
+};
+
+const parseMessage = (value: unknown, path: string, messageIds: Set<string>): Message => {
+  const message = assertObject(value, path, [
+    'id',
+    'role',
+    'content',
+    'outputMessages',
+    'status',
+    'requestId',
+    'openaiResponseId',
+    'thinking',
+    'refusal',
+    'incompleteReason',
+    'thinkingDuration',
+    'usage',
+    'sources',
+    'generatedFiles',
+    'timestamp',
+    'attachments',
+    'model',
+    'modelName',
+    'reasoningEffort',
+    'fileSearchCallCount'
+  ]);
 
   const id = assertOptionalLocalId(message.id, `${path}.id`);
   if (id !== undefined) assertUniqueId(messageIds, id, `${path}.id`);
@@ -408,75 +353,20 @@ const parseMessage = (
     if (message.role !== 'assistant') {
       fail(`${path}.outputMessages`, 'is only supported for assistant messages');
     }
-    assertArray(
-      message.outputMessages,
-      `${path}.outputMessages`,
-      MAX_OUTPUT_MESSAGES_PER_MESSAGE
-    ).forEach((value, index) => {
-      const outputPath = `${path}.outputMessages[${index}]`;
-      const output = assertRecord(value, outputPath);
-      assertOnlyKeys(output, ['content', 'phase'], outputPath);
-      assertString(output.content, `${outputPath}.content`, MAX_MESSAGE_CONTENT_LENGTH);
-      if (
-        output.phase !== undefined &&
-        (
-          typeof output.phase !== 'string' ||
-          !ASSISTANT_PHASES.has(output.phase)
-        )
-      ) {
-        fail(`${outputPath}.phase`, 'has an unsupported value');
-      }
-    });
+    assertArray(message.outputMessages, `${path}.outputMessages`, MAX_OUTPUT_MESSAGES_PER_MESSAGE)
+      .forEach((output, index) => parseOutputMessage(output, `${path}.outputMessages[${index}]`));
   }
-  if (
-    message.status !== undefined &&
-    (
-      typeof message.status !== 'string' ||
-      !MESSAGE_STATUSES.has(message.status)
-    )
-  ) {
-    fail(`${path}.status`, 'has an unsupported value');
-  }
+  assertOptionalEnum(message.status, `${path}.status`, MESSAGE_STATUSES);
   assertOptionalLocalId(message.requestId, `${path}.requestId`);
-  assertOptionalString(
-    message.openaiResponseId,
-    `${path}.openaiResponseId`,
-    MAX_API_IDENTIFIER_LENGTH,
-    false
-  );
-  assertOptionalString(
-    message.thinking,
-    `${path}.thinking`,
-    MAX_MESSAGE_CONTENT_LENGTH
-  );
-  assertOptionalString(
-    message.refusal,
-    `${path}.refusal`,
-    MAX_MESSAGE_CONTENT_LENGTH,
-    false
-  );
-  if (
-    message.incompleteReason !== undefined &&
-    (
-      typeof message.incompleteReason !== 'string' ||
-      !INCOMPLETE_REASONS.has(message.incompleteReason)
-    )
-  ) {
-    fail(`${path}.incompleteReason`, 'has an unsupported value');
-  }
-  if (
-    message.incompleteReason !== undefined &&
-    message.status !== 'incomplete'
-  ) {
+  assertOptionalApiId(message.openaiResponseId, `${path}.openaiResponseId`);
+  assertOptionalString(message.thinking, `${path}.thinking`, MAX_MESSAGE_CONTENT_LENGTH);
+  assertOptionalString(message.refusal, `${path}.refusal`, MAX_MESSAGE_CONTENT_LENGTH, false);
+  assertOptionalEnum(message.incompleteReason, `${path}.incompleteReason`, INCOMPLETE_REASONS);
+  if (message.incompleteReason !== undefined && message.status !== 'incomplete') {
     fail(`${path}.incompleteReason`, 'requires an incomplete message status');
   }
   if (message.thinkingDuration !== undefined) {
-    assertFiniteNumber(
-      message.thinkingDuration,
-      `${path}.thinkingDuration`,
-      0,
-      MAX_DURATION_MS
-    );
+    assertFiniteNumber(message.thinkingDuration, `${path}.thinkingDuration`, 0, MAX_DURATION_MS);
   }
   if (message.usage !== undefined) parseUsage(message.usage, `${path}.usage`);
 
@@ -487,167 +377,105 @@ const parseMessage = (
 
   if (message.generatedFiles !== undefined) {
     const generatedFileKeys = new Set<string>();
-    assertArray(
-      message.generatedFiles,
-      `${path}.generatedFiles`,
-      MAX_GENERATED_FILES_PER_MESSAGE
-    ).forEach((file, index) => {
-      const generatedFile = parseGeneratedFile(
-        file,
-        `${path}.generatedFiles[${index}]`
-      );
-      const key = `${generatedFile.containerId}\u0000${generatedFile.fileId}`;
-      assertUniqueId(generatedFileKeys, key, `${path}.generatedFiles[${index}]`);
-    });
+    assertArray(message.generatedFiles, `${path}.generatedFiles`, MAX_GENERATED_FILES_PER_MESSAGE)
+      .forEach((file, index) => {
+        const filePath = `${path}.generatedFiles[${index}]`;
+        const generatedFile = parseGeneratedFile(file, filePath);
+        const key = `${generatedFile.containerId}\u0000${generatedFile.fileId}`;
+        assertUniqueId(generatedFileKeys, key, filePath);
+      });
   }
 
   assertTimestamp(message.timestamp, `${path}.timestamp`);
 
   if (message.attachments !== undefined) {
-    assertArray(
-      message.attachments,
-      `${path}.attachments`,
-      MAX_ATTACHMENTS_PER_MESSAGE
-    ).forEach((attachment, index) => {
-      parseAttachment(attachment, `${path}.attachments[${index}]`);
-    });
+    assertArray(message.attachments, `${path}.attachments`, MAX_ATTACHMENTS_PER_MESSAGE)
+      .forEach((attachment, index) => parseAttachment(attachment, `${path}.attachments[${index}]`));
   }
 
-  assertOptionalString(message.model, `${path}.model`, MAX_API_IDENTIFIER_LENGTH, false);
+  assertOptionalApiId(message.model, `${path}.model`);
   if (message.role === 'assistant') {
-    assertString(
-      message.modelName,
-      `${path}.modelName`,
-      MAX_SHORT_TEXT_LENGTH,
-      false
-    );
+    assertString(message.modelName, `${path}.modelName`, MAX_SHORT_TEXT_LENGTH, false);
   } else if (message.modelName !== undefined) {
     fail(`${path}.modelName`, 'is only supported for assistant messages');
   }
-  assertOptionalString(
-    message.reasoningEffort,
-    `${path}.reasoningEffort`,
-    MAX_IDENTIFIER_LENGTH,
-    false
+  assertOptionalString(message.reasoningEffort, `${path}.reasoningEffort`, MAX_IDENTIFIER_LENGTH, false);
+  assertOptionalSafeInteger(
+    message.fileSearchCallCount,
+    `${path}.fileSearchCallCount`,
+    0,
+    MAX_SOURCES_PER_MESSAGE
   );
-  if (message.fileSearchCallCount !== undefined) {
-    assertSafeInteger(
-      message.fileSearchCallCount,
-      `${path}.fileSearchCallCount`,
-      0,
-      MAX_SOURCES_PER_MESSAGE
-    );
-  }
   return value as Message;
 };
 
+const parseWebSearchOptions = (value: unknown, path: string): void => {
+  const options = assertObject(value, path, ['searchContextSize', 'userLocation']);
+  assertEnum(options.searchContextSize, `${path}.searchContextSize`, WEB_SEARCH_CONTEXT_SIZES);
+  if (options.userLocation === null) return;
+
+  const locationPath = `${path}.userLocation`;
+  const location = assertObject(options.userLocation, locationPath, ['type', 'city', 'region', 'country']);
+  if (location.type !== 'approximate') fail(`${locationPath}.type`, 'must equal "approximate"');
+  assertOptionalString(location.city, `${locationPath}.city`, MAX_IDENTIFIER_LENGTH);
+  assertOptionalString(location.region, `${locationPath}.region`, MAX_IDENTIFIER_LENGTH);
+  const country = assertOptionalString(location.country, `${locationPath}.country`, 2);
+  if (country !== undefined && !/^[A-Za-z]{0,2}$/.test(country)) {
+    fail(`${locationPath}.country`, 'must contain only letters');
+  }
+};
+
 const parseConfig = (value: unknown, path: string): void => {
-  const config = assertRecord(value, path);
-  assertOnlyKeys(
-    config,
-    ['model', 'reasoningEffort', 'textVerbosity', 'tools', 'systemInstructionId'],
-    path
-  );
-  assertOptionalString(
-    config.model,
-    `${path}.model`,
-    MAX_API_IDENTIFIER_LENGTH,
-    false
-  );
-  assertOptionalString(
-    config.reasoningEffort,
-    `${path}.reasoningEffort`,
-    MAX_IDENTIFIER_LENGTH,
-    false
-  );
-  if (
-    config.textVerbosity !== undefined &&
-    (
-      typeof config.textVerbosity !== 'string' ||
-      !TEXT_VERBOSITIES.has(config.textVerbosity)
-    )
-  ) {
-    fail(`${path}.textVerbosity`, 'has an unsupported value');
-  }
+  const config = assertObject(value, path, [
+    'model',
+    'reasoningEffort',
+    'textVerbosity',
+    'tools',
+    'systemInstructionId'
+  ]);
+  assertOptionalApiId(config.model, `${path}.model`);
+  assertOptionalString(config.reasoningEffort, `${path}.reasoningEffort`, MAX_IDENTIFIER_LENGTH, false);
+  assertOptionalEnum(config.textVerbosity, `${path}.textVerbosity`, TEXT_VERBOSITIES);
   if (config.tools !== undefined) {
-    const tools = assertRecord(config.tools, `${path}.tools`);
-    assertOnlyKeys(
-      tools,
-      ['webSearch', 'webSearchOptions', 'codeInterpreter'],
-      `${path}.tools`
-    );
-    if (tools.webSearch !== undefined && typeof tools.webSearch !== 'boolean') {
-      fail(`${path}.tools.webSearch`, 'must be a boolean');
-    }
-    if (
-      tools.codeInterpreter !== undefined &&
-      typeof tools.codeInterpreter !== 'boolean'
-    ) {
-      fail(`${path}.tools.codeInterpreter`, 'must be a boolean');
-    }
+    const toolsPath = `${path}.tools`;
+    const tools = assertObject(config.tools, toolsPath, ['webSearch', 'webSearchOptions', 'codeInterpreter']);
+    assertOptionalBoolean(tools.webSearch, `${toolsPath}.webSearch`);
+    assertOptionalBoolean(tools.codeInterpreter, `${toolsPath}.codeInterpreter`);
     if (tools.webSearchOptions !== undefined) {
-      const options = assertRecord(
-        tools.webSearchOptions,
-        `${path}.tools.webSearchOptions`
-      );
-      assertOnlyKeys(
-        options,
-        ['searchContextSize', 'userLocation'],
-        `${path}.tools.webSearchOptions`
-      );
-      if (
-        typeof options.searchContextSize !== 'string' ||
-        !WEB_SEARCH_CONTEXT_SIZES.has(options.searchContextSize)
-      ) {
-        fail(
-          `${path}.tools.webSearchOptions.searchContextSize`,
-          'has an unsupported value'
-        );
-      }
-      if (options.userLocation !== null) {
-        const location = assertRecord(
-          options.userLocation,
-          `${path}.tools.webSearchOptions.userLocation`
-        );
-        assertOnlyKeys(
-          location,
-          ['type', 'city', 'region', 'country'],
-          `${path}.tools.webSearchOptions.userLocation`
-        );
-        if (location.type !== 'approximate') {
-          fail(
-            `${path}.tools.webSearchOptions.userLocation.type`,
-            'must equal "approximate"'
-          );
-        }
-        assertOptionalString(
-          location.city,
-          `${path}.tools.webSearchOptions.userLocation.city`,
-          MAX_IDENTIFIER_LENGTH
-        );
-        assertOptionalString(
-          location.region,
-          `${path}.tools.webSearchOptions.userLocation.region`,
-          MAX_IDENTIFIER_LENGTH
-        );
-        const country = assertOptionalString(
-          location.country,
-          `${path}.tools.webSearchOptions.userLocation.country`,
-          2
-        );
-        if (country !== undefined && !/^[A-Za-z]{0,2}$/.test(country)) {
-          fail(
-            `${path}.tools.webSearchOptions.userLocation.country`,
-            'must contain only letters'
-          );
-        }
-      }
+      parseWebSearchOptions(tools.webSearchOptions, `${toolsPath}.webSearchOptions`);
     }
   }
-  assertOptionalLocalId(
-    config.systemInstructionId,
-    `${path}.systemInstructionId`
-  );
+  assertOptionalLocalId(config.systemInstructionId, `${path}.systemInstructionId`);
+};
+
+const parsePendingRequest = (
+  value: unknown,
+  path: string,
+  sessionMessages: Message[],
+  pendingRequestIds: Set<string>
+): void => {
+  const pending = assertObject(value, path, ['id', 'userMessageId', 'assistantMessageId', 'createdAt']);
+  const pendingId = assertLocalId(pending.id, `${path}.id`);
+  assertUniqueId(pendingRequestIds, pendingId, `${path}.id`);
+  const userMessageId = assertLocalId(pending.userMessageId, `${path}.userMessageId`);
+  const assistantMessageId = assertOptionalLocalId(pending.assistantMessageId, `${path}.assistantMessageId`);
+  assertTimestamp(pending.createdAt, `${path}.createdAt`);
+
+  const userMessage = sessionMessages.find(message => message.id === userMessageId);
+  if (!userMessage || userMessage.role !== 'user') {
+    fail(`${path}.userMessageId`, 'must reference a user message in the same session');
+  }
+  if ((userMessage as Message).requestId !== pendingId) {
+    fail(`${path}.id`, 'must match the referenced user message requestId');
+  }
+  if (assistantMessageId === undefined) return;
+  const assistantMessage = sessionMessages.find(message => message.id === assistantMessageId);
+  if (assistantMessage && assistantMessage.role !== 'assistant') {
+    fail(`${path}.assistantMessageId`, 'must reference an assistant message in the same session');
+  }
+  if (assistantMessage && assistantMessage.requestId !== pendingId) {
+    fail(`${path}.id`, 'must match the referenced assistant message requestId');
+  }
 };
 
 export const parseStoredSessions = (value: unknown): Session[] => {
@@ -658,12 +486,15 @@ export const parseStoredSessions = (value: unknown): Session[] => {
 
   sessions.forEach((sessionValue, sessionIndex) => {
     const path = `sessions[${sessionIndex}]`;
-    const session = assertRecord(sessionValue, path);
-    assertOnlyKeys(
-      session,
-      ['id', 'title', 'messages', 'config', 'lastModified', 'pendingRequest', 'projectId'],
-      path
-    );
+    const session = assertObject(sessionValue, path, [
+      'id',
+      'title',
+      'messages',
+      'config',
+      'lastModified',
+      'pendingRequest',
+      'projectId'
+    ]);
     const sessionId = assertLocalId(session.id, `${path}.id`);
     assertUniqueId(sessionIds, sessionId, `${path}.id`);
     assertString(session.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
@@ -671,63 +502,11 @@ export const parseStoredSessions = (value: unknown): Session[] => {
     assertTimestamp(session.lastModified, `${path}.lastModified`);
     assertOptionalLocalId(session.projectId, `${path}.projectId`);
 
-    const messages = assertArray(
-      session.messages,
-      `${path}.messages`,
-      MAX_MESSAGES_PER_SESSION
-    );
-    const sessionMessages = messages.map((message, messageIndex) => (
-      parseMessage(
-        message,
-        `${path}.messages[${messageIndex}]`,
-        messageIds
-      )
-    ));
+    const sessionMessages = assertArray(session.messages, `${path}.messages`, MAX_MESSAGES_PER_SESSION)
+      .map((message, messageIndex) => parseMessage(message, `${path}.messages[${messageIndex}]`, messageIds));
 
     if (session.pendingRequest !== undefined) {
-      const pendingPath = `${path}.pendingRequest`;
-      const pending = assertRecord(session.pendingRequest, pendingPath);
-      assertOnlyKeys(
-        pending,
-        ['id', 'userMessageId', 'assistantMessageId', 'createdAt'],
-        pendingPath
-      );
-      const pendingId = assertLocalId(pending.id, `${pendingPath}.id`);
-      assertUniqueId(pendingRequestIds, pendingId, `${pendingPath}.id`);
-      const userMessageId = assertLocalId(
-        pending.userMessageId,
-        `${pendingPath}.userMessageId`
-      );
-      const assistantMessageId = assertOptionalLocalId(
-        pending.assistantMessageId,
-        `${pendingPath}.assistantMessageId`
-      );
-      assertTimestamp(pending.createdAt, `${pendingPath}.createdAt`);
-
-      const userMessage = sessionMessages.find(message => message.id === userMessageId);
-      if (!userMessage || userMessage.role !== 'user') {
-        fail(`${pendingPath}.userMessageId`, 'must reference a user message in the same session');
-      }
-      if ((userMessage as Message).requestId !== pendingId) {
-        fail(`${pendingPath}.id`, 'must match the referenced user message requestId');
-      }
-      if (assistantMessageId !== undefined) {
-        const assistantMessage = sessionMessages.find(
-          message => message.id === assistantMessageId
-        );
-        if (assistantMessage && assistantMessage.role !== 'assistant') {
-          fail(
-            `${pendingPath}.assistantMessageId`,
-            'must reference an assistant message in the same session'
-          );
-        }
-        if (assistantMessage && assistantMessage.requestId !== pendingId) {
-          fail(
-            `${pendingPath}.id`,
-            'must match the referenced assistant message requestId'
-          );
-        }
-      }
+      parsePendingRequest(session.pendingRequest, `${path}.pendingRequest`, sessionMessages, pendingRequestIds);
     }
   });
 
@@ -748,18 +527,14 @@ export const parseAppSettings = (
   value: unknown,
   options: { backup?: boolean } = {}
 ): AppSettings | BackupSettings => {
-  const settings = assertRecord(value, 'settings');
-  assertOnlyKeys(settings, ['theme', 'apiKey', 'lastActiveSessionId'], 'settings');
+  const settings = assertObject(value, 'settings', ['theme', 'apiKey', 'lastActiveSessionId']);
   if (settings.theme !== 'dark' && settings.theme !== 'light') {
     fail('settings.theme', 'must be "dark" or "light"');
   }
   if (!options.backup || settings.apiKey !== undefined) {
     assertString(settings.apiKey, 'settings.apiKey', 64 * 1024);
   }
-  assertOptionalLocalId(
-    settings.lastActiveSessionId,
-    'settings.lastActiveSessionId'
-  );
+  assertOptionalLocalId(settings.lastActiveSessionId, 'settings.lastActiveSessionId');
   return value as AppSettings | BackupSettings;
 };
 
@@ -769,25 +544,17 @@ export const parseSystemInstructions = (value: unknown): SystemInstruction[] => 
 
   instructions.forEach((instructionValue, index) => {
     const path = `instructions[${index}]`;
-    const instruction = assertRecord(instructionValue, path);
-    assertOnlyKeys(instruction, ['id', 'title', 'content'], path);
+    const instruction = assertObject(instructionValue, path, ['id', 'title', 'content']);
     const id = assertLocalId(instruction.id, `${path}.id`);
     assertUniqueId(ids, id, `${path}.id`);
     assertString(instruction.title, `${path}.title`, MAX_SHORT_TEXT_LENGTH);
-    assertString(
-      instruction.content,
-      `${path}.content`,
-      MAX_INSTRUCTION_CONTENT_LENGTH
-    );
+    assertString(instruction.content, `${path}.content`, MAX_INSTRUCTION_CONTENT_LENGTH);
   });
 
   return value as SystemInstruction[];
 };
 
-const parseProjectDefaultConfig = (
-  value: unknown,
-  path: string
-): Project['defaultConfig'] => {
+const parseProjectDefaultConfig = (value: unknown, path: string): Project['defaultConfig'] => {
   const config = assertRecord(value, path);
   if (config.systemInstructionId !== undefined) {
     fail(`${path}.systemInstructionId`, 'is not supported for project defaults');
@@ -796,37 +563,24 @@ const parseProjectDefaultConfig = (
   return normalizeProjectDefaultConfig(config);
 };
 
-const parseProjectSource = (
-  value: unknown,
-  path: string,
-  sourceIds: Set<string>
-): ProjectSource => {
-  const source = assertRecord(value, path);
-  assertOnlyKeys(
-    source,
-    ['id', 'name', 'mimeType', 'byteSize', 'localBlob', 'capability', 'addedAt'],
-    path
-  );
+const parseProjectSource = (value: unknown, path: string, sourceIds: Set<string>): ProjectSource => {
+  const source = assertObject(value, path, [
+    'id',
+    'name',
+    'mimeType',
+    'byteSize',
+    'localBlob',
+    'capability',
+    'addedAt'
+  ]);
   const id = assertLocalId(source.id, `${path}.id`);
   assertUniqueId(sourceIds, id, `${path}.id`);
   assertString(source.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH, false);
-  assertString(source.mimeType, `${path}.mimeType`, 512, false);
-  const byteSize = assertSafeInteger(
-    source.byteSize,
-    `${path}.byteSize`,
-    0,
-    MAX_ATTACHMENT_BYTES - 1
-  );
+  assertString(source.mimeType, `${path}.mimeType`, MAX_MIME_TYPE_LENGTH, false);
+  const byteSize = assertSafeInteger(source.byteSize, `${path}.byteSize`, 0, MAX_ATTACHMENT_BYTES - 1);
   const localBlob = parseLocalBlobReference(source.localBlob, `${path}.localBlob`);
-  if (localBlob.byteSize !== byteSize) {
-    fail(`${path}.byteSize`, 'must match localBlob.byteSize');
-  }
-  if (
-    typeof source.capability !== 'string' ||
-    !PROJECT_SOURCE_CAPABILITIES.has(source.capability)
-  ) {
-    fail(`${path}.capability`, 'has an unsupported value');
-  }
+  if (localBlob.byteSize !== byteSize) fail(`${path}.byteSize`, 'must match localBlob.byteSize');
+  assertEnum(source.capability, `${path}.capability`, PROJECT_SOURCE_CAPABILITIES);
   assertTimestamp(source.addedAt, `${path}.addedAt`);
   return value as ProjectSource;
 };
@@ -838,152 +592,133 @@ export const parseProjects = (value: unknown): Project[] => {
 
   return values.map((projectValue, index): Project => {
     const path = `projects[${index}]`;
-    const project = assertRecord(projectValue, path);
-    assertOnlyKeys(
-      project,
-      [
-        'id',
-        'name',
-        'icon',
-        'instructions',
-        'defaultConfig',
-        'sources',
-        'createdAt',
-        'updatedAt'
-      ],
-      path
-    );
+    const project = assertObject(projectValue, path, [
+      'id',
+      'name',
+      'icon',
+      'instructions',
+      'defaultConfig',
+      'sources',
+      'createdAt',
+      'updatedAt'
+    ]);
     const id = assertLocalId(project.id, `${path}.id`);
     assertUniqueId(projectIds, id, `${path}.id`);
     const name = assertString(project.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH, false);
-    if (typeof project.icon !== 'string' || !PROJECT_ICONS.has(project.icon)) {
-      fail(`${path}.icon`, 'has an unsupported value');
-    }
-    const instructions = assertString(
-      project.instructions,
-      `${path}.instructions`,
-      MAX_INSTRUCTION_CONTENT_LENGTH
-    );
-    const defaultConfig = parseProjectDefaultConfig(
-      project.defaultConfig,
-      `${path}.defaultConfig`
-    );
-    const sources = assertArray(
-      project.sources,
-      `${path}.sources`,
-      MAX_PROJECT_SOURCES
-    ).map((source, sourceIndex) => parseProjectSource(
-      source,
-      `${path}.sources[${sourceIndex}]`,
-      sourceIds
-    ));
+    const icon = assertEnum(project.icon, `${path}.icon`, PROJECT_ICONS) as Project['icon'];
+    const instructions = assertString(project.instructions, `${path}.instructions`, MAX_INSTRUCTION_CONTENT_LENGTH);
+    const defaultConfig = parseProjectDefaultConfig(project.defaultConfig, `${path}.defaultConfig`);
+    const sources = assertArray(project.sources, `${path}.sources`, MAX_PROJECT_SOURCES)
+      .map((source, sourceIndex) => parseProjectSource(source, `${path}.sources[${sourceIndex}]`, sourceIds));
     const createdAt = assertTimestamp(project.createdAt, `${path}.createdAt`);
     const updatedAt = assertTimestamp(project.updatedAt, `${path}.updatedAt`);
-    if (updatedAt < createdAt) {
-      fail(`${path}.updatedAt`, 'must not be earlier than createdAt');
-    }
-    return {
-      id,
-      name,
-      icon: project.icon as Project['icon'],
-      instructions,
-      defaultConfig,
-      sources,
-      createdAt,
-      updatedAt
-    };
+    if (updatedAt < createdAt) fail(`${path}.updatedAt`, 'must not be earlier than createdAt');
+    return { id, name, icon, instructions, defaultConfig, sources, createdAt, updatedAt };
   });
 };
 
-export const parseProjectRemoteState = (
+type ProjectRemoteIndex = ProjectRemoteState['indexes'][string];
+type ProjectRemoteFile = ProjectRemoteIndex['files'][string];
+
+const parseProjectRemoteFile = (
   value: unknown,
-  projects?: Project[]
-): ProjectRemoteState => {
-  const state = assertRecord(value, 'projectRemoteState');
-  assertOnlyKeys(state, ['indexes', 'cleanupTombstones'], 'projectRemoteState');
+  path: string,
+  sourceId: string,
+  projectSourceIds: Set<string> | null
+): ProjectRemoteFile => {
+  const file = assertObject(value, path, [
+    'projectSourceId',
+    'openaiFileId',
+    'status',
+    'indexedUsageBytes',
+    'lastError'
+  ]);
+  if (file.projectSourceId !== sourceId) fail(`${path}.projectSourceId`, 'must match its registry key');
+  if (projectSourceIds && !projectSourceIds.has(sourceId)) {
+    fail(`${path}.projectSourceId`, 'must reference a source in the same project');
+  }
+  assertOptionalApiId(file.openaiFileId, `${path}.openaiFileId`);
+  assertEnum(file.status, `${path}.status`, PROJECT_REMOTE_FILE_STATUSES);
+  assertOptionalSafeInteger(file.indexedUsageBytes, `${path}.indexedUsageBytes`, 0, Number.MAX_SAFE_INTEGER);
+  assertOptionalString(file.lastError, `${path}.lastError`, MAX_SHORT_TEXT_LENGTH);
+  return file as unknown as ProjectRemoteFile;
+};
+
+// `project` is undefined when no project list was supplied (cross-checks
+// skipped) and null when the list was supplied but lacks this project.
+const parseProjectRemoteIndex = (
+  value: unknown,
+  path: string,
+  projectId: string,
+  project: Project | null | undefined
+): ProjectRemoteIndex => {
+  const index = assertObject(value, path, [
+    'projectId',
+    'apiKeyFingerprint',
+    'vectorStoreId',
+    'status',
+    'usageBytes',
+    'files',
+    'lastVerifiedAt'
+  ]);
+  if (index.projectId !== projectId) fail(`${path}.projectId`, 'must match its registry key');
+  if (project === null) fail(`${path}.projectId`, 'must reference an existing project');
+  assertSha256(index.apiKeyFingerprint, `${path}.apiKeyFingerprint`);
+  assertOptionalApiId(index.vectorStoreId, `${path}.vectorStoreId`);
+  assertEnum(index.status, `${path}.status`, PROJECT_REMOTE_STATUSES);
+  assertSafeInteger(index.usageBytes, `${path}.usageBytes`, 0, Number.MAX_SAFE_INTEGER);
+  assertOptionalTimestamp(index.lastVerifiedAt, `${path}.lastVerifiedAt`);
+  const files = assertRecord(index.files, `${path}.files`);
+  const projectSourceIds = project ? new Set(project.sources.map(source => source.id)) : null;
+  const parsedFiles: ProjectRemoteIndex['files'] = {};
+  Object.entries(files).forEach(([sourceId, fileValue]) => {
+    const filePath = `${path}.files.${sourceId}`;
+    assertLocalId(sourceId, filePath);
+    parsedFiles[sourceId] = parseProjectRemoteFile(fileValue, filePath, sourceId, projectSourceIds);
+  });
+  return { ...index, files: parsedFiles } as ProjectRemoteIndex;
+};
+
+const parseCleanupTombstone = (
+  value: unknown,
+  path: string,
+  tombstoneIds: Set<string>
+): ProjectRemoteState['cleanupTombstones'][number] => {
+  const tombstone = assertObject(value, path, [
+    'id',
+    'projectId',
+    'projectSourceId',
+    'apiKeyFingerprint',
+    'openaiFileIds',
+    'vectorStoreId',
+    'createdAt',
+    'lastError'
+  ]);
+  const id = assertLocalId(tombstone.id, `${path}.id`);
+  assertUniqueId(tombstoneIds, id, `${path}.id`);
+  assertOptionalLocalId(tombstone.projectId, `${path}.projectId`);
+  assertOptionalLocalId(tombstone.projectSourceId, `${path}.projectSourceId`);
+  assertSha256(tombstone.apiKeyFingerprint, `${path}.apiKeyFingerprint`);
+  const fileIds = assertArray(tombstone.openaiFileIds, `${path}.openaiFileIds`, MAX_PROJECT_SOURCES)
+    .map((fileId, fileIndex) => assertApiId(fileId, `${path}.openaiFileIds[${fileIndex}]`));
+  if (new Set(fileIds).size !== fileIds.length) fail(`${path}.openaiFileIds`, 'must not contain duplicates');
+  assertOptionalApiId(tombstone.vectorStoreId, `${path}.vectorStoreId`);
+  assertTimestamp(tombstone.createdAt, `${path}.createdAt`);
+  assertOptionalString(tombstone.lastError, `${path}.lastError`, MAX_SHORT_TEXT_LENGTH);
+  return tombstone as unknown as ProjectRemoteState['cleanupTombstones'][number];
+};
+
+export const parseProjectRemoteState = (value: unknown, projects?: Project[]): ProjectRemoteState => {
+  const state = assertObject(value, 'projectRemoteState', ['indexes', 'cleanupTombstones']);
   const indexes = assertRecord(state.indexes, 'projectRemoteState.indexes');
   const projectsById = new Map((projects || []).map(project => [project.id, project]));
   const parsedIndexes: ProjectRemoteState['indexes'] = {};
 
   Object.entries(indexes).forEach(([projectId, indexValue]) => {
-    assertLocalId(projectId, `projectRemoteState.indexes.${projectId}`);
     const path = `projectRemoteState.indexes.${projectId}`;
-    const index = assertRecord(indexValue, path);
-    assertOnlyKeys(
-      index,
-      [
-        'projectId',
-        'apiKeyFingerprint',
-        'vectorStoreId',
-        'status',
-        'usageBytes',
-        'files',
-        'lastVerifiedAt'
-      ],
-      path
-    );
-    if (index.projectId !== projectId) {
-      fail(`${path}.projectId`, 'must match its registry key');
-    }
-    if (projects !== undefined && !projectsById.has(projectId)) {
-      fail(`${path}.projectId`, 'must reference an existing project');
-    }
-    if (
-      typeof index.apiKeyFingerprint !== 'string' ||
-      !SHA256_PATTERN.test(index.apiKeyFingerprint)
-    ) {
-      fail(`${path}.apiKeyFingerprint`, 'must be a lowercase SHA-256 digest');
-    }
-    assertOptionalString(index.vectorStoreId, `${path}.vectorStoreId`, MAX_API_IDENTIFIER_LENGTH, false);
-    if (typeof index.status !== 'string' || !PROJECT_REMOTE_STATUSES.has(index.status)) {
-      fail(`${path}.status`, 'has an unsupported value');
-    }
-    assertSafeInteger(index.usageBytes, `${path}.usageBytes`, 0, Number.MAX_SAFE_INTEGER);
-    if (index.lastVerifiedAt !== undefined) {
-      assertTimestamp(index.lastVerifiedAt, `${path}.lastVerifiedAt`);
-    }
-    const files = assertRecord(index.files, `${path}.files`);
-    const projectSourceIds = new Set(
-      projectsById.get(projectId)?.sources.map(source => source.id) || []
-    );
-    const parsedFiles: ProjectRemoteState['indexes'][string]['files'] = {};
-    Object.entries(files).forEach(([sourceId, fileValue]) => {
-      assertLocalId(sourceId, `${path}.files.${sourceId}`);
-      const filePath = `${path}.files.${sourceId}`;
-      const file = assertRecord(fileValue, filePath);
-      assertOnlyKeys(
-        file,
-        ['projectSourceId', 'openaiFileId', 'status', 'indexedUsageBytes', 'lastError'],
-        filePath
-      );
-      if (file.projectSourceId !== sourceId) {
-        fail(`${filePath}.projectSourceId`, 'must match its registry key');
-      }
-      if (projects !== undefined && !projectSourceIds.has(sourceId)) {
-        fail(`${filePath}.projectSourceId`, 'must reference a source in the same project');
-      }
-      assertOptionalString(file.openaiFileId, `${filePath}.openaiFileId`, MAX_API_IDENTIFIER_LENGTH, false);
-      if (
-        typeof file.status !== 'string' ||
-        !PROJECT_REMOTE_FILE_STATUSES.has(file.status)
-      ) {
-        fail(`${filePath}.status`, 'has an unsupported value');
-      }
-      if (file.indexedUsageBytes !== undefined) {
-        assertSafeInteger(
-          file.indexedUsageBytes,
-          `${filePath}.indexedUsageBytes`,
-          0,
-          Number.MAX_SAFE_INTEGER
-        );
-      }
-      assertOptionalString(file.lastError, `${filePath}.lastError`, MAX_SHORT_TEXT_LENGTH);
-      parsedFiles[sourceId] = file as unknown as ProjectRemoteState['indexes'][string]['files'][string];
-    });
-    parsedIndexes[projectId] = {
-      ...index,
-      files: parsedFiles
-    } as ProjectRemoteState['indexes'][string];
+    assertLocalId(projectId, path);
+    const project = projects === undefined ? undefined : projectsById.get(projectId) || null;
+    parsedIndexes[projectId] = parseProjectRemoteIndex(indexValue, path, projectId, project);
   });
 
   const tombstoneIds = new Set<string>();
@@ -991,51 +726,9 @@ export const parseProjectRemoteState = (
     state.cleanupTombstones,
     'projectRemoteState.cleanupTombstones',
     MAX_PROJECTS * (MAX_PROJECT_SOURCES + 1)
-  ).map((tombstoneValue, index) => {
-    const path = `projectRemoteState.cleanupTombstones[${index}]`;
-    const tombstone = assertRecord(tombstoneValue, path);
-    assertOnlyKeys(
-      tombstone,
-      [
-        'id',
-        'projectId',
-        'projectSourceId',
-        'apiKeyFingerprint',
-        'openaiFileIds',
-        'vectorStoreId',
-        'createdAt',
-        'lastError'
-      ],
-      path
-    );
-    const id = assertLocalId(tombstone.id, `${path}.id`);
-    assertUniqueId(tombstoneIds, id, `${path}.id`);
-    assertOptionalLocalId(tombstone.projectId, `${path}.projectId`);
-    assertOptionalLocalId(tombstone.projectSourceId, `${path}.projectSourceId`);
-    if (
-      typeof tombstone.apiKeyFingerprint !== 'string' ||
-      !SHA256_PATTERN.test(tombstone.apiKeyFingerprint)
-    ) {
-      fail(`${path}.apiKeyFingerprint`, 'must be a lowercase SHA-256 digest');
-    }
-    const fileIds = assertArray(
-      tombstone.openaiFileIds,
-      `${path}.openaiFileIds`,
-      MAX_PROJECT_SOURCES
-    ).map((fileId, fileIndex) => assertString(
-      fileId,
-      `${path}.openaiFileIds[${fileIndex}]`,
-      MAX_API_IDENTIFIER_LENGTH,
-      false
-    ));
-    if (new Set(fileIds).size !== fileIds.length) {
-      fail(`${path}.openaiFileIds`, 'must not contain duplicates');
-    }
-    assertOptionalString(tombstone.vectorStoreId, `${path}.vectorStoreId`, MAX_API_IDENTIFIER_LENGTH, false);
-    assertTimestamp(tombstone.createdAt, `${path}.createdAt`);
-    assertOptionalString(tombstone.lastError, `${path}.lastError`, MAX_SHORT_TEXT_LENGTH);
-    return tombstone as unknown as ProjectRemoteState['cleanupTombstones'][number];
-  });
+  ).map((tombstone, index) => (
+    parseCleanupTombstone(tombstone, `projectRemoteState.cleanupTombstones[${index}]`, tombstoneIds)
+  ));
 
   return { indexes: parsedIndexes, cleanupTombstones };
 };
@@ -1059,20 +752,14 @@ export const validateWorkspaceReferences = ({
     settings?.lastActiveSessionId !== undefined &&
     !sessionIds.has(settings.lastActiveSessionId)
   ) {
-    fail(
-      'settings.lastActiveSessionId',
-      'must reference a session in the same workspace'
-    );
+    fail('settings.lastActiveSessionId', 'must reference a session in the same workspace');
   }
 
   if (projects !== undefined) {
     const projectIds = new Set(projects.map(project => project.id));
     sessions.forEach((session, index) => {
       if (session.projectId !== undefined && !projectIds.has(session.projectId)) {
-        fail(
-          `sessions[${index}].projectId`,
-          'must reference a project in the same workspace'
-        );
+        fail(`sessions[${index}].projectId`, 'must reference a project in the same workspace');
       }
     });
   }

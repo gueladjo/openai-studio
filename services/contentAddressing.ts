@@ -14,6 +14,22 @@ export const encodeUtf8 = (text: string): Uint8Array => encoder.encode(text);
 
 export const sha256Text = (text: string): string => sha256Bytes(encodeUtf8(text));
 
+// Serializes with sorted object keys so identical content hashes identically
+// regardless of property order; `omitKeys` drops transient runtime fields.
+export const serializeCanonicalJson = (
+  value: unknown,
+  omitKeys: readonly string[] = []
+): string => JSON.stringify(value, (_key, nestedValue) => {
+  if (typeof nestedValue !== 'object' || nestedValue === null || Array.isArray(nestedValue)) {
+    return nestedValue;
+  }
+  return Object.fromEntries(
+    Object.entries(nestedValue as Record<string, unknown>)
+      .filter(([key]) => !omitKeys.includes(key))
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+});
+
 // Small blobs hash much faster with the native one-shot digest; large inputs
 // keep the streaming path to avoid holding a full copy in memory.
 const SUBTLE_DIGEST_MAX_BYTES = 64 * 1024 * 1024;

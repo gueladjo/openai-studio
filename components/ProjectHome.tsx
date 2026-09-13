@@ -22,7 +22,7 @@ import {
   registerFileDialogFocusRecovery,
   restoreFocusAfterFileDialog
 } from '../utils/focusRecovery';
-import { MAX_INDEXED_USAGE_BYTES } from '../utils/projectSources';
+import { MAX_INDEXED_USAGE_BYTES, MAX_PROJECT_SOURCES } from '../utils/projectSources';
 import { ConfigPanel } from './ConfigPanel';
 import { PROJECT_ICON_OPTIONS, ProjectIconGlyph } from './ProjectIcon';
 
@@ -161,12 +161,12 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Files / Sources</h2>
-                <p className="mt-1 text-xs text-gray-500">{project.sources.length} of 40 sources</p>
+                <p className="mt-1 text-xs text-gray-500">{project.sources.length} of {MAX_PROJECT_SOURCES} sources</p>
               </div>
               <button
                 type="button"
                 onClick={() => sourceInputRef.current?.click()}
-                disabled={readOnly || sourceWorkBusy || project.sources.length >= 40}
+                disabled={readOnly || sourceWorkBusy || project.sources.length >= MAX_PROJECT_SOURCES}
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
               >
                 <Upload size={14} />

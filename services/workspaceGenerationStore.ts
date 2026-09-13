@@ -17,6 +17,7 @@ import {
 } from '../types';
 import {
   encodeUtf8,
+  serializeCanonicalJson,
   sha256Blob,
   sha256Bytes,
   sha256Text
@@ -77,23 +78,6 @@ const removePins = (target: Map<string, number>, hashes: Iterable<string>): void
     else target.delete(hash);
   }
 };
-
-const serializeJson = (value: unknown): string => JSON.stringify(
-  value,
-  (_key, nestedValue) => {
-    if (
-      typeof nestedValue !== 'object' ||
-      nestedValue === null ||
-      Array.isArray(nestedValue)
-    ) {
-      return nestedValue;
-    }
-    return Object.fromEntries(
-      Object.entries(nestedValue as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-    );
-  }
-);
 
 const createObjectReference = (text: string): ContentObjectReference => ({
   sha256: sha256Text(text),
@@ -232,7 +216,7 @@ export class WorkspaceGenerationStore {
       reference: SessionObjectReference;
       text: string;
     }> = data.sessions.map(session => {
-      const text = serializeJson(session);
+      const text = serializeCanonicalJson(session);
       return {
         reference: {
           id: session.id,
@@ -241,10 +225,10 @@ export class WorkspaceGenerationStore {
         text
       };
     });
-    const settingsText = serializeJson(data.settings);
-    const instructionsText = serializeJson(data.instructions);
-    const projectsText = serializeJson(data.projects);
-    const projectRemoteStateText = serializeJson(data.projectRemoteState);
+    const settingsText = serializeCanonicalJson(data.settings);
+    const instructionsText = serializeCanonicalJson(data.instructions);
+    const projectsText = serializeCanonicalJson(data.projects);
+    const projectRemoteStateText = serializeCanonicalJson(data.projectRemoteState);
     const settings = createObjectReference(settingsText);
     const instructions = createObjectReference(instructionsText);
     const projects = createObjectReference(projectsText);
@@ -300,7 +284,7 @@ export class WorkspaceGenerationStore {
     const nextSlot = current?.slot === WORKSPACE_MANIFEST_SLOTS[0]
       ? WORKSPACE_MANIFEST_SLOTS[1]
       : WORKSPACE_MANIFEST_SLOTS[0];
-    const manifestText = serializeJson(manifest);
+    const manifestText = serializeCanonicalJson(manifest);
     await this.adapter.writeText(nextSlot, manifestText);
     const storedManifestText = await this.adapter.readText(nextSlot);
     if (storedManifestText !== manifestText) {
