@@ -92,6 +92,12 @@ describe('WorkspaceCoordinator', () => {
     vi.unstubAllGlobals();
   });
 
+  it('fails to load without the Web Locks API instead of writing unguarded', async () => {
+    vi.stubGlobal('navigator', {});
+
+    await expect(WorkspaceCoordinator.create()).rejects.toThrow('Web Locks API');
+  });
+
   it('allows only one writer and promotes a reader after release', async () => {
     const first = await WorkspaceCoordinator.create();
     const second = await WorkspaceCoordinator.create();

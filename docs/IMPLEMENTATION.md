@@ -361,11 +361,11 @@ explicitly.
 
 Pending data is flushed when the page becomes hidden, on `pagehide`, and on
 `beforeunload`. The coordinator retains writer ownership through these
-checkpoints instead of demoting the tab before App can flush. Explicit disposal
-releases ownership; document destruction releases Web Locks, and browsers using
-the fallback lease may take up to ten seconds to promote another tab. Browser
-termination cannot guarantee completion of asynchronous writes, so visibility
-checkpoints and ongoing autosaves remain necessary.
+checkpoints instead of demoting the tab before App can flush. Ownership is an
+exclusive Web Lock, which is required outside Electron; explicit disposal or
+document destruction releases it. Browser termination cannot guarantee
+completion of asynchronous writes, so visibility checkpoints and ongoing
+autosaves remain necessary.
 Electron's close handshake blocks new mutations, stops and checkpoints active
 responses, and pauses admission to the project-operation owner. It waits for
 every already-owned task to settle, including uploads, indexing, cleanup, and

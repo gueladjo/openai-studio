@@ -7,21 +7,13 @@ type WorkspaceSyncMessage =
       revision: number;
     }
   | {
-      type: 'writer-released' | 'writer-claimed';
+      type: 'writer-released';
       senderId: string;
     };
 
 const WORKSPACE_LOCK_NAME = 'openai-studio-workspace-writer';
 const WORKSPACE_CHANNEL_NAME = 'openai-studio-workspace-sync';
-const WORKSPACE_LEASE_KEY = 'openai-studio-workspace-writer-lease';
-const LEASE_DURATION_MS = 10_000;
-const LEASE_MAINTENANCE_MS = 2_000;
-const LEASE_SETTLE_MS = 50;
-
-interface WorkspaceLease {
-  ownerId: string;
-  expiresAt: number;
-}
+const ACQUISITION_RETRY_MS = 2_000;
 
 const isElectronDesktop = (): boolean => Boolean(window.electronAPI);
 
@@ -29,27 +21,6 @@ const getWebLockManager = (): LockManager | null => {
   const browserNavigator = navigator as unknown as { locks?: LockManager };
   return browserNavigator.locks ?? null;
 };
-
-const parseLease = (value: string | null): WorkspaceLease | null => {
-  if (!value) return null;
-
-  try {
-    const lease = JSON.parse(value) as Partial<WorkspaceLease>;
-    if (typeof lease.ownerId !== 'string' || typeof lease.expiresAt !== 'number') {
-      return null;
-    }
-    return {
-      ownerId: lease.ownerId,
-      expiresAt: lease.expiresAt
-    };
-  } catch {
-    return null;
-  }
-};
-
-const delay = (ms: number): Promise<void> => new Promise(resolve => {
-  window.setTimeout(resolve, ms);
-});
 
 export class WorkspaceCoordinator {
   private readonly ownerId = crypto.randomUUID();
@@ -59,9 +30,8 @@ export class WorkspaceCoordinator {
   private role: WorkspaceRole = 'reader';
   private disposed = false;
   private acquisitionInFlight = false;
-  private usingWebLock = false;
   private releaseWebLock: (() => void) | null = null;
-  private maintenanceTimer: number | null = null;
+  private retryTimer: number | null = null;
 
   private constructor() {}
 
@@ -99,104 +69,13 @@ export class WorkspaceCoordinator {
     });
   }
 
+  // Requests the exclusive writer lock without waiting. Document destruction
+  // releases a held lock, so App can checkpoint on unload while still owning it.
   async attemptToBecomeWriter(): Promise<boolean> {
     if (this.disposed || this.canWrite || this.acquisitionInFlight) {
       return this.canWrite;
     }
 
-    if (getWebLockManager()) {
-      return this.attemptWebLock();
-    }
-
-    return this.attemptLease();
-  }
-
-  relinquishWriter(): void {
-    if (!this.canWrite) return;
-
-    if (this.usingWebLock) {
-      const release = this.releaseWebLock;
-      this.releaseWebLock = null;
-      this.usingWebLock = false;
-      release?.();
-    } else {
-      this.removeOwnedLease();
-    }
-
-    this.setRole('reader');
-    this.postMessage({
-      type: 'writer-released',
-      senderId: this.ownerId
-    });
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-
-    this.relinquishWriter();
-    this.disposed = true;
-
-    if (this.maintenanceTimer !== null) {
-      window.clearInterval(this.maintenanceTimer);
-      this.maintenanceTimer = null;
-    }
-
-    window.removeEventListener('storage', this.handleStorage);
-    window.removeEventListener('focus', this.handleFocus);
-    this.channel?.close();
-    this.channel = null;
-    this.roleListeners.clear();
-    this.updateListeners.clear();
-  }
-
-  private async initialize(): Promise<void> {
-    if (isElectronDesktop()) {
-      this.setRole('writer');
-      return;
-    }
-
-    if (typeof BroadcastChannel !== 'undefined') {
-      this.channel = new BroadcastChannel(WORKSPACE_CHANNEL_NAME);
-      this.channel.addEventListener('message', this.handleChannelMessage);
-    }
-
-    window.addEventListener('storage', this.handleStorage);
-    window.addEventListener('focus', this.handleFocus);
-    // Keep ownership while App checkpoints on unload. Document destruction
-    // releases Web Locks; the fallback lease expires if disposal cannot run.
-
-    await this.attemptToBecomeWriter();
-
-    this.maintenanceTimer = window.setInterval(() => {
-      if (this.disposed) return;
-
-      if (getWebLockManager()) {
-        if (!this.canWrite) void this.attemptToBecomeWriter();
-        return;
-      }
-
-      if (this.canWrite) {
-        this.renewLease();
-      } else {
-        void this.attemptToBecomeWriter();
-      }
-    }, LEASE_MAINTENANCE_MS);
-  }
-
-  private setRole(role: WorkspaceRole): void {
-    if (this.role === role) return;
-    this.role = role;
-    this.roleListeners.forEach(listener => listener(role));
-
-    if (role === 'writer') {
-      this.postMessage({
-        type: 'writer-claimed',
-        senderId: this.ownerId
-      });
-    }
-  }
-
-  private async attemptWebLock(): Promise<boolean> {
     const lockManager = getWebLockManager();
     if (!lockManager) return false;
 
@@ -216,7 +95,6 @@ export class WorkspaceCoordinator {
 
         if (!acquired) return;
 
-        this.usingWebLock = true;
         this.setRole('writer');
         await new Promise<void>(resolve => {
           this.releaseWebLock = resolve;
@@ -235,67 +113,68 @@ export class WorkspaceCoordinator {
     return acquired;
   }
 
-  private async attemptLease(): Promise<boolean> {
-    this.acquisitionInFlight = true;
+  relinquishWriter(): void {
+    if (!this.canWrite) return;
 
-    try {
-      const now = Date.now();
-      const currentLease = this.readLease();
-      if (
-        currentLease &&
-        currentLease.ownerId !== this.ownerId &&
-        currentLease.expiresAt > now
-      ) {
-        return false;
-      }
+    const release = this.releaseWebLock;
+    this.releaseWebLock = null;
+    release?.();
 
-      this.writeLease({
-        ownerId: this.ownerId,
-        expiresAt: now + LEASE_DURATION_MS
-      });
-      await delay(LEASE_SETTLE_MS);
-
-      const claimedLease = this.readLease();
-      const acquired = claimedLease?.ownerId === this.ownerId;
-      if (acquired) this.setRole('writer');
-      return acquired;
-    } catch (error) {
-      console.warn('Workspace writer lease is unavailable.', error);
-      return false;
-    } finally {
-      this.acquisitionInFlight = false;
-    }
-  }
-
-  private renewLease(): void {
-    const lease = this.readLease();
-    if (lease?.ownerId !== this.ownerId) {
-      this.setRole('reader');
-      return;
-    }
-
-    this.writeLease({
-      ownerId: this.ownerId,
-      expiresAt: Date.now() + LEASE_DURATION_MS
+    this.setRole('reader');
+    this.postMessage({
+      type: 'writer-released',
+      senderId: this.ownerId
     });
   }
 
-  private readLease(): WorkspaceLease | null {
-    return parseLease(window.localStorage.getItem(WORKSPACE_LEASE_KEY));
-  }
+  dispose(): void {
+    if (this.disposed) return;
 
-  private writeLease(lease: WorkspaceLease): void {
-    window.localStorage.setItem(WORKSPACE_LEASE_KEY, JSON.stringify(lease));
-  }
+    this.relinquishWriter();
+    this.disposed = true;
 
-  private removeOwnedLease(): void {
-    try {
-      if (this.readLease()?.ownerId === this.ownerId) {
-        window.localStorage.removeItem(WORKSPACE_LEASE_KEY);
-      }
-    } catch (error) {
-      console.warn('Failed to release workspace writer lease.', error);
+    if (this.retryTimer !== null) {
+      window.clearInterval(this.retryTimer);
+      this.retryTimer = null;
     }
+
+    window.removeEventListener('focus', this.handleFocus);
+    this.channel?.close();
+    this.channel = null;
+    this.roleListeners.clear();
+    this.updateListeners.clear();
+  }
+
+  private async initialize(): Promise<void> {
+    if (isElectronDesktop()) {
+      this.setRole('writer');
+      return;
+    }
+
+    if (!getWebLockManager()) {
+      throw new Error(
+        'This browser does not support the Web Locks API, which is required to coordinate workspace writes between tabs.'
+      );
+    }
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      this.channel = new BroadcastChannel(WORKSPACE_CHANNEL_NAME);
+      this.channel.addEventListener('message', this.handleChannelMessage);
+    }
+
+    window.addEventListener('focus', this.handleFocus);
+
+    await this.attemptToBecomeWriter();
+
+    this.retryTimer = window.setInterval(() => {
+      if (!this.disposed && !this.canWrite) void this.attemptToBecomeWriter();
+    }, ACQUISITION_RETRY_MS);
+  }
+
+  private setRole(role: WorkspaceRole): void {
+    if (this.role === role) return;
+    this.role = role;
+    this.roleListeners.forEach(listener => listener(role));
   }
 
   private postMessage(message: WorkspaceSyncMessage): void {
@@ -310,8 +189,8 @@ export class WorkspaceCoordinator {
       if (!Number.isSafeInteger(message.revision) || message.revision < 0) return;
 
       if (this.canWrite) {
-        // This should be impossible with Web Locks. Relinquishing prevents an
-        // older or lease-based client from continuing a split-brain write.
+        // Impossible while the Web Lock is held; relinquishing prevents a
+        // split-brain write if another client ever publishes anyway.
         this.relinquishWriter();
       }
       this.updateListeners.forEach(listener => listener(message.revision));
@@ -322,27 +201,10 @@ export class WorkspaceCoordinator {
       window.setTimeout(() => {
         void this.attemptToBecomeWriter();
       }, 0);
-      return;
-    }
-
-    if (message.type === 'writer-claimed' && this.canWrite && !getWebLockManager()) {
-      const lease = this.readLease();
-      if (lease?.ownerId !== this.ownerId) this.setRole('reader');
-    }
-  };
-
-  private handleStorage = (event: StorageEvent): void => {
-    if (event.key !== WORKSPACE_LEASE_KEY || getWebLockManager()) return;
-
-    if (this.canWrite && parseLease(event.newValue)?.ownerId !== this.ownerId) {
-      this.setRole('reader');
-    } else if (!this.canWrite) {
-      void this.attemptToBecomeWriter();
     }
   };
 
   private handleFocus = (): void => {
     if (!this.canWrite) void this.attemptToBecomeWriter();
   };
-
 }
