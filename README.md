@@ -50,7 +50,7 @@ Do not put a shared or production API key into a publicly deployed build. Each u
 
 - Node.js 22.12 or newer and npm.
 - An OpenAI API key with access to the selected models and tools.
-- A modern browser for the web app. The app prefers OPFS and falls back to IndexedDB outside Electron.
+- A modern browser for the web app with a writable Origin Private File System, meaning Chrome or Edge 86, Firefox 111, or Safari 26 and newer.
 
 ## Quick Start
 
@@ -122,8 +122,8 @@ either the Settings key or the compiled local key.
 
 The Vitest suite is deterministic and does not require a live API key, browser
 profile, OPFS directory, or Electron process. It covers the App request
-lifecycle, Responses API payloads and stream parsing, storage and current-format
-backend migration contracts, build security policy, Electron window policy, and
+lifecycle, Responses API payloads and stream parsing, storage contracts, build
+security policy, Electron window policy, and
 focused utility and component behavior. There is currently no lint or format
 script.
 
@@ -237,9 +237,13 @@ Storage behavior depends on the runtime:
 
 | Runtime | Backend behavior |
 | --- | --- |
-| Browser with OPFS | Uses a sandboxed logical `data/` directory. |
-| Browser without OPFS | Uses the `openai-studio-storage` IndexedDB database. |
-| Electron | Requires OPFS; it does not switch to an empty IndexedDB workspace if OPFS fails. |
+| Browser with a writable OPFS | Uses a sandboxed logical `data/` directory. |
+| Browser without a writable OPFS | Reports a load error; there is no fallback store. |
+| Electron | Requires OPFS and reports a load error if it is unavailable. |
+
+Earlier versions could keep a browser workspace in IndexedDB. That store is
+retired: the app refuses to start an empty workspace beside it, and its records
+are left untouched.
 
 Browser workspaces are origin-scoped: changing the scheme, host, or port opens a
 different workspace even when the path is unchanged. If storage cannot be loaded

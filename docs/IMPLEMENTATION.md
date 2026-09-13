@@ -299,17 +299,15 @@ Primary boundaries are:
   and durable cleanup execution. `utils/projectSources.ts` owns routing and
   project-source limits.
 - `services/storage.ts`: typed whole-workspace read/partial-write facade over
-  backend selection, runtime schema validation, immutable generations, blobs,
-  migration, and workspace replacement. Persisted filenames remain internal
-  to the generation store rather than acting as public API selectors.
+  the OPFS data directory, runtime schema validation, immutable generations,
+  blobs, and workspace replacement. Persisted filenames remain internal to the
+  generation store rather than acting as public API selectors.
 - `services/workspaceSchema.ts`: strict runtime boundary for persisted sessions,
   settings, instructions, IDs, limits, and cross-references.
 - `services/workspaceBlobs.ts`: pure enumeration of attachment, generated-file,
   and project-source blob references for generations, archives, and merge plans.
   Each consumer retains its own integrity checks and deduplication policy;
   merge enumerates only accepted imported chats and projects.
-- `services/storageBackend.ts`: OPFS/IndexedDB identity, conflict, migration,
-  and Electron fallback policy.
 - `services/workspaceGenerationStore.ts`: immutable object/blob publication,
   complete-generation validation, pinning, and garbage collection; manifest
   types and paths live in `services/workspaceGeneration.ts`.
@@ -554,15 +552,12 @@ value; unknown nested keys are rejected.
 
 ## Local Storage And Recovery
 
-OPFS is preferred. A browser may use IndexedDB when OPFS is unavailable.
-Electron requires OPFS and must fail visibly instead of silently opening an
-empty IndexedDB workspace. Backend identity is persisted so a temporary
-capability change cannot select a different workspace unnoticed.
-
-When both stores contain data, or current-format IndexedDB data can be migrated
-to OPFS, the writer resolves the choice. Reader tabs cannot make that decision.
-Backend migration copies and byte-verifies the complete source before switching
-identity and rolls back an incomplete OPFS copy.
+The workspace lives in the Origin Private File System. Startup probes that
+OPFS directories and writable file streams are both available; a browser or
+Electron renderer without them fails visibly instead of opening a different
+store. The retired IndexedDB backend is never opened; a nonempty
+`openai-studio-storage` database found beside an empty OPFS workspace stops
+loading so the retired records are not hidden behind a new empty generation.
 
 Local storage schema v5 uses alternating `workspace_manifest_a.json` and
 `workspace_manifest_b.json` records. Each manifest references immutable
@@ -596,10 +591,8 @@ snapshots, attachment directories, and schema-v3/v4 manifests are unsupported.
 They are never converted into an empty workspace or overwritten during load.
 
 Project sources participate in the exact declared blob union and in object
-reuse, pinning, fallback, and bounded garbage collection. Supported backend
-migration copies and byte-verifies complete schema-v5 records from IndexedDB to
-OPFS without republishing them. It does not upgrade unsupported local formats;
-there is no schema migration path for earlier versions.
+reuse, pinning, fallback, and bounded garbage collection. There is no schema or
+backend migration path for earlier versions or for the retired IndexedDB store.
 
 ## Portable Archive Contract
 
@@ -832,8 +825,7 @@ The following tests are the executable contracts for this specification:
 | Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
-| Backend selection and migration decisions | [services/storageBackend.test.ts](../services/storageBackend.test.ts) |
-| Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and current-format OPFS/IndexedDB migration | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
+| Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and retired-store refusal | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
 | ZIP creation, project/source binary round trip, v3-only validation, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
 | Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
 | Project source routing/limits, operation ownership, pre-read busy state, workspace replacement exclusion, and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts), [services/projectOperationOwner.test.ts](../services/projectOperationOwner.test.ts), [services/projectSourceService.test.ts](../services/projectSourceService.test.ts), and [App.integration.test.tsx](../App.integration.test.tsx) |

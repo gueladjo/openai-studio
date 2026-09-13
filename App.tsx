@@ -27,8 +27,6 @@ import {
 } from './services/openaiService';
 import {
   getStorageHandle,
-  getActiveStorageBackend,
-  subscribeToStorageBackendChanges,
   readWorkspaceState,
   writeWorkspaceState,
   storeAttachmentBlob,
@@ -40,8 +38,6 @@ import {
   getWorkspaceRevision,
   clearInternalRecoveryArchive,
   WorkspaceRevisionConflictError,
-  StorageBackendChoice,
-  StorageBackendChoiceRequest,
   WorkspaceState,
   AppSettings,
   validateWorkspaceReferences
@@ -235,46 +231,6 @@ const createOperationAbortError = (): Error => {
   return error;
 };
 
-const resolveStorageBackendChoice = (
-  request: StorageBackendChoiceRequest
-): StorageBackendChoice => {
-  if (request.kind === 'migration') {
-    const shouldMigrate = window.confirm(
-      [
-        'This workspace is stored in IndexedDB, and OPFS is now available.',
-        '',
-        'Select OK to copy and verify the entire workspace in OPFS before switching.',
-        window.electronAPI
-          ? 'The IndexedDB source will be retained. Select Cancel to stop loading without switching stores.'
-          : 'The IndexedDB source will be retained. Select Cancel to keep using IndexedDB.'
-      ].join('\n')
-    );
-    return shouldMigrate ? 'migrate-to-opfs' : 'indexeddb';
-  }
-
-  const formatSnapshot = (
-    label: string,
-    snapshot: StorageBackendChoiceRequest['opfs']
-  ): string => (
-    `${label}: ${snapshot.recordCount} stored record${snapshot.recordCount === 1 ? '' : 's'}` +
-    `${snapshot.revision === null ? '' : `, revision ${snapshot.revision}`}`
-  );
-  const persistedLabel = request.persistedBackend
-    ? `The saved backend choice is ${request.persistedBackend === 'opfs' ? 'OPFS' : 'IndexedDB'}, but its workspace is empty.`
-    : 'No saved backend choice is available.';
-  const useOpfs = window.confirm(
-    [
-      'Different workspace data was found in OPFS and IndexedDB.',
-      persistedLabel,
-      formatSnapshot('OPFS', request.opfs),
-      formatSnapshot('IndexedDB', request.indexeddb),
-      '',
-      'No data will be deleted. Select OK to use OPFS or Cancel to use IndexedDB.'
-    ].join('\n')
-  );
-  return useOpfs ? 'opfs' : 'indexeddb';
-};
-
 type AssistantModelSnapshot = Required<Pick<
   Message,
   'model' | 'modelName' | 'reasoningEffort'
@@ -324,7 +280,6 @@ function App() {
   const workspaceCanWriteRef = useRef(false);
   const workspaceCoordinatorRef = useRef<WorkspaceCoordinator | null>(null);
   const workspaceReloadPromiseRef = useRef<Promise<void>>(Promise.resolve());
-  const unsubscribeBackendChangesRef = useRef<(() => void) | null>(null);
   const saveQueueRef = useRef<VersionedSaveQueue<SaveKey> | null>(null);
   const backupSchedulerRef = useRef<BackupScheduler | null>(null);
   const archiveAbortRef = useRef<AbortController | null>(null);
@@ -896,31 +851,7 @@ function App() {
       try {
         const coordinator = await WorkspaceCoordinator.create();
         workspaceCoordinatorRef.current = coordinator;
-        let announcedBackend: ReturnType<typeof getActiveStorageBackend> = null;
-        unsubscribeBackendChangesRef.current = subscribeToStorageBackendChanges(backend => {
-          announcedBackend = backend;
-          const activeBackend = getActiveStorageBackend();
-          if (
-            (
-              !activeBackend ||
-              activeBackend !== backend
-            ) &&
-            !workspaceCanWriteRef.current
-          ) {
-            window.location.reload();
-          }
-        });
-        const handle = await getStorageHandle({
-          readOnly: !coordinator.canWrite,
-          resolveBackendChoice: coordinator.canWrite
-            ? resolveStorageBackendChoice
-            : undefined
-        });
-        const activeBackend = getActiveStorageBackend();
-        if (announcedBackend && activeBackend !== announcedBackend) {
-          window.location.reload();
-          return;
-        }
+        const handle = await getStorageHandle({ readOnly: !coordinator.canWrite });
         dirHandleRef.current = handle;
         const initialRole = coordinator.currentRole;
         workspaceCanWriteRef.current = initialRole === 'writer';
@@ -2826,7 +2757,6 @@ function App() {
     saveQueueRef.current?.dispose();
     backupSchedulerRef.current?.dispose();
     workspaceCoordinatorRef.current?.dispose();
-    unsubscribeBackendChangesRef.current?.();
     revokeAttachmentPreviewUrls(sessionsRef.current);
   }, []);
 

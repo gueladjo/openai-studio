@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IDBFactory } from 'fake-indexeddb';
 import { createElectronBridgeMock } from '../test/electronBridge';
 import {
   DEFAULT_CONFIG,
@@ -9,7 +8,7 @@ import {
   type Session,
   type SystemInstruction
 } from '../types';
-import { sha256Blob, sha256Text, encodeUtf8 } from './contentAddressing';
+import { sha256Blob } from './contentAddressing';
 
 const notFound = (name: string): DOMException => (
   new DOMException(`${name} was not found.`, 'NotFoundError')
@@ -202,66 +201,6 @@ class MemoryFileSystem {
   }
 }
 
-class MemoryStorage {
-  private readonly values = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.values.set(key, String(value));
-  }
-}
-
-interface IndexedDbRecord {
-  filename: string;
-  data: string | Blob;
-  updatedAt: number;
-}
-
-const openIndexedDb = (
-  indexedDb: IDBFactory
-): Promise<IDBDatabase> => new Promise((resolve, reject) => {
-  const request = indexedDb.open('openai-studio-storage', 1);
-  request.onerror = () => reject(request.error);
-  request.onupgradeneeded = () => {
-    const database = request.result;
-    if (!database.objectStoreNames.contains('files')) {
-      database.createObjectStore('files', { keyPath: 'filename' });
-    }
-  };
-  request.onsuccess = () => resolve(request.result);
-});
-
-const seedIndexedDb = async (
-  indexedDb: IDBFactory,
-  records: IndexedDbRecord[]
-): Promise<IDBDatabase> => {
-  const database = await openIndexedDb(indexedDb);
-  await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(['files'], 'readwrite');
-    const store = transaction.objectStore('files');
-    records.forEach(record => store.put(record));
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
-  });
-  return database;
-};
-
-const readIndexedDbRecord = (
-  database: IDBDatabase,
-  filename: string
-): Promise<IndexedDbRecord | undefined> => new Promise((resolve, reject) => {
-  const transaction = database.transaction(['files'], 'readonly');
-  const request = transaction.objectStore('files').get(filename);
-  request.onerror = () => reject(request.error);
-  request.onsuccess = () => resolve(
-    request.result as IndexedDbRecord | undefined
-  );
-});
-
 class MemoryFileReader {
   result: string | ArrayBuffer | null = null;
   error: Error | null = null;
@@ -369,9 +308,7 @@ describe('storage public contracts', () => {
   beforeEach(async () => {
     fileSystem = new MemoryFileSystem();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const localStorage = new MemoryStorage();
     vi.stubGlobal('window', {
-      localStorage,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn()
     });
@@ -380,7 +317,6 @@ describe('storage public contracts', () => {
         getDirectory: vi.fn(async () => fileSystem.root)
       }
     });
-    vi.stubGlobal('indexedDB', undefined);
     vi.stubGlobal('FileReader', MemoryFileReader);
     vi.resetModules();
 
@@ -1444,6 +1380,22 @@ describe('storage public contracts', () => {
 });
 
 describe('unsupported local workspace contract', () => {
+  const stubRuntime = (fileSystem: MemoryFileSystem, electron = true): void => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.stubGlobal('window', {
+      ...(electron ? { electronAPI: createElectronBridgeMock() } : {}),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    });
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: vi.fn(async () => fileSystem.root)
+      }
+    });
+    vi.stubGlobal('FileReader', MemoryFileReader);
+    vi.resetModules();
+  };
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -1455,22 +1407,7 @@ describe('unsupported local workspace contract', () => {
     const legacySessions = [createSession('Legacy')];
     await seedLegacyWorkspaceFiles(fileSystem, legacySessions);
     const originalSessions = await fileSystem.readText('data/sessions.json');
-    const localStorage = new MemoryStorage();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.stubGlobal('window', {
-      electronAPI: createElectronBridgeMock(),
-      localStorage,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
-    });
-    vi.stubGlobal('navigator', {
-      storage: {
-        getDirectory: vi.fn(async () => fileSystem.root)
-      }
-    });
-    vi.stubGlobal('indexedDB', undefined);
-    vi.stubGlobal('FileReader', MemoryFileReader);
-    vi.resetModules();
+    stubRuntime(fileSystem);
 
     const storage = await import('./storage');
     const handle = await storage.getStorageHandle();
@@ -1481,185 +1418,47 @@ describe('unsupported local workspace contract', () => {
     expect(await fileSystem.readText('data/workspace_manifest_b.json')).toBeNull();
     expect(await fileSystem.readText('data/sessions.json')).toBe(originalSessions);
   });
-});
 
-describe('storage backend migration contracts', () => {
-  let database: IDBDatabase;
-  let fileSystem: MemoryFileSystem;
-  let indexedDb: IDBFactory;
-  let indexedDbRecords: IndexedDbRecord[];
-  let localStorage: MemoryStorage;
-  let storedSession: Session;
-  let storedBlobHash: string;
-  let storage: StorageModule;
-
-  const backendIdentityKey = 'openai-studio-storage-backend-v1';
-
-  const createCurrentIndexedDbRecords = async (): Promise<IndexedDbRecord[]> => {
-    const blob = new Blob(['attachment bytes'], { type: 'text/plain' });
-    storedBlobHash = await sha256Blob(blob);
-    storedSession = createSession('IndexedDB', [{
-      name: 'attachment.txt',
-      type: 'text/plain',
-      size: blob.size,
-      localBlob: {
-        sha256: storedBlobHash,
-        byteSize: blob.size,
-        mimeType: 'text/plain'
-      }
-    }]);
-    const sessionText = JSON.stringify(storedSession);
-    const settingsText = JSON.stringify({ theme: 'dark', apiKey: 'local-key' });
-    const instructionsText = JSON.stringify(instructions);
-    const projectsText = '[]';
-    const remoteStateText = JSON.stringify({ indexes: {}, cleanupTombstones: [] });
-    const objectReference = (text: string) => ({
-      sha256: sha256Text(text),
-      byteLength: encodeUtf8(text).byteLength
-    });
-    const manifest = {
-      schemaVersion: 5,
-      revision: 7,
-      createdAt: 1,
-      sessions: [{ id: storedSession.id, ...objectReference(sessionText) }],
-      settings: objectReference(settingsText),
-      instructions: objectReference(instructionsText),
-      projects: objectReference(projectsText),
-      projectRemoteState: objectReference(remoteStateText),
-      blobs: [{ sha256: storedBlobHash, byteLength: blob.size }]
+  it('refuses to initialize over a workspace left in the retired IndexedDB store', async () => {
+    const fileSystem = new MemoryFileSystem();
+    stubRuntime(fileSystem, false);
+    const succeed = <T,>(result: T) => {
+      const request = { result, onsuccess: null as (() => void) | null, onerror: null };
+      queueMicrotask(() => request.onsuccess?.());
+      return request;
     };
+    const database = {
+      objectStoreNames: { contains: (name: string) => name === 'files' },
+      transaction: () => ({ objectStore: () => ({ count: () => succeed(3) }) }),
+      close: vi.fn()
+    };
+    vi.stubGlobal('indexedDB', {
+      databases: vi.fn(async () => [{ name: 'openai-studio-storage', version: 1 }]),
+      open: vi.fn(() => succeed(database))
+    });
 
-    return [
-      {
-        filename: 'workspace_manifest_a.json',
-        data: JSON.stringify(manifest),
-        updatedAt: 2
-      },
-      ...[
-        [manifest.sessions[0].sha256, sessionText],
-        [manifest.settings.sha256, settingsText],
-        [manifest.instructions.sha256, instructionsText],
-        [manifest.projects.sha256, projectsText],
-        [manifest.projectRemoteState.sha256, remoteStateText]
-      ].map(([sha256, text]) => ({
-        filename: `objects/${sha256}.json`,
-        data: text as string,
-        updatedAt: 2
-      })),
-      {
-        filename: `blobs/${storedBlobHash}`,
-        data: blob,
-        updatedAt: 2
-      }
-    ];
-  };
-
-  beforeEach(async () => {
-    fileSystem = new MemoryFileSystem();
-    indexedDb = new IDBFactory();
-    indexedDbRecords = await createCurrentIndexedDbRecords();
-    localStorage = new MemoryStorage();
-    localStorage.setItem(
-      backendIdentityKey,
-      JSON.stringify({ version: 1, backend: 'indexeddb' })
+    const storage = await import('./storage');
+    const handle = await storage.getStorageHandle();
+    await expect(storage.synchronizeWorkspaceRevision(handle)).rejects.toThrow(
+      'retired IndexedDB store'
     );
-    database = await seedIndexedDb(indexedDb, indexedDbRecords);
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.stubGlobal('window', {
-      localStorage,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
-    });
-    vi.stubGlobal('navigator', {
-      storage: {
-        getDirectory: vi.fn(async () => fileSystem.root)
-      }
-    });
-    vi.stubGlobal('indexedDB', indexedDb);
-    vi.stubGlobal('FileReader', MemoryFileReader);
-    vi.resetModules();
-    storage = await import('./storage');
+    expect(database.close).toHaveBeenCalled();
+    expect(await fileSystem.readText('data/workspace_manifest_a.json')).toBeNull();
   });
 
-  afterEach(() => {
-    database.close();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-    vi.resetModules();
-  });
+  it('refuses a browser whose OPFS cannot write files', async () => {
+    const fileSystem = new MemoryFileSystem();
+    stubRuntime(fileSystem, false);
+    vi.mocked(navigator.storage.getDirectory).mockResolvedValue({
+      getDirectoryHandle: async () => ({
+        getFileHandle: async () => ({ kind: 'file' })
+      }),
+      removeEntry: async () => undefined
+    } as unknown as FileSystemDirectoryHandle);
 
-  it('copies a current workspace and reports its manifest revision before switching', async () => {
-    const resolveBackendChoice = vi.fn().mockResolvedValue('migrate-to-opfs');
-
-    const handle = await storage.getStorageHandle({ resolveBackendChoice });
-    await expect(storage.synchronizeWorkspaceRevision(handle)).resolves.toBe(7);
-
-    expect(resolveBackendChoice).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'migration',
-        persistedBackend: 'indexeddb',
-        indexeddb: expect.objectContaining({
-          hasWorkspace: true,
-          revision: 7,
-          recordCount: indexedDbRecords.length
-        }),
-        opfs: expect.objectContaining({
-          available: true,
-          hasWorkspace: false
-        })
-      })
-    );
-    expect(storage.getActiveStorageBackend()).toBe('opfs');
-    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
-      version: 1,
-      backend: 'opfs'
-    });
-    expect(JSON.parse(
-      await fileSystem.readText('data/workspace_manifest_a.json') || ''
-    )).toMatchObject({ schemaVersion: 5, revision: 7 });
-    await expect(readWorkspaceField(storage, handle, 'settings')).resolves.toEqual({
-      theme: 'dark',
-      apiKey: 'local-key'
-    });
-    await expect(readWorkspaceField(storage, handle, 'sessions')).resolves.toEqual([storedSession]);
-    expect(await fileSystem.readText(`data/blobs/${storedBlobHash}`))
-      .toBe('attachment bytes');
-    expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
-      .toMatchObject({ data: indexedDbRecords[0].data });
-  });
-
-  it('rolls back every attempted OPFS record when migration copying fails', async () => {
-    fileSystem.failNextWrite(/data\/objects\/[a-f0-9]{64}\.json$/);
-
-    await expect(storage.getStorageHandle({
-      resolveBackendChoice: async () => 'migrate-to-opfs' as const
-    })).rejects.toThrow('Simulated disk full');
-
-    expect(storage.getActiveStorageBackend()).toBeNull();
-    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
-      version: 1,
-      backend: 'indexeddb'
-    });
-    const dataDirectory = await fileSystem.getDirectory('data');
-    expect(dataDirectory.names()).toEqual([]);
-    expect(await readIndexedDbRecord(database, 'workspace_manifest_a.json'))
-      .toMatchObject({ data: indexedDbRecords[0].data });
-  });
-
-  it('refuses an IndexedDB fallback when Electron cannot use OPFS', async () => {
-    window.electronAPI = createElectronBridgeMock();
-    vi.mocked(navigator.storage.getDirectory).mockRejectedValue(
-      new Error('OPFS unavailable')
-    );
-
+    const storage = await import('./storage');
     await expect(storage.getStorageHandle()).rejects.toThrow(
-      /Electron.*OPFS/
+      'writable Origin Private File System'
     );
-    expect(storage.getActiveStorageBackend()).toBeNull();
-    expect(JSON.parse(localStorage.getItem(backendIdentityKey) || '')).toEqual({
-      version: 1,
-      backend: 'indexeddb'
-    });
   });
 });

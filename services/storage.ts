@@ -11,13 +11,6 @@ import {
   validateAttachments
 } from '../utils/attachmentValidation';
 import {
-  selectStorageBackend,
-  StorageBackend,
-  StorageBackendChoice,
-  StorageBackendChoiceRequest,
-  StorageBackendSnapshot
-} from './storageBackend';
-import {
   AppSettings,
   BackupSettings,
   parseAppSettings,
@@ -32,69 +25,29 @@ import {
   WorkspaceGenerationData,
   WorkspaceGenerationStore
 } from './workspaceGenerationStore';
-import {
-  encodeUtf8,
-  sha256Text
-} from './contentAddressing';
-import {
-  parseWorkspaceGenerationManifest,
-  WORKSPACE_MANIFEST_SLOTS
-} from './workspaceGeneration';
+import { sha256Text } from './contentAddressing';
 import { SerializedOperationQueue } from './serializedOperationQueue';
 
-export type {
-  StorageBackend,
-  StorageBackendChoice,
-  StorageBackendChoiceRequest
-} from './storageBackend';
 export type {
   AppSettings,
   BackupSettings
 } from './workspaceSchema';
 export { validateWorkspaceReferences } from './workspaceSchema';
 
-// Storage abstraction that uses OPFS when available, IndexedDB as fallback (for iOS Safari)
-let storageBackend: StorageBackend | null = null;
-let idbDatabase: IDBDatabase | null = null;
+// The workspace lives in the Origin Private File System. A browser or Electron
+// renderer without a writable OPFS fails visibly instead of opening a
+// different store.
+let opfsDataDir: FileSystemDirectoryHandle | null = null;
 let workspaceRevision: number | null = null;
 let workspaceGenerationCache: ValidWorkspaceGeneration | null = null;
 let workspaceStorageReadOnly = false;
 const workspaceWriteQueue = new SerializedOperationQueue();
 
-const IDB_NAME = 'openai-studio-storage';
-const IDB_STORE = 'files';
-const IDB_VERSION = 1;
-const BACKEND_IDENTITY_KEY = 'openai-studio-storage-backend-v1';
-const BACKEND_IDENTITY_VERSION = 1;
-
-interface StoredFileRecord {
-  filename: string;
-  data: string | Blob;
-  updatedAt?: number;
-}
-
-interface StorageBackendIdentity {
-  version: number;
-  backend: StorageBackend;
-}
-
-interface BackendRecord {
-  filename: string;
-  data: string | Blob;
-}
-
-interface BackendInspection {
-  snapshot: StorageBackendSnapshot;
-  records: BackendRecord[];
-  opfsRoot?: FileSystemDirectoryHandle;
-  opfsDataDir?: FileSystemDirectoryHandle | null;
-}
+const RETIRED_INDEXEDDB_NAME = 'openai-studio-storage';
+const RETIRED_INDEXEDDB_STORE = 'files';
 
 export interface StorageInitializationOptions {
   readOnly?: boolean;
-  resolveBackendChoice?: (
-    request: StorageBackendChoiceRequest
-  ) => StorageBackendChoice | Promise<StorageBackendChoice>;
 }
 
 export class WorkspaceRevisionConflictError extends Error {
@@ -119,204 +72,63 @@ const isNotFoundError = (error: unknown): boolean => (
   typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotFoundError'
 );
 
-const createOpfsProbeName = (): string => {
-  return `__opfs_test_${crypto.randomUUID()}`;
-};
-
-// Check if OPFS is supported without sharing a probe path across tabs.
+// Check that OPFS directories and writable file streams are both available,
+// without sharing a probe path across tabs.
 const checkOPFSSupport = async (): Promise<boolean> => {
   let root: FileSystemDirectoryHandle | null = null;
   let probeName: string | null = null;
-  let probeCreated = false;
 
   try {
     if (!navigator.storage || !navigator.storage.getDirectory) {
       return false;
     }
     root = await navigator.storage.getDirectory();
-    probeName = createOpfsProbeName();
-    await root.getDirectoryHandle(probeName, { create: true });
-    probeCreated = true;
-    return true;
+    probeName = `__opfs_test_${crypto.randomUUID()}`;
+    const probeDirectory = await root.getDirectoryHandle(probeName, { create: true });
+    const probeFile = await probeDirectory.getFileHandle('probe', { create: true });
+    return typeof (probeFile as any).createWritable === 'function';
   } catch {
     return false;
   } finally {
-    if (root && probeName && probeCreated) {
+    if (root && probeName) {
       try {
-        await root.removeEntry(probeName);
+        await root.removeEntry(probeName, { recursive: true });
       } catch (error) {
-        console.warn(`Failed to remove OPFS capability probe ${probeName}.`, error);
+        if (!isNotFoundError(error)) {
+          console.warn(`Failed to remove OPFS capability probe ${probeName}.`, error);
+        }
       }
     }
   }
 };
 
-// Initialize IndexedDB
-const initIndexedDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(IDB_NAME, IDB_VERSION);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        db.createObjectStore(IDB_STORE, { keyPath: 'filename' });
-      }
-    };
-  });
-};
-
-// Storage must be explicitly initialized so calls cannot silently select a
-// different backend after startup.
-const getStorageBackend = async (): Promise<StorageBackend> => {
-  if (storageBackend === null) {
-    throw new Error('Workspace storage backend has not been initialized.');
-  }
-  return storageBackend;
-};
-
-// IndexedDB file operations
-const idbReadRawData = async (filename: string): Promise<StoredFileRecord | null> => {
-  if (!idbDatabase) {
-    idbDatabase = await initIndexedDB();
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = idbDatabase!.transaction([IDB_STORE], 'readonly');
-    const store = transaction.objectStore(IDB_STORE);
-    const request = store.get(filename);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result || null);
-  });
-};
-
-const idbReadRawFile = async (filename: string): Promise<string | null> => {
-  const record = await idbReadRawData(filename);
-  return typeof record?.data === 'string' ? record.data : null;
-};
-
-const idbWriteRawData = async (filename: string, data: string | Blob): Promise<void> => {
-  if (!idbDatabase) {
-    idbDatabase = await initIndexedDB();
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = idbDatabase!.transaction([IDB_STORE], 'readwrite');
-    const store = transaction.objectStore(IDB_STORE);
-    store.put({ filename, data, updatedAt: Date.now() });
-
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB write failed.'));
-    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB write was aborted.'));
-  });
-};
-
-const idbWriteRawFile = async (filename: string, text: string): Promise<void> => {
-  await idbWriteRawData(filename, text);
-};
-
-const idbDeleteRawFile = async (filename: string): Promise<void> => {
-  if (!idbDatabase) {
-    idbDatabase = await initIndexedDB();
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = idbDatabase!.transaction([IDB_STORE], 'readwrite');
-    const store = transaction.objectStore(IDB_STORE);
-    store.delete(filename);
-
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB delete failed.'));
-    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB delete was aborted.'));
-  });
-};
-
-const idbListAllRawData = async (): Promise<StoredFileRecord[]> => {
-  if (!idbDatabase) {
-    idbDatabase = await initIndexedDB();
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = idbDatabase!.transaction([IDB_STORE], 'readonly');
-    const store = transaction.objectStore(IDB_STORE);
-    const request = store.openCursor();
-    const records: StoredFileRecord[] = [];
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        resolve(records);
-        return;
-      }
-
-      const record = cursor.value as StoredFileRecord;
-      records.push(record);
-      cursor.continue();
-    };
-  });
-};
-
-const idbListRawFiles = async (
-  prefix: string
-): Promise<Array<{ filename: string; updatedAt: number }>> => {
-  const records = await idbListAllRawData();
-  return records
-    .filter(record => record.filename.startsWith(prefix))
-    .map(record => ({
-      filename: record.filename,
-      updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0
-    }));
-};
-
-// OPFS directory handle cache
-let opfsDataDir: FileSystemDirectoryHandle | null = null;
-
-// Access the Origin Private File System (OPFS)
-// This creates a sandboxed 'data' folder automatically without user prompts.
-export const getStorageHandle = async (
-  options: StorageInitializationOptions = {}
+const initializeOpfsStorage = async (
+  options: StorageInitializationOptions
 ): Promise<FileSystemDirectoryHandle> => {
-  const backend = storageBackend || await initializeStorageBackend(options);
-
-  if (backend === 'indexeddb') {
-    // Return a dummy handle for IndexedDB - actual operations use idb functions
-    return {} as FileSystemDirectoryHandle;
-  }
-
-  if (opfsDataDir) {
-    return opfsDataDir;
+  if (!(await checkOPFSSupport())) {
+    throw new Error(
+      isElectronDesktop()
+        ? 'OPFS is unavailable in Electron. Workspace loading stopped instead of opening a fallback store.'
+        : 'This browser does not provide a writable Origin Private File System, so the workspace cannot be opened.'
+    );
   }
 
   const root = await navigator.storage.getDirectory();
-  opfsDataDir = await root.getDirectoryHandle('data', { create: true });
-  return opfsDataDir;
+  const dataDir = await root.getDirectoryHandle('data', { create: true });
+  workspaceStorageReadOnly = Boolean(options.readOnly);
+  workspaceRevision = null;
+  workspaceGenerationCache = null;
+  opfsDataDir = dataDir;
+  return dataDir;
 };
 
-const writeOpfsTextFile = async (
-  dirHandle: FileSystemDirectoryHandle,
-  filename: string,
-  text: string
-): Promise<void> => {
-  const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-  const writable = await (fileHandle as any).createWritable();
-  try {
-    await writable.write(text);
-    await writable.close();
-  } catch (error) {
-    if (typeof writable.abort === 'function') {
-      try {
-        await writable.abort();
-      } catch {
-        // Preserve the write failure.
-      }
-    }
-    throw error;
-  }
-};
+// Access the sandboxed OPFS `data` directory. Storage must be explicitly
+// initialized so later calls cannot silently open a different location.
+export const getStorageHandle = async (
+  options: StorageInitializationOptions = {}
+): Promise<FileSystemDirectoryHandle> => (
+  opfsDataDir || initializeOpfsStorage(options)
+);
 
 const splitStoragePath = (path: string): string[] => {
   const segments = path.split('/');
@@ -433,506 +245,15 @@ const createWorkspaceGenerationStore = (
   dirHandle: FileSystemDirectoryHandle
 ): WorkspaceGenerationStore => new WorkspaceGenerationStore({
   readText: async path => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') return idbReadRawFile(path);
     const blob = await readOpfsBlobPath(dirHandle, path);
     return blob ? blob.text() : null;
   },
-  writeText: async (path, text) => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') {
-      await idbWriteRawFile(path, text);
-    } else {
-      await writeOpfsBlobPath(dirHandle, path, text);
-    }
-  },
-  readBlob: async path => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') {
-      const record = await idbReadRawData(path);
-      return record?.data instanceof Blob ? record.data : null;
-    }
-    return readOpfsBlobPath(dirHandle, path);
-  },
-  writeBlob: async (path, blob) => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') {
-      await idbWriteRawData(path, blob);
-    } else {
-      await writeOpfsBlobPath(dirHandle, path, blob);
-    }
-  },
-  delete: async path => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') {
-      await idbDeleteRawFile(path);
-    } else {
-      await deleteOpfsPath(dirHandle, path);
-    }
-  },
-  list: async prefix => {
-    const backend = await getStorageBackend();
-    if (backend === 'indexeddb') {
-      return (await idbListRawFiles(prefix)).map(record => record.filename);
-    }
-    return listOpfsPaths(dirHandle, prefix);
-  }
+  writeText: (path, text) => writeOpfsBlobPath(dirHandle, path, text),
+  readBlob: path => readOpfsBlobPath(dirHandle, path),
+  writeBlob: (path, blob) => writeOpfsBlobPath(dirHandle, path, blob),
+  delete: path => deleteOpfsPath(dirHandle, path),
+  list: prefix => listOpfsPaths(dirHandle, prefix)
 });
-
-const readBackendIdentity = (value: string | null): StorageBackendIdentity | null => {
-  if (!value) return null;
-
-  try {
-    const identity = JSON.parse(value) as Partial<StorageBackendIdentity>;
-    if (
-      identity.version !== BACKEND_IDENTITY_VERSION ||
-      (identity.backend !== 'opfs' && identity.backend !== 'indexeddb')
-    ) {
-      return null;
-    }
-    return {
-      version: identity.version,
-      backend: identity.backend
-    };
-  } catch {
-    return null;
-  }
-};
-
-const getPersistedBackend = (): StorageBackend | null => {
-  try {
-    return readBackendIdentity(window.localStorage.getItem(BACKEND_IDENTITY_KEY))?.backend || null;
-  } catch (error) {
-    throw new Error(`Storage backend identity could not be read: ${getErrorMessage(error)}`);
-  }
-};
-
-const persistBackend = (backend: StorageBackend): void => {
-  const identity: StorageBackendIdentity = {
-    version: BACKEND_IDENTITY_VERSION,
-    backend
-  };
-  const serialized = JSON.stringify(identity);
-
-  try {
-    window.localStorage.setItem(BACKEND_IDENTITY_KEY, serialized);
-    if (window.localStorage.getItem(BACKEND_IDENTITY_KEY) !== serialized) {
-      throw new Error('The stored value could not be verified.');
-    }
-  } catch (error) {
-    throw new Error(`Storage backend identity could not be persisted: ${getErrorMessage(error)}`);
-  }
-};
-
-export const getActiveStorageBackend = (): StorageBackend | null => storageBackend;
-
-export const subscribeToStorageBackendChanges = (
-  listener: (backend: StorageBackend) => void
-): (() => void) => {
-  const handleStorage = (event: StorageEvent) => {
-    if (event.key !== BACKEND_IDENTITY_KEY) return;
-    const identity = readBackendIdentity(event.newValue);
-    if (identity) listener(identity.backend);
-  };
-
-  window.addEventListener('storage', handleStorage);
-  return () => window.removeEventListener('storage', handleStorage);
-};
-
-const getErrorMessage = (error: unknown): string => (
-  error instanceof Error ? error.message : String(error)
-);
-
-const getRecordsFingerprint = (
-  records: BackendRecord[],
-  extraDescriptors: string[] = []
-): string => {
-  // Size-based descriptors keep OPFS and IndexedDB fingerprints comparable
-  // without reading every object's contents; backendRecordsMatch is the
-  // authoritative content check when fingerprints collide.
-  const descriptors = records.map(record => (
-    typeof record.data === 'string'
-      ? `${record.filename}:size:${encodeUtf8(record.data).byteLength}`
-      : `${record.filename}:size:${record.data.size}`
-  ));
-  return [...descriptors, ...extraDescriptors].sort().join('|');
-};
-
-const getBlobDigest = async (blob: Blob): Promise<string> => {
-  const bytes = await blob.arrayBuffer();
-  if (crypto.subtle) {
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(digest), byte => (
-      byte.toString(16).padStart(2, '0')
-    )).join('');
-  }
-
-  let hash = 2166136261;
-  for (const byte of new Uint8Array(bytes)) {
-    hash ^= byte;
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-};
-
-const backendRecordsMatch = async (
-  leftRecords: BackendRecord[],
-  rightRecords: BackendRecord[]
-): Promise<boolean> => {
-  if (leftRecords.length !== rightRecords.length) return false;
-  const rightByFilename = new Map(
-    rightRecords.map(record => [record.filename, record])
-  );
-
-  // Records may carry text in one backend and blob metadata in the other;
-  // compare UTF-8 bytes either way.
-  const toComparableBlob = (data: string | Blob): Blob => (
-    typeof data === 'string' ? new Blob([data]) : data
-  );
-
-  for (const left of leftRecords) {
-    const right = rightByFilename.get(left.filename);
-    if (!right) return false;
-
-    const leftBlob = toComparableBlob(left.data);
-    const rightBlob = toComparableBlob(right.data);
-    if (leftBlob.size !== rightBlob.size) return false;
-    if (await getBlobDigest(leftBlob) !== await getBlobDigest(rightBlob)) return false;
-  }
-
-  return true;
-};
-
-const getRevisionFromRecords = (records: BackendRecord[]): number | null => {
-  const generationRevisions = WORKSPACE_MANIFEST_SLOTS.flatMap(slot => {
-    const record = records.find(candidate => candidate.filename === slot);
-    if (!record || typeof record.data !== 'string') return [];
-    try {
-      return [parseWorkspaceGenerationManifest(record.data, slot).revision];
-    } catch {
-      return [];
-    }
-  });
-  if (generationRevisions.length > 0) {
-    return Math.max(...generationRevisions);
-  }
-  return null;
-};
-
-const createSnapshot = (
-  backend: StorageBackend,
-  available: boolean,
-  records: BackendRecord[],
-  extraDescriptors: string[] = []
-): StorageBackendSnapshot => ({
-  backend,
-  available,
-  hasWorkspace: records.length > 0 || extraDescriptors.length > 0,
-  fingerprint: records.length > 0 || extraDescriptors.length > 0
-    ? getRecordsFingerprint(records, extraDescriptors)
-    : null,
-  revision: getRevisionFromRecords(records),
-  recordCount: records.length + extraDescriptors.length
-});
-
-const inspectIndexedDbBackend = async (): Promise<BackendInspection> => {
-  if (typeof indexedDB === 'undefined') {
-    return {
-      snapshot: createSnapshot('indexeddb', false, []),
-      records: []
-    };
-  }
-
-  idbDatabase = await initIndexedDB();
-  const storedRecords = await idbListAllRawData();
-  const extraDescriptors: string[] = [];
-  const records = storedRecords
-    .flatMap(record => {
-      if (
-        typeof record.filename !== 'string' ||
-        (typeof record.data !== 'string' && !(record.data instanceof Blob))
-      ) {
-        extraDescriptors.push(`invalid-record:${String(record.filename)}`);
-        return [];
-      }
-      return [{
-        filename: record.filename,
-        data: record.data
-      }];
-    });
-
-  return {
-    snapshot: createSnapshot('indexeddb', true, records, extraDescriptors),
-    records
-  };
-};
-
-const getExistingOpfsDataDirectory = async (
-  root: FileSystemDirectoryHandle
-): Promise<FileSystemDirectoryHandle | null> => {
-  try {
-    return await root.getDirectoryHandle('data');
-  } catch (error) {
-    if (isNotFoundError(error)) return null;
-    throw error;
-  }
-};
-
-const inspectOpfsBackend = async (supported: boolean): Promise<BackendInspection> => {
-  if (!supported) {
-    return {
-      snapshot: createSnapshot('opfs', false, []),
-      records: []
-    };
-  }
-
-  const root = await navigator.storage.getDirectory();
-  const dataDir = await getExistingOpfsDataDirectory(root);
-  if (!dataDir) {
-    return {
-      snapshot: createSnapshot('opfs', true, []),
-      records: [],
-      opfsRoot: root,
-      opfsDataDir: null
-    };
-  }
-
-  const records: BackendRecord[] = [];
-  const extraDescriptors: string[] = [];
-
-  for await (const [name, entry] of (dataDir as any).entries()) {
-    if (entry.kind === 'file') {
-      const file = await entry.getFile();
-      records.push({
-        filename: name,
-        data: await file.text()
-      });
-      continue;
-    }
-
-    if (
-      entry.kind !== 'directory' ||
-      !['objects', 'blobs', 'recovery'].includes(name)
-    ) {
-      extraDescriptors.push(`${entry.kind}:${name}`);
-      continue;
-    }
-
-    for await (const [childName, childEntry] of entry.entries()) {
-      if (childEntry.kind !== 'file') {
-        extraDescriptors.push(
-          `${name}/${childEntry.kind}:${childName}`
-        );
-        continue;
-      }
-
-      // Nested records carry blob metadata only: the size-based fingerprint
-      // keeps backend snapshots comparable without reading every object.
-      records.push({
-        filename: `${name}/${childName}`,
-        data: await childEntry.getFile()
-      });
-    }
-  }
-
-  return {
-    snapshot: createSnapshot('opfs', true, records, extraDescriptors),
-    records,
-    opfsRoot: root,
-    opfsDataDir: dataDir
-  };
-};
-
-const rollbackOpfsMigration = async (
-  dataDir: FileSystemDirectoryHandle,
-  writtenRecords: BackendRecord[]
-): Promise<void> => {
-  for (const record of [...writtenRecords].reverse()) {
-    await deleteOpfsPath(dataDir, record.filename);
-  }
-  for (const directory of ['objects', 'blobs', 'recovery']) {
-    try {
-      await dataDir.removeEntry(directory);
-    } catch (error) {
-      if (!isNotFoundError(error)) {
-        console.warn(`Failed to remove empty migration directory ${directory}.`, error);
-      }
-    }
-  }
-};
-
-const copyIndexedDbWorkspaceToOpfs = async (
-  indexeddb: BackendInspection,
-  opfs: BackendInspection
-): Promise<() => Promise<void>> => {
-  if (!opfs.opfsRoot || opfs.snapshot.hasWorkspace) {
-    throw new Error('OPFS migration requires an available, empty destination.');
-  }
-
-  const dataDir = opfs.opfsDataDir ||
-    await opfs.opfsRoot.getDirectoryHandle('data', { create: true });
-  const writtenRecords: BackendRecord[] = [];
-
-  try {
-    for (const record of indexeddb.records) {
-      // Track the attempted destination before creating it so rollback also
-      // removes a partial file when the write itself fails.
-      writtenRecords.push(record);
-
-      if (record.filename.includes('/')) {
-        const [directory, child, ...extra] = record.filename.split('/');
-        const isAllowedDirectory = ['objects', 'blobs', 'recovery'].includes(directory);
-        const expectsText = directory === 'objects';
-        if (
-          !isAllowedDirectory ||
-          !child ||
-          extra.length > 0 ||
-          (expectsText
-            ? typeof record.data !== 'string'
-            : !(record.data instanceof Blob))
-        ) {
-          throw new Error(`IndexedDB nested record ${record.filename} is invalid.`);
-        }
-        await writeOpfsBlobPath(dataDir, record.filename, record.data);
-      } else {
-        if (
-          typeof record.data !== 'string'
-        ) {
-          throw new Error(`IndexedDB file record ${record.filename} is invalid.`);
-        }
-        await writeOpfsTextFile(dataDir, record.filename, record.data);
-      }
-    }
-
-    const verified = await inspectOpfsBackend(true);
-    if (
-      !verified.snapshot.hasWorkspace ||
-      verified.snapshot.fingerprint !== indexeddb.snapshot.fingerprint ||
-      !(await backendRecordsMatch(indexeddb.records, verified.records))
-    ) {
-      throw new Error('The OPFS migration copy did not match the IndexedDB source.');
-    }
-
-    opfsDataDir = dataDir;
-    return () => rollbackOpfsMigration(dataDir, writtenRecords);
-  } catch (error) {
-    try {
-      await rollbackOpfsMigration(dataDir, writtenRecords);
-    } catch (rollbackError) {
-      console.error('Failed to roll back an incomplete OPFS migration.', rollbackError);
-    }
-    throw error;
-  }
-};
-
-async function initializeStorageBackend(
-  options: StorageInitializationOptions
-): Promise<StorageBackend> {
-  const persistedBackend = getPersistedBackend();
-  const hasOpfs = await checkOPFSSupport();
-  const [opfs, indexeddb] = await Promise.all([
-    inspectOpfsBackend(hasOpfs),
-    inspectIndexedDbBackend()
-  ]);
-
-  const needsContentComparison = (
-    opfs.snapshot.hasWorkspace &&
-    indexeddb.snapshot.hasWorkspace &&
-    opfs.snapshot.fingerprint === indexeddb.snapshot.fingerprint &&
-    (persistedBackend === null || persistedBackend === 'indexeddb')
-  );
-  if (
-    needsContentComparison &&
-    !(await backendRecordsMatch(opfs.records, indexeddb.records))
-  ) {
-    opfs.snapshot = {
-      ...opfs.snapshot,
-      fingerprint: `${opfs.snapshot.fingerprint}:different-content`
-    };
-  }
-
-  const selection = selectStorageBackend({
-    persistedBackend,
-    opfs: opfs.snapshot,
-    indexeddb: indexeddb.snapshot,
-    isElectron: isElectronDesktop(),
-    readOnly: Boolean(options.readOnly)
-  });
-
-  if (selection.kind === 'error') throw new Error(selection.message);
-
-  let selectedBackend: StorageBackend;
-  let rollbackMigration: (() => Promise<void>) | null = null;
-
-  if (selection.kind === 'use') {
-    selectedBackend = selection.backend;
-  } else {
-    if (!options.resolveBackendChoice) {
-      throw new Error('Storage backend selection requires confirmation in the writer tab.');
-    }
-
-    const choice = await options.resolveBackendChoice(selection.request);
-    if (choice === 'cancel') {
-      throw new Error('Storage backend selection was cancelled.');
-    }
-
-    if (selection.request.kind === 'migration') {
-      if (choice === 'indexeddb') {
-        selectedBackend = 'indexeddb';
-      } else if (choice === 'migrate-to-opfs' || choice === 'opfs') {
-        if (opfs.snapshot.fingerprint !== indexeddb.snapshot.fingerprint) {
-          rollbackMigration = await copyIndexedDbWorkspaceToOpfs(indexeddb, opfs);
-        }
-        selectedBackend = 'opfs';
-      } else {
-        throw new Error(`Unsupported storage migration choice: ${choice}`);
-      }
-    } else if (choice === 'opfs' || choice === 'indexeddb') {
-      selectedBackend = choice;
-    } else {
-      throw new Error(`Unsupported storage conflict choice: ${choice}`);
-    }
-  }
-
-  if (selectedBackend === 'opfs' && !opfs.snapshot.available) {
-    throw new Error('OPFS was selected but is unavailable.');
-  }
-  if (selectedBackend === 'indexeddb' && !indexeddb.snapshot.available) {
-    throw new Error('IndexedDB was selected but is unavailable.');
-  }
-  if (isElectronDesktop() && selectedBackend !== 'opfs') {
-    throw new Error('Electron requires OPFS and will not open an IndexedDB fallback workspace.');
-  }
-
-  if (!options.readOnly) {
-    try {
-      persistBackend(selectedBackend);
-    } catch (error) {
-      if (rollbackMigration) {
-        try {
-          await rollbackMigration();
-        } catch (rollbackError) {
-          console.error('Failed to roll back OPFS after identity persistence failed.', rollbackError);
-        }
-      }
-      throw error;
-    }
-  }
-
-  storageBackend = selectedBackend;
-  workspaceStorageReadOnly = Boolean(options.readOnly);
-  workspaceRevision = null;
-  workspaceGenerationCache = null;
-
-  if (selectedBackend === 'opfs') {
-    const root = opfs.opfsRoot || await navigator.storage.getDirectory();
-    opfsDataDir = opfsDataDir || opfs.opfsDataDir ||
-      await root.getDirectoryHandle('data', { create: true });
-  }
-
-  console.log(`Using ${selectedBackend === 'opfs' ? 'OPFS' : 'IndexedDB'} storage backend`);
-  return selectedBackend;
-}
 
 const UNSUPPORTED_LOCAL_WORKSPACE_FILES = new Set([
   'sessions.json',
@@ -949,25 +270,58 @@ const isUnsupportedLocalWorkspacePath = (path: string): boolean => (
   path.startsWith('attachments/')
 );
 
-const hasUnsupportedLocalWorkspace = async (
-  dirHandle: FileSystemDirectoryHandle
-): Promise<boolean> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    return (await idbListRawFiles('')).some(record => (
-      isUnsupportedLocalWorkspacePath(record.filename)
-    ));
+// Earlier versions could keep a browser workspace in IndexedDB. That store is
+// retired, but its records must never be hidden behind a freshly initialized
+// empty OPFS workspace.
+const hasRetiredIndexedDbWorkspace = async (): Promise<boolean> => {
+  if (
+    typeof indexedDB === 'undefined' ||
+    typeof indexedDB.databases !== 'function' ||
+    !(await indexedDB.databases()).some(database => database.name === RETIRED_INDEXEDDB_NAME)
+  ) {
+    return false;
   }
 
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(RETIRED_INDEXEDDB_NAME);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const finish = (result: boolean | Error) => {
+        database.close();
+        if (result instanceof Error) reject(result);
+        else resolve(result);
+      };
+
+      if (!database.objectStoreNames.contains(RETIRED_INDEXEDDB_STORE)) {
+        finish(false);
+        return;
+      }
+      const countRequest = database
+        .transaction(RETIRED_INDEXEDDB_STORE, 'readonly')
+        .objectStore(RETIRED_INDEXEDDB_STORE)
+        .count();
+      countRequest.onerror = () => finish(countRequest.error || new Error('IndexedDB read failed.'));
+      countRequest.onsuccess = () => finish(countRequest.result > 0);
+    };
+  });
+};
+
+const findUnsupportedLocalWorkspace = async (
+  dirHandle: FileSystemDirectoryHandle
+): Promise<string | null> => {
   for await (const [name, entry] of (dirHandle as any).entries()) {
     if (
       (entry.kind === 'file' && isUnsupportedLocalWorkspacePath(name)) ||
       (entry.kind === 'directory' && name === 'attachments')
     ) {
-      return true;
+      return 'This local workspace uses an unsupported storage format. Its data was not changed.';
     }
   }
-  return false;
+  if (await hasRetiredIndexedDbWorkspace()) {
+    return 'This browser holds a workspace in the retired IndexedDB store, which this version cannot open. Its data was not changed.';
+  }
+  return null;
 };
 
 const readPersistedWorkspaceRevision = async (
@@ -1055,10 +409,9 @@ const ensureWorkspaceGeneration = async (
       'No complete local workspace generation could be validated. The active workspace was not changed.'
     );
   }
-  if (await hasUnsupportedLocalWorkspace(dirHandle)) {
-    throw new Error(
-      'This local workspace uses an unsupported storage format. Its data was not changed.'
-    );
+  const unsupportedReason = await findUnsupportedLocalWorkspace(dirHandle);
+  if (unsupportedReason) {
+    throw new Error(unsupportedReason);
   }
   if (workspaceStorageReadOnly) {
     throw new Error('An empty workspace must be initialized by the writer tab.');
@@ -1343,39 +696,20 @@ export const writeInternalRecoveryArchive = async (
   dirHandle: FileSystemDirectoryHandle,
   archive: Blob
 ): Promise<void> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbWriteRawData(INTERNAL_RECOVERY_ARCHIVE, archive);
-  } else {
-    await writeOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE, archive);
-  }
+  await writeOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE, archive);
   const stored = await readInternalRecoveryArchive(dirHandle);
   if (!stored || stored.size !== archive.size) {
     throw new Error('The workspace recovery archive could not be verified.');
   }
 };
 
-export const readInternalRecoveryArchive = async (
+export const readInternalRecoveryArchive = (
   dirHandle: FileSystemDirectoryHandle
-): Promise<Blob | null> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    const record = await idbReadRawData(INTERNAL_RECOVERY_ARCHIVE);
-    return record?.data instanceof Blob ? record.data : null;
-  }
-  return readOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
-};
+): Promise<Blob | null> => readOpfsBlobPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
 
-export const clearInternalRecoveryArchive = async (
+export const clearInternalRecoveryArchive = (
   dirHandle: FileSystemDirectoryHandle
-): Promise<void> => {
-  const backend = await getStorageBackend();
-  if (backend === 'indexeddb') {
-    await idbDeleteRawFile(INTERNAL_RECOVERY_ARCHIVE);
-  } else {
-    await deleteOpfsPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
-  }
-};
+): Promise<void> => deleteOpfsPath(dirHandle, INTERNAL_RECOVERY_ARCHIVE);
 
 const createPortableReplacementRemoteState = (
   current: ProjectRemoteState,
