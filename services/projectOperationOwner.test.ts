@@ -1,18 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createDeferred } from '../test/fixtures';
 import {
   ProjectOperationOwner,
   ProjectOperationStatus
 } from './projectOperationOwner';
-
-const createDeferred = <T,>() => {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-};
 
 describe('ProjectOperationOwner', () => {
   it('pauses new work and drains all queued tasks before close can proceed', async () => {

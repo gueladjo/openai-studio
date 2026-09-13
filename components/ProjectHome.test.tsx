@@ -1,77 +1,59 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, Project } from '../types';
 import { ProjectHome } from './ProjectHome';
 import { createElectronBridgeMock } from '../test/electronBridge';
+import { projectFixture } from '../test/fixtures';
+import { changeValue, useReactView } from '../test/reactView';
 
-const createProject = (): Project => {
-  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-  return {
-    id: 'project-home',
-    name: 'Research',
-    icon: 'research',
-    instructions: 'Use project evidence.',
-    defaultConfig,
-    sources: [{
-      id: 'source-search',
-      name: 'evidence.txt',
-      mimeType: 'text/plain',
-      byteSize: 100,
-      localBlob: { sha256: 'a'.repeat(64), byteSize: 100, mimeType: 'text/plain' },
-      capability: 'file_search',
-      addedAt: 1
-    }, {
-      id: 'source-analysis',
-      name: 'metrics.csv',
-      mimeType: 'text/csv',
-      byteSize: 200,
-      localBlob: { sha256: 'b'.repeat(64), byteSize: 200, mimeType: 'text/csv' },
-      capability: 'code_interpreter',
-      addedAt: 2
-    }, {
-      id: 'source-direct',
-      name: 'diagram.png',
-      mimeType: 'image/png',
-      byteSize: 300,
-      localBlob: { sha256: 'c'.repeat(64), byteSize: 300, mimeType: 'image/png' },
-      capability: 'direct_attachment',
-      addedAt: 3
-    }],
-    createdAt: 1,
-    updatedAt: 3
-  };
-};
+const createProject = () => projectFixture({
+  id: 'project-home',
+  instructions: 'Use project evidence.',
+  sources: [{
+    id: 'source-search',
+    name: 'evidence.txt',
+    mimeType: 'text/plain',
+    byteSize: 100,
+    localBlob: { sha256: 'a'.repeat(64), byteSize: 100, mimeType: 'text/plain' },
+    capability: 'file_search',
+    addedAt: 1
+  }, {
+    id: 'source-analysis',
+    name: 'metrics.csv',
+    mimeType: 'text/csv',
+    byteSize: 200,
+    localBlob: { sha256: 'b'.repeat(64), byteSize: 200, mimeType: 'text/csv' },
+    capability: 'code_interpreter',
+    addedAt: 2
+  }, {
+    id: 'source-direct',
+    name: 'diagram.png',
+    mimeType: 'image/png',
+    byteSize: 300,
+    localBlob: { sha256: 'c'.repeat(64), byteSize: 300, mimeType: 'image/png' },
+    capability: 'direct_attachment',
+    addedAt: 3
+  }],
+  updatedAt: 3
+});
 
 describe('ProjectHome', () => {
+  const view = useReactView();
   let container: HTMLDivElement;
-  let root: Root;
 
   beforeEach(() => {
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
     window.electronAPI = createElectronBridgeMock();
   });
 
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
+  afterEach(() => {
     delete window.electronAPI;
-    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT;
   });
 
   it('restores Electron focus when the project source picker closes', async () => {
     const onAddSources = vi.fn();
-    await act(async () => {
-      root.render(<ProjectHome
+    container = await view.render(
+      <ProjectHome
         project={createProject()}
         sessions={[]}
         totalIndexedUsageBytes={0}
@@ -82,8 +64,8 @@ describe('ProjectHome', () => {
         onRetrySource={() => undefined}
         onDownloadSource={() => undefined}
         onDeleteProject={() => undefined}
-      />);
-    });
+      />
+    );
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     const source = new File(['project source'], 'source.txt', { type: 'text/plain' });
     Object.defineProperty(input, 'files', {
@@ -106,8 +88,8 @@ describe('ProjectHome', () => {
   });
 
   it('shows source capabilities, durable statuses, usage, and project errors', async () => {
-    await act(async () => {
-      root.render(<ProjectHome
+    container = await view.render(
+      <ProjectHome
         project={createProject()}
         sessions={[]}
         remoteIndex={{
@@ -138,8 +120,8 @@ describe('ProjectHome', () => {
         onRetrySource={() => undefined}
         onDownloadSource={() => undefined}
         onDeleteProject={() => undefined}
-      />);
-    });
+      />
+    );
 
     expect(container.textContent).toContain('Searchable');
     expect(container.textContent).toContain('Analysis');
@@ -171,8 +153,8 @@ describe('ProjectHome', () => {
   });
 
   it('disables source mutations for global project work without a source ID', async () => {
-    await act(async () => {
-      root.render(<ProjectHome
+    container = await view.render(
+      <ProjectHome
         project={createProject()}
         sessions={[]}
         totalIndexedUsageBytes={0}
@@ -185,8 +167,8 @@ describe('ProjectHome', () => {
         onRetrySource={() => undefined}
         onDownloadSource={() => undefined}
         onDeleteProject={() => undefined}
-      />);
-    });
+      />
+    );
 
     const buttons = Array.from(container.querySelectorAll('button'));
     expect(buttons.find(button => button.textContent?.includes('Add sources'))?.disabled)
@@ -205,8 +187,8 @@ describe('ProjectHome', () => {
     const onUpdate = vi.fn();
     const onDeleteProject = vi.fn();
     const onNewChat = vi.fn();
-    await act(async () => {
-      root.render(<ProjectHome
+    container = await view.render(
+      <ProjectHome
         project={createProject()}
         sessions={[]}
         totalIndexedUsageBytes={0}
@@ -217,17 +199,10 @@ describe('ProjectHome', () => {
         onRetrySource={() => undefined}
         onDownloadSource={() => undefined}
         onDeleteProject={onDeleteProject}
-      />);
-    });
+      />
+    );
     const name = container.querySelector<HTMLInputElement>('[aria-label="Project name"]')!;
-    const setter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      'value'
-    )?.set;
-    await act(async () => {
-      setter?.call(name, '  Client work  ');
-      name.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await changeValue(name, '  Client work  ');
     await act(async () => {
       name.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, Project, ProjectRemoteState, ProjectSource } from '../types';
+import { projectFixture } from '../test/fixtures';
+import { ProjectRemoteState, ProjectSource } from '../types';
 import { MAX_INDEXED_USAGE_BYTES } from '../utils/projectSources';
 import {
   ProjectSourceService,
@@ -24,21 +25,10 @@ const source: ProjectSource = {
   capability: 'file_search',
   addedAt: 1
 };
-const project: Project = {
-  id: 'project-1',
-  name: 'Research',
-  icon: 'research',
+const project = projectFixture({
   instructions: 'Use the project evidence.',
-  defaultConfig: {
-    model: DEFAULT_CONFIG.model,
-    reasoningEffort: DEFAULT_CONFIG.reasoningEffort,
-    textVerbosity: DEFAULT_CONFIG.textVerbosity,
-    tools: DEFAULT_CONFIG.tools
-  },
-  sources: [source],
-  createdAt: 1,
-  updatedAt: 1
-};
+  sources: [source]
+});
 
 const createClient = () => ({
   files: {

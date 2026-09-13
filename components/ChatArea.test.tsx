@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { findButton, useReactView } from '../test/reactView';
 import {
   AssistantMarkdown,
   ChatArea,
@@ -96,14 +96,9 @@ describe('response model labels', () => {
 });
 
 describe('response token usage details', () => {
+  const view = useReactView();
+
   it('displays cache writes when reported by the API', async () => {
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
     const message: Message = {
       id: 'assistant-cache-write',
       role: 'assistant',
@@ -122,36 +117,25 @@ describe('response token usage details', () => {
       }
     };
 
-    try {
-      await act(async () => {
-        root.render(
-          <MessageRow
-            message={message}
-            canRetry={false}
-            canRegenerate={false}
-            apiKey=""
-            onRetryFailedMessage={() => undefined}
-            onRegenerateResponse={() => undefined}
-          />
-        );
-      });
-      await act(async () => {
-        container.querySelector<HTMLButtonElement>(
-          '[aria-label="Show response details"]'
-        )?.click();
-      });
+    const container = await view.render(
+      <MessageRow
+        message={message}
+        canRetry={false}
+        canRegenerate={false}
+        apiKey=""
+        onRetryFailedMessage={() => undefined}
+        onRegenerateResponse={() => undefined}
+      />
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Show response details"]'
+      )?.click();
+    });
 
-      const cacheWriteLabel = Array.from(container.querySelectorAll('span'))
-        .find(element => element.textContent === 'Cache write');
-      expect(cacheWriteLabel?.parentElement?.textContent).toBe('Cache write1,234');
-    } finally {
-      await act(async () => {
-        root.unmount();
-      });
-      container.remove();
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-        .IS_REACT_ACT_ENVIRONMENT;
-    }
+    const cacheWriteLabel = Array.from(container.querySelectorAll('span'))
+      .find(element => element.textContent === 'Cache write');
+    expect(cacheWriteLabel?.parentElement?.textContent).toBe('Cache write1,234');
   });
 });
 
@@ -333,14 +317,9 @@ describe('ChatArea incomplete-response status', () => {
 });
 
 describe('ChatArea assistant phases', () => {
+  const view = useReactView();
+
   it('renders final output as primary content and commentary as collapsible progress', async () => {
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
     const message: Message = {
       id: 'assistant-phases',
       role: 'assistant',
@@ -356,42 +335,30 @@ describe('ChatArea assistant phases', () => {
       timestamp: 1
     };
 
-    try {
-      await act(async () => {
-        root.render(
-          <MessageRow
-            message={message}
-            canRetry={false}
-            canRegenerate={false}
-            apiKey=""
-            onRetryFailedMessage={() => undefined}
-            onRegenerateResponse={() => undefined}
-          />
-        );
-      });
+    const container = await view.render(
+      <MessageRow
+        message={message}
+        canRetry={false}
+        canRegenerate={false}
+        apiKey=""
+        onRetryFailedMessage={() => undefined}
+        onRegenerateResponse={() => undefined}
+      />
+    );
 
-      expect(container.querySelector('.message-content')?.textContent).toBe(
-        'Final result.'
-      );
-      expect(container.textContent).not.toContain('Checking sources.');
-      const progressButton = Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Progress'));
-      expect(progressButton?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.message-content')?.textContent).toBe(
+      'Final result.'
+    );
+    expect(container.textContent).not.toContain('Checking sources.');
+    const progressButton = findButton(container, 'Progress');
+    expect(progressButton?.getAttribute('aria-expanded')).toBe('false');
 
-      await act(async () => {
-        progressButton?.click();
-      });
+    await act(async () => {
+      progressButton?.click();
+    });
 
-      expect(progressButton?.getAttribute('aria-expanded')).toBe('true');
-      expect(container.textContent).toContain('Checking sources.');
-    } finally {
-      await act(async () => {
-        root.unmount();
-      });
-      container.remove();
-      delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-        .IS_REACT_ACT_ENVIRONMENT;
-    }
+    expect(progressButton?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('Checking sources.');
   });
 });
 

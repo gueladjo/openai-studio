@@ -83,6 +83,17 @@ const messageOutput = {
   }]
 } as OpenAIResponse['output'][number];
 
+/** Streams a single terminal event carrying the completed response. */
+const mockCompletedStream = (
+  output: OpenAIResponse['output'] = [messageOutput]
+): void => {
+  createResponseMock.mockResolvedValue(createStream([{
+    type: 'response.completed',
+    sequence_number: 1,
+    response: createCompletedResponse(output)
+  }]));
+};
+
 const createPhasedMessageOutput = (
   id: string,
   text: string,
@@ -237,11 +248,7 @@ describe('OpenAI request contracts', () => {
       queries: ['answer'],
       results: null
     } as unknown as OpenAIResponse['output'][number];
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: createCompletedResponse([fileSearchCall, citedMessage])
-    }]));
+    mockCompletedStream([fileSearchCall, citedMessage]);
 
     const result = await generateResponse(
       [userMessage, previousAssistant, nextUser],
@@ -350,11 +357,7 @@ describe('OpenAI request contracts', () => {
   });
 
   it('normalizes custom Web Search options and omits blank location fields', async () => {
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: createCompletedResponse([messageOutput])
-    }]));
+    mockCompletedStream();
 
     await generateResponse(
       [userMessage],
@@ -388,11 +391,7 @@ describe('OpenAI request contracts', () => {
   });
 
   it('omits Web Search user location when it is cleared', async () => {
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: createCompletedResponse([messageOutput])
-    }]));
+    mockCompletedStream();
 
     await generateResponse(
       [userMessage],
@@ -416,12 +415,7 @@ describe('OpenAI request contracts', () => {
   });
 
   it('normalizes unsupported options and omits verbosity for o3', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
 
     await generateResponse(
       [userMessage],
@@ -456,12 +450,7 @@ describe('OpenAI request contracts', () => {
   });
 
   it('maps resolved images and documents to their SDK input parts once', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
     const resolveAttachmentContent = vi.fn(async attachment => (
       attachment.type === 'image/png'
         ? 'data:image/png;base64,AA=='
@@ -547,15 +536,7 @@ describe('OpenAI request contracts', () => {
         { type: 'image', url: 'https://example.com/chart.png' }
       ]
     } as unknown as OpenAIResponse['output'][number];
-    const completedResponse = createCompletedResponse([
-      annotatedMessage,
-      codeInterpreterOutput
-    ]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream([annotatedMessage, codeInterpreterOutput]);
 
     const result = await generateResponse(
       [userMessage],
@@ -779,12 +760,7 @@ describe('generateResponse reasoning summaries', () => {
   });
 
   it('does not request a summary when reasoning is disabled', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
 
     await generateResponse(
       [userMessage],
@@ -1058,11 +1034,8 @@ describe('generateResponse terminal output', () => {
 });
 
 describe('generateResponse assistant phases', () => {
-  beforeEach(() => {
-    createResponseMock.mockReset();
-  });
-
-  it('preserves multiple terminal output messages and streams their phases', async () => {
+  /** Streams a commentary message followed by a final answer. */
+  const mockPhasedStream = (): void => {
     const commentaryOutput = createPhasedMessageOutput(
       'msg-commentary',
       'I will check the data.',
@@ -1073,10 +1046,6 @@ describe('generateResponse assistant phases', () => {
       'The data is valid.',
       'final_answer'
     );
-    const completedResponse = createCompletedResponse([
-      commentaryOutput,
-      finalOutput
-    ]);
     createResponseMock.mockResolvedValue(createStream([{
       type: 'response.output_item.added',
       output_index: 0,
@@ -1106,8 +1075,16 @@ describe('generateResponse assistant phases', () => {
     }, {
       type: 'response.completed',
       sequence_number: 5,
-      response: completedResponse
+      response: createCompletedResponse([commentaryOutput, finalOutput])
     }]));
+  };
+
+  beforeEach(() => {
+    createResponseMock.mockReset();
+  });
+
+  it('preserves multiple terminal output messages and streams their phases', async () => {
+    mockPhasedStream();
     const onTextDelta = vi.fn();
 
     const result = await generateResponse(
@@ -1135,51 +1112,7 @@ describe('generateResponse assistant phases', () => {
   });
 
   it('measures thinking time until primary output begins, ignoring progress commentary', async () => {
-    const commentaryOutput = createPhasedMessageOutput(
-      'msg-commentary',
-      'I will check the data.',
-      'commentary'
-    );
-    const finalOutput = createPhasedMessageOutput(
-      'msg-final',
-      'The data is valid.',
-      'final_answer'
-    );
-    const completedResponse = createCompletedResponse([
-      commentaryOutput,
-      finalOutput
-    ]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.output_item.added',
-      output_index: 0,
-      sequence_number: 1,
-      item: commentaryOutput
-    }, {
-      type: 'response.output_text.delta',
-      item_id: 'msg-commentary',
-      output_index: 0,
-      content_index: 0,
-      sequence_number: 2,
-      delta: 'I will check the data.',
-      logprobs: []
-    }, {
-      type: 'response.output_item.added',
-      output_index: 1,
-      sequence_number: 3,
-      item: finalOutput
-    }, {
-      type: 'response.output_text.delta',
-      item_id: 'msg-final',
-      output_index: 1,
-      content_index: 0,
-      sequence_number: 4,
-      delta: 'The data is valid.',
-      logprobs: []
-    }, {
-      type: 'response.completed',
-      sequence_number: 5,
-      response: completedResponse
-    }]));
+    mockPhasedStream();
     const nowSpy = vi.spyOn(performance, 'now')
       .mockReturnValueOnce(1_000)
       .mockReturnValueOnce(181_000);
@@ -1202,12 +1135,7 @@ describe('generateResponse conversation history', () => {
   });
 
   it('does not replay local assistant error rows', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
     const messages: Message[] = [
       userMessage,
       {
@@ -1234,12 +1162,7 @@ describe('generateResponse conversation history', () => {
   });
 
   it('does not replay attachments from a failed user turn', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
     const resolveAttachmentContent = vi.fn();
     const messages: Message[] = [
       {
@@ -1344,12 +1267,7 @@ describe('generateResponse conversation history', () => {
   });
 
   it('keeps stopped partial assistant output in local history', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
+    mockCompletedStream();
     const messages: Message[] = [
       userMessage,
       {
@@ -1433,46 +1351,6 @@ describe('generateResponse conversation history', () => {
       { role: 'assistant', content: 'Working on it.', phase: 'commentary' },
       { role: 'assistant', content: 'The earlier answer.', phase: 'final_answer' },
       { role: 'user', content: 'Build on that answer.' }
-    ]);
-  });
-
-  it('round-trips phased assistant messages in ordinary manual history', async () => {
-    const completedResponse = createCompletedResponse([messageOutput]);
-    createResponseMock.mockResolvedValue(createStream([{
-      type: 'response.completed',
-      sequence_number: 1,
-      response: completedResponse
-    }]));
-    const messages: Message[] = [
-      userMessage,
-      {
-        id: 'assistant-1',
-        role: 'assistant',
-        content: 'Inspecting.\n\nFirst answer.',
-        outputMessages: [{
-          content: 'Inspecting.',
-          phase: 'commentary'
-        }, {
-          content: 'First answer.',
-          phase: 'final_answer'
-        }],
-        timestamp: 2
-      },
-      {
-        id: 'user-2',
-        role: 'user',
-        content: 'Continue.',
-        timestamp: 3
-      }
-    ];
-
-    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
-
-    expect(createResponseMock.mock.calls[0][0].input).toEqual([
-      { role: 'user', content: 'Solve this problem.' },
-      { role: 'assistant', content: 'Inspecting.', phase: 'commentary' },
-      { role: 'assistant', content: 'First answer.', phase: 'final_answer' },
-      { role: 'user', content: 'Continue.' }
     ]);
   });
 

@@ -1,19 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_CONFIG,
-  type LocalBlobReference,
-  type Project,
-  type Session,
-  type SystemInstruction
+import { chatConfig, projectFixture } from '../test/fixtures';
+import type {
+  LocalBlobReference,
+  Project,
+  Session,
+  SystemInstruction
 } from '../types';
 import type { WorkspaceReplacement } from './storage';
 import { createWorkspaceMergePlan } from './workspaceMerge';
 
-const config = (systemInstructionId?: string) => ({
-  ...DEFAULT_CONFIG,
-  tools: { ...DEFAULT_CONFIG.tools },
-  ...(systemInstructionId ? { systemInstructionId } : {})
-});
+const config = (systemInstructionId?: string) => chatConfig(
+  systemInstructionId ? { systemInstructionId } : {}
+);
 
 const createSession = (
   id: string,
@@ -74,27 +72,19 @@ const createProject = (
   sourceId: string,
   hash: string,
   instructions = 'Use project context.'
-): Project => {
-  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-  return {
-    id,
-    name: 'Research',
-    icon: 'research',
-    instructions,
-    defaultConfig,
-    sources: [{
-      id: sourceId,
-      name: 'research.txt',
-      mimeType: 'text/plain',
-      byteSize: 5,
-      localBlob: { sha256: hash, byteSize: 5, mimeType: 'text/plain' },
-      capability: 'file_search',
-      addedAt: 1
-    }],
-    createdAt: 1,
-    updatedAt: 1
-  };
-};
+): Project => projectFixture({
+  id,
+  instructions,
+  sources: [{
+    id: sourceId,
+    name: 'research.txt',
+    mimeType: 'text/plain',
+    byteSize: 5,
+    localBlob: { sha256: hash, byteSize: 5, mimeType: 'text/plain' },
+    capability: 'file_search',
+    addedAt: 1
+  }]
+});
 
 describe('workspace merge planning', () => {
   it('imports disjoint chats newest-first with stable current-before-archive ties', () => {

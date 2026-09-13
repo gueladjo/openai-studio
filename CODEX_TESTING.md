@@ -15,9 +15,10 @@ bash -ilc 'command -v node && command -v npm && node --version && npm --version'
 
 Vitest uses mocked SDK calls, an in-memory OPFS, and disposable filesystem
 fixtures. Its controller coverage uses `happy-dom` with mocked child components
-and services. Local tests need no live key, real browser profile, real workspace,
-or Electron process. Run and retry these checks as part of authorized work;
-keep fixtures isolated when extending the suite.
+and services. Shared render, form-value, and fixture helpers live in `test/`.
+Local tests need no live key, real browser profile, real workspace, or Electron
+process. Run and retry these checks as part of authorized work; keep fixtures
+isolated when extending the suite.
 
 There is no lint or format script. Finite checks include:
 

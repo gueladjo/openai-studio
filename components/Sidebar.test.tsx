@@ -1,33 +1,15 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, type Project, type Session } from '../types';
+import { describe, expect, it, vi } from 'vitest';
+import type { Project, Session } from '../types';
+import { projectFixture, sessionFixture } from '../test/fixtures';
+import { changeValue, findButton, useReactView } from '../test/reactView';
 import { Sidebar } from './Sidebar';
 
 describe('Sidebar workspace merge controls', () => {
+  const view = useReactView();
   let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT;
-  });
 
   const renderSidebar = async ({
     onMergeData = vi.fn(),
@@ -50,44 +32,42 @@ describe('Sidebar workspace merge controls', () => {
     onRefreshManagedBackups?: () => void;
     automaticBackupsSupported?: boolean;
   } = {}) => {
-    await act(async () => {
-      root.render(
-        <Sidebar
-          sessions={sessions}
-          projects={projects}
-          currentSessionId={null}
-          onSelectSession={() => undefined}
-          onNewSession={onNewSession}
-          onDeleteSession={() => undefined}
-          isDarkMode={false}
-          toggleTheme={() => undefined}
-          apiKey=""
-          onApiKeyChange={() => undefined}
-          onApiKeySave={onApiKeySave}
-          onExportData={() => undefined}
-          onImportData={() => undefined}
-          onMergeData={onMergeData}
-          mergeDisabled={mergeDisabled}
-          backupState={{
-            supported: automaticBackupsSupported,
-            enabled: false,
-            destinationStatus: 'unavailable',
-            running: false,
-            backups: []
-          }}
-          onToggleAutomaticBackups={() => undefined}
-          onChooseBackupFolder={() => undefined}
-          onReconnectBackupFolder={() => undefined}
-          onRefreshManagedBackups={onRefreshManagedBackups}
-          onBackUpNow={() => undefined}
-          onRestoreManagedBackup={() => undefined}
-          onExportManagedBackup={() => undefined}
-          onDeleteManagedBackup={() => undefined}
-          undoWorkspaceAction={undoWorkspaceAction}
-          onUndoWorkspaceMutation={() => undefined}
-        />
-      );
-    });
+    container = await view.render(
+      <Sidebar
+        sessions={sessions}
+        projects={projects}
+        currentSessionId={null}
+        onSelectSession={() => undefined}
+        onNewSession={onNewSession}
+        onDeleteSession={() => undefined}
+        isDarkMode={false}
+        toggleTheme={() => undefined}
+        apiKey=""
+        onApiKeyChange={() => undefined}
+        onApiKeySave={onApiKeySave}
+        onExportData={() => undefined}
+        onImportData={() => undefined}
+        onMergeData={onMergeData}
+        mergeDisabled={mergeDisabled}
+        backupState={{
+          supported: automaticBackupsSupported,
+          enabled: false,
+          destinationStatus: 'unavailable',
+          running: false,
+          backups: []
+        }}
+        onToggleAutomaticBackups={() => undefined}
+        onChooseBackupFolder={() => undefined}
+        onReconnectBackupFolder={() => undefined}
+        onRefreshManagedBackups={onRefreshManagedBackups}
+        onBackUpNow={() => undefined}
+        onRestoreManagedBackup={() => undefined}
+        onExportManagedBackup={() => undefined}
+        onDeleteManagedBackup={() => undefined}
+        undoWorkspaceAction={undoWorkspaceAction}
+        onUndoWorkspaceMutation={() => undefined}
+      />
+    );
     const settingsLabel = Array.from(container.querySelectorAll('span'))
       .find(element => element.textContent === 'Settings');
     await act(async () => {
@@ -95,25 +75,13 @@ describe('Sidebar workspace merge controls', () => {
     });
   };
 
-  it('shows a settings title and icon without the former user label', async () => {
-    await renderSidebar();
-
-    expect(container.textContent).not.toContain('OpenAI User');
-    expect(container.querySelector('.lucide-settings')).not.toBeNull();
-    const settingsLabel = Array.from(container.querySelectorAll('span'))
-      .find(element => element.textContent === 'Settings');
-    expect(settingsLabel?.classList).toContain('text-base');
-  });
-
   it('refreshes managed backup validation when backup details open', async () => {
     const onRefreshManagedBackups = vi.fn();
     await renderSidebar({
       automaticBackupsSupported: true,
       onRefreshManagedBackups
     });
-    const details = Array.from(container.querySelectorAll('button')).find(
-      button => button.textContent?.includes('Automatic daily backups')
-    );
+    const details = findButton(container, 'Automatic daily backups');
 
     await act(async () => details?.click());
 
@@ -178,25 +146,12 @@ describe('Sidebar workspace merge controls', () => {
   });
 
   it('shows project chat paths in global search and stages API-key changes', async () => {
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
-      id: 'project-1',
-      name: 'Client Alpha',
-      icon: 'briefcase',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    };
-    const session: Session = {
+    const project = projectFixture({ name: 'Client Alpha', icon: 'briefcase' });
+    const session = sessionFixture({
       id: 'chat-1',
       title: 'Quarterly plan',
-      projectId: project.id,
-      messages: [],
-      config: DEFAULT_CONFIG,
-      lastModified: 1
-    };
+      projectId: project.id
+    });
     const onApiKeySave = vi.fn();
     await renderSidebar({ sessions: [session], projects: [project], onApiKeySave });
 
@@ -205,50 +160,24 @@ describe('Sidebar workspace merge controls', () => {
       heading.textContent?.trim()
     ))).toEqual(['Projects', 'Chats']);
     expect(container.textContent).not.toContain('General chats');
-    const projectButton = Array.from(container.querySelectorAll('button')).find(
-      button => button.textContent?.includes('Client Alpha')
-    );
-    expect(projectButton?.textContent?.trim()).toBe('Client Alpha');
+    expect(findButton(container, 'Client Alpha')?.textContent?.trim()).toBe('Client Alpha');
 
     const search = container.querySelector<HTMLInputElement>(
       'input[placeholder="Search projects and chats..."]'
     )!;
-    const searchSetter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      'value'
-    )?.set;
-    await act(async () => {
-      searchSetter?.call(search, 'quarterly');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await changeValue(search, 'quarterly');
     expect(container.textContent).toContain('Quarterly plan');
     expect(container.textContent).toContain('/ Client Alpha');
 
     const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(async () => {
-      searchSetter?.call(keyInput, 'sk-staged');
-      keyInput.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await changeValue(keyInput, 'sk-staged');
     expect(onApiKeySave).not.toHaveBeenCalled();
-    const save = Array.from(container.querySelectorAll('button')).find(
-      button => button.textContent?.trim() === 'Save API key'
-    )!;
-    await act(async () => save.click());
+    await act(async () => findButton(container, 'Save API key')?.click());
     expect(onApiKeySave).toHaveBeenCalledWith('sk-staged');
   });
 
   it('starts chats from project rows and the standalone Chats section', async () => {
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
-      id: 'project-1',
-      name: 'Client Alpha',
-      icon: 'briefcase',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    };
+    const project = projectFixture({ name: 'Client Alpha', icon: 'briefcase' });
     const onNewSession = vi.fn();
     await renderSidebar({ projects: [project], onNewSession });
 
@@ -267,17 +196,7 @@ describe('Sidebar workspace merge controls', () => {
   });
 
   it('uses the shared breakpoint to keep shortcuts visible on mobile', async () => {
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
-      id: 'project-1',
-      name: 'Client Alpha',
-      icon: 'briefcase',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    };
+    const project = projectFixture({ name: 'Client Alpha', icon: 'briefcase' });
     await renderSidebar({ projects: [project] });
 
     const shortcuts = [

@@ -4,12 +4,8 @@ import {
   TextReader,
   ZipWriter
 } from '@zip.js/zip.js';
-import {
-  DEFAULT_CONFIG,
-  type FileAttachment,
-  type Project,
-  type Session
-} from '../types';
+import { chatConfig, projectFixture } from '../test/fixtures';
+import type { FileAttachment, Session } from '../types';
 import { encodeUtf8, sha256Blob, sha256Text } from './contentAddressing';
 import {
   BackupArchiveError,
@@ -35,9 +31,9 @@ const sessions: Session[] = [{
   id: 'session-1',
   title: 'Archive test',
   config: {
-    ...DEFAULT_CONFIG,
+    ...chatConfig(),
     tools: {
-      ...DEFAULT_CONFIG.tools,
+      ...chatConfig().tools,
       webSearchOptions: {
         searchContextSize: 'high',
         userLocation: {
@@ -223,13 +219,9 @@ describe('portable workspace archive', () => {
   });
 
   it('round-trips portable projects and excludes the remote source registry', async () => {
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const projects: Project[] = [{
+    const projects = [projectFixture({
       id: 'project-archive',
-      name: 'Archive project',
       icon: 'book',
-      instructions: 'Use the saved source.',
-      defaultConfig,
       sources: [{
         id: 'source-archive',
         name: 'knowledge.txt',
@@ -243,9 +235,8 @@ describe('portable workspace archive', () => {
         capability: 'file_search',
         addedAt: 2
       }],
-      createdAt: 1,
       updatedAt: 2
-    }];
+    })];
     const projectSessions = structuredClone(snapshot.sessions);
     const sharedReference = projects[0].sources[0].localBlob;
     projectSessions[0].messages[0].attachments![0] = {

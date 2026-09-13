@@ -2,7 +2,8 @@
 
 import React, { act } from 'react';
 import { createElectronBridgeMock } from './test/electronBridge';
-import { createRoot, type Root } from 'react-dom/client';
+import { createDeferred, projectFixture, sessionFixture } from './test/fixtures';
+import { useReactView } from './test/reactView';
 import {
   afterEach,
   beforeEach,
@@ -85,16 +86,6 @@ interface GenerateResult {
   responseId: string;
   generatedFiles?: GeneratedFile[];
 }
-
-const createDeferred = <T,>() => {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-};
 
 const mocks = vi.hoisted(() => ({
   WorkspaceRevisionConflictError: class WorkspaceRevisionConflictError extends Error {},
@@ -283,30 +274,12 @@ const createSession = (
   id: string,
   title: string,
   messages: Message[] = []
-): Session => ({
-  id,
-  title,
-  messages,
-  config: {
-    ...DEFAULT_CONFIG,
-    tools: { ...DEFAULT_CONFIG.tools }
-  },
-  lastModified: 1
-});
+): Session => sessionFixture({ id, title, messages });
 
-const createProject = (id = 'project-1'): Project => {
-  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-  return {
-    id,
-    name: 'Research',
-    icon: 'research',
-    instructions: 'Use the current project instructions.',
-    defaultConfig,
-    sources: [],
-    createdAt: 1,
-    updatedAt: 1
-  };
-};
+const createProject = (id = 'project-1'): Project => projectFixture({
+  id,
+  instructions: 'Use the current project instructions.'
+});
 
 const completedResult = (
   content = 'Completed response.'
@@ -321,14 +294,9 @@ const completedResult = (
 
 describe('App workspace and request lifecycle', () => {
   let container: HTMLDivElement;
-  let root: Root | null;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
       value: 1024
@@ -337,11 +305,6 @@ describe('App workspace and request lifecycle', () => {
     delete (window as typeof window & {
       showSaveFilePicker?: unknown;
     }).showSaveFilePicker;
-    document.body.innerHTML = '';
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = null;
-
     mocks.apiKey = 'workspace-key';
     mocks.bundledApiKey = '';
     mocks.chatAreaProps = null;
@@ -459,18 +422,15 @@ describe('App workspace and request lifecycle', () => {
     vi.stubGlobal('confirm', vi.fn(() => true));
   });
 
-  afterEach(async () => {
-    if (root) {
-      await act(async () => {
-        root?.unmount();
-      });
-    }
+  afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
-    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT;
   });
+
+  // Registered after the hooks above so the tree unmounts before mocks and
+  // timers are restored.
+  const view = useReactView();
 
   const flushMicrotasks = async (turns = 12): Promise<void> => {
     for (let turn = 0; turn < turns; turn += 1) {
@@ -481,10 +441,7 @@ describe('App workspace and request lifecycle', () => {
   };
 
   const renderApp = async (): Promise<void> => {
-    root = createRoot(container);
-    await act(async () => {
-      root?.render(<App />);
-    });
+    container = await view.render(<App />);
   };
 
   const finishInitialization = async (): Promise<void> => {
@@ -655,10 +612,7 @@ describe('App workspace and request lifecycle', () => {
     await flushMicrotasks();
     expect(getSidebarProps().undoWorkspaceAction).toBe('restore');
 
-    await act(async () => {
-      root?.unmount();
-    });
-    root = null;
+    await view.unmount();
     mocks.sidebarProps = null;
 
     await renderApp();

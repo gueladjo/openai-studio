@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 
 import React, { act, useState } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CONFIG,
   ModelId,
   type ChatConfig,
   type SystemInstruction
 } from '../types';
+import { changeValue, useReactView } from '../test/reactView';
 import { ConfigPanel } from './ConfigPanel';
 
 interface HarnessProps {
@@ -52,40 +52,19 @@ const ConfigPanelHarness: React.FC<HarnessProps> = ({
 };
 
 describe('ConfigPanel', () => {
+  const view = useReactView();
   let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-      configurable: true,
-      value: true
-    });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT;
-  });
 
   const renderPanel = async (
     onConfigChange = vi.fn(),
     readOnly = false
   ) => {
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          onConfigChange={onConfigChange}
-          readOnly={readOnly}
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        onConfigChange={onConfigChange}
+        readOnly={readOnly}
+      />
+    );
     return onConfigChange;
   };
 
@@ -125,34 +104,6 @@ describe('ConfigPanel', () => {
       .find(element => element.textContent?.includes(label))!
       .querySelector('input')!
   );
-
-  const changeInput = async (input: HTMLInputElement, value: string) => {
-    const valueSetter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      'value'
-    )?.set;
-    await act(async () => {
-      valueSetter?.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  };
-
-  const changeValue = async (
-    element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-    value: string,
-    eventName: 'input' | 'change' = 'input'
-  ) => {
-    const prototype = element instanceof HTMLSelectElement
-      ? HTMLSelectElement.prototype
-      : element instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-    const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    await act(async () => {
-      valueSetter?.call(element, value);
-      element.dispatchEvent(new Event(eventName, { bubbles: true }));
-    });
-  };
 
   it('starts collapsed and keeps disclosure independent from enablement', async () => {
     const onConfigChange = await renderPanel();
@@ -196,9 +147,9 @@ describe('ConfigPanel', () => {
       getContextButton('High').click();
     });
 
-    await changeInput(getInput('City'), 'London');
-    await changeInput(getInput('Region'), 'England');
-    await changeInput(getInput('Country'), 'g-b');
+    await changeValue(getInput('City'), 'London');
+    await changeValue(getInput('Region'), 'England');
+    await changeValue(getInput('Country'), 'g-b');
 
     expect(getContextButton('High').getAttribute('aria-pressed')).toBe('true');
     expect(getInput('Country').value).toBe('GB');
@@ -236,7 +187,7 @@ describe('ConfigPanel', () => {
       })
     }));
 
-    await changeInput(getInput('City'), 'Paris');
+    await changeValue(getInput('City'), 'Paris');
     expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
       tools: expect.objectContaining({
         webSearchOptions: expect.objectContaining({
@@ -263,18 +214,16 @@ describe('ConfigPanel', () => {
 
   it('selects Astra with its model-specific reasoning options', async () => {
     const onConfigChange = vi.fn();
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          initialConfig={{
-            ...DEFAULT_CONFIG,
-            model: ModelId.GPT_5_6_SOL,
-            reasoningEffort: 'none'
-          }}
-          onConfigChange={onConfigChange}
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        initialConfig={{
+          ...DEFAULT_CONFIG,
+          model: ModelId.GPT_5_6_SOL,
+          reasoningEffort: 'none'
+        }}
+        onConfigChange={onConfigChange}
+      />
+    );
     const modelPicker = Array.from(container.querySelectorAll('select')).find(
       select => select.querySelector(`option[value="${ModelId.GPT_6_ASTRA}"]`)
     )!;
@@ -299,18 +248,16 @@ describe('ConfigPanel', () => {
       title: 'Concise',
       content: 'Keep answers brief.'
     }];
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          initialConfig={{
-            ...DEFAULT_CONFIG,
-            systemInstructionId: instructions[0].id
-          }}
-          onConfigChange={() => undefined}
-          systemInstructions={instructions}
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        initialConfig={{
+          ...DEFAULT_CONFIG,
+          systemInstructionId: instructions[0].id
+        }}
+        onConfigChange={() => undefined}
+        systemInstructions={instructions}
+      />
+    );
 
     const pickerLabel = Array.from(container.querySelectorAll('label')).find(
       label => label.textContent?.trim() === 'System instructions'
@@ -351,21 +298,19 @@ describe('ConfigPanel', () => {
     const onUpdateSystemInstruction = vi.fn();
     const onCreateSystemInstruction = vi.fn();
     const onDeleteSystemInstruction = vi.fn();
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          initialConfig={{
-            ...DEFAULT_CONFIG,
-            systemInstructionId: instructions[0].id
-          }}
-          onConfigChange={onConfigChange}
-          systemInstructions={instructions}
-          onUpdateSystemInstruction={onUpdateSystemInstruction}
-          onCreateSystemInstruction={onCreateSystemInstruction}
-          onDeleteSystemInstruction={onDeleteSystemInstruction}
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        initialConfig={{
+          ...DEFAULT_CONFIG,
+          systemInstructionId: instructions[0].id
+        }}
+        onConfigChange={onConfigChange}
+        systemInstructions={instructions}
+        onUpdateSystemInstruction={onUpdateSystemInstruction}
+        onCreateSystemInstruction={onCreateSystemInstruction}
+        onDeleteSystemInstruction={onDeleteSystemInstruction}
+      />
+    );
 
     const picker = Array.from(container.querySelectorAll('select')).find(
       select => select.value === 'instruction-1'
@@ -404,15 +349,13 @@ describe('ConfigPanel', () => {
 
   it('shows an empty instruction state and preserves hidden and read-only behavior', async () => {
     const onCreateSystemInstruction = vi.fn();
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          onConfigChange={() => undefined}
-          onCreateSystemInstruction={onCreateSystemInstruction}
-          readOnly
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        onConfigChange={() => undefined}
+        onCreateSystemInstruction={onCreateSystemInstruction}
+        readOnly
+      />
+    );
 
     const pickerLabel = Array.from(container.querySelectorAll('label')).find(
       label => label.textContent?.trim() === 'System instructions'
@@ -429,14 +372,12 @@ describe('ConfigPanel', () => {
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
     expect(onCreateSystemInstruction).not.toHaveBeenCalled();
 
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          onConfigChange={() => undefined}
-          onCreateSystemInstruction={onCreateSystemInstruction}
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        onConfigChange={() => undefined}
+        onCreateSystemInstruction={onCreateSystemInstruction}
+      />
+    );
     await act(async () => {
       getSystemInstructionsDisclosure().click();
     });
@@ -445,14 +386,12 @@ describe('ConfigPanel', () => {
     );
     expect(getButton('Delete instruction')).toBeUndefined();
 
-    await act(async () => {
-      root.render(
-        <ConfigPanelHarness
-          onConfigChange={() => undefined}
-          hideSystemInstructions
-        />
-      );
-    });
+    container = await view.render(
+      <ConfigPanelHarness
+        onConfigChange={() => undefined}
+        hideSystemInstructions
+      />
+    );
     expect(container.textContent).not.toContain('System instructions');
     expect(getSystemInstructionsDisclosure()).toBeNull();
   });

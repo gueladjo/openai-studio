@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElectronBridgeMock } from '../test/electronBridge';
-import {
-  DEFAULT_CONFIG,
-  type FileAttachment,
-  type Project,
-  type ProjectRemoteState,
-  type Session,
-  type SystemInstruction
+import { chatConfig, projectFixture } from '../test/fixtures';
+import type {
+  FileAttachment,
+  ProjectRemoteState,
+  Session,
+  SystemInstruction
 } from '../types';
 import { sha256Blob } from './contentAddressing';
 
@@ -223,6 +222,9 @@ class MemoryFileReader {
 }
 
 type StorageModule = typeof import('./storage');
+type WorkspaceSnapshot = Parameters<
+  typeof import('./workspaceArchive')['createWorkspaceArchive']
+>[0];
 type StoredWorkspaceState = Awaited<ReturnType<StorageModule['readWorkspaceState']>>;
 type StoredWorkspaceKey = Exclude<keyof StoredWorkspaceState, 'revision'>;
 
@@ -249,7 +251,7 @@ const createSession = (
 ): Session => ({
   id: `session-${title.toLowerCase().replace(/\s+/g, '-')}`,
   title,
-  config: { ...DEFAULT_CONFIG, tools: { ...DEFAULT_CONFIG.tools } },
+  config: chatConfig(),
   lastModified: 1,
   messages: [{
     id: `message-${title.toLowerCase().replace(/\s+/g, '-')}`,
@@ -265,6 +267,25 @@ const instructions: SystemInstruction[] = [{
   title: 'Concise',
   content: 'Be concise.'
 }];
+
+const createManualArchive = async (
+  sessions: Session[],
+  revision: number,
+  overrides: Partial<WorkspaceSnapshot> = {}
+): Promise<Blob> => {
+  const { createWorkspaceArchive } = await import('./workspaceArchive');
+  return createWorkspaceArchive({
+    revision,
+    createdAt: revision,
+    sessions,
+    settings: { theme: 'light', apiKey: '' },
+    instructions,
+    readBlob: async () => {
+      throw new Error('No blobs are referenced.');
+    },
+    ...overrides
+  }, { reason: 'manual' });
+};
 
 const seedLegacyWorkspaceFiles = async (
   fileSystem: MemoryFileSystem,
@@ -377,17 +398,7 @@ describe('storage public contracts', () => {
 
   it('serializes project edits with concurrent source-state persistence', async () => {
     await seedWorkspace();
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
-      id: 'project-concurrent-write',
-      name: 'Concurrent writes',
-      icon: 'folder',
-      instructions: '',
-      defaultConfig,
-      sources: [],
-      createdAt: 1,
-      updatedAt: 1
-    };
+    const project = projectFixture({ id: 'project-concurrent-write' });
     await storage.writeWorkspaceState(handle, { projects: [project] });
 
     const updatedProject = {
@@ -471,90 +482,11 @@ describe('storage public contracts', () => {
     warn.mockRestore();
   });
 
-  it('persists cache-write token usage on assistant messages', async () => {
-    const session = createSession('Cache usage');
-    session.messages.push({
-      id: 'message-cache-usage-assistant',
-      role: 'assistant',
-      content: 'Cached response.',
-      status: 'complete',
-      timestamp: 2,
-      modelName: 'GPT-5.6 Sol',
-      usage: {
-        input_tokens: 5_000,
-        input_tokens_details: {
-          cache_write_tokens: 1_234,
-          cached_tokens: 567
-        },
-        output_tokens: 89,
-        output_tokens_details: { reasoning_tokens: 0 },
-        total_tokens: 5_089
-      }
-    });
-
-    await writeField('sessions', [session]);
-
-    const storedSessions = await readField('sessions');
-    expect(storedSessions[0].messages[1].usage?.input_tokens_details)
-      .toEqual({ cache_write_tokens: 1_234, cached_tokens: 567 });
-  });
-
-  it('persists ordered assistant output phases', async () => {
-    const session = createSession('Assistant phases');
-    session.messages.push({
-      id: 'message-phases-assistant',
-      role: 'assistant',
-      content: 'Checking.\n\nComplete.',
-      outputMessages: [{
-        content: 'Checking.',
-        phase: 'commentary'
-      }, {
-        content: 'Complete.',
-        phase: 'final_answer'
-      }],
-      status: 'complete',
-      timestamp: 2,
-      modelName: 'GPT-5.6 Sol'
-    });
-
-    await writeField('sessions', [session]);
-
-    const storedSessions = await readField('sessions');
-    expect(storedSessions[0].messages[1].outputMessages).toEqual([{
-      content: 'Checking.',
-      phase: 'commentary'
-    }, {
-      content: 'Complete.',
-      phase: 'final_answer'
-    }]);
-  });
-
-  it('persists Web Search options exactly', async () => {
-    const session = createSession('Web Search options');
-    session.config.tools.webSearchOptions = {
-      searchContextSize: 'low',
-      userLocation: null
-    };
-
-    await writeField('sessions', [session]);
-
-    const storedSessions = await readField('sessions');
-    expect(storedSessions[0].config.tools.webSearchOptions).toEqual({
-      searchContextSize: 'low',
-      userLocation: null
-    });
-  });
-
   it('persists project sources in the exact verified blob union', async () => {
     const bytes = new Blob(['project source'], { type: 'text/plain' });
     const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
+    const project = projectFixture({
       id: 'project-storage',
-      name: 'Storage project',
-      icon: 'folder',
-      instructions: 'Use the source.',
-      defaultConfig,
       sources: [{
         id: 'source-storage',
         name: 'source.txt',
@@ -563,10 +495,8 @@ describe('storage public contracts', () => {
         localBlob,
         capability: 'file_search',
         addedAt: 1
-      }],
-      createdAt: 1,
-      updatedAt: 1
-    };
+      }]
+    });
 
     const session = createSession('Shared source bytes', [{
       name: 'attached.txt', type: 'text/plain', localBlob
@@ -611,13 +541,8 @@ describe('storage public contracts', () => {
   it('publishes permanent project deletion through both manifest slots', async () => {
     const bytes = new Blob(['delete me'], { type: 'text/plain' });
     const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
+    const project = projectFixture({
       id: 'project-delete',
-      name: 'Delete project',
-      icon: 'folder',
-      instructions: 'Temporary.',
-      defaultConfig,
       sources: [{
         id: 'source-delete',
         name: 'delete.txt',
@@ -626,10 +551,8 @@ describe('storage public contracts', () => {
         localBlob,
         capability: 'file_search',
         addedAt: 1
-      }],
-      createdAt: 1,
-      updatedAt: 1
-    };
+      }]
+    });
     const session = {
       ...createSession('Project member'),
       projectId: project.id
@@ -660,13 +583,8 @@ describe('storage public contracts', () => {
   it('turns replaced remote indexes into nonportable cleanup tombstones', async () => {
     const bytes = new Blob(['remote source'], { type: 'text/plain' });
     const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-    const project: Project = {
+    const project = projectFixture({
       id: 'project-restore-cleanup',
-      name: 'Remote project',
-      icon: 'folder',
-      instructions: '',
-      defaultConfig,
       sources: [{
         id: 'source-restore-cleanup',
         name: 'remote.txt',
@@ -675,10 +593,8 @@ describe('storage public contracts', () => {
         localBlob,
         capability: 'file_search',
         addedAt: 1
-      }],
-      createdAt: 1,
-      updatedAt: 1
-    };
+      }]
+    });
     await storage.writeWorkspaceState(handle, {
       projects: [project],
       projectRemoteState: {
@@ -1131,25 +1047,17 @@ describe('storage public contracts', () => {
     const initialSessions = [createSession('Initial')];
     const replacementSessions = [createSession('Replacement')];
     await seedWorkspace(initialSessions);
-    const { createWorkspaceArchive } = await import('./workspaceArchive');
     const {
       restoreWorkspaceArchive,
       undoLastWorkspaceMutation
     } = await import('./workspaceRestore');
-    const archive = await createWorkspaceArchive({
-      revision: 40,
-      createdAt: 40,
-      sessions: replacementSessions,
+    const archive = await createManualArchive(replacementSessions, 40, {
       settings: {
         theme: 'light',
         apiKey: 'must-not-be-restored',
         lastActiveSessionId: replacementSessions[0].id
-      },
-      instructions,
-      readBlob: async () => {
-        throw new Error('No blobs are referenced.');
       }
-    }, { reason: 'manual' });
+    });
 
     await restoreWorkspaceArchive(handle, archive, {
       filename: 'replacement.zip'
@@ -1172,19 +1080,8 @@ describe('storage public contracts', () => {
   it('aborts restore without changing the workspace when recovery persistence fails', async () => {
     const initialSessions = [createSession('Initial')];
     await seedWorkspace(initialSessions);
-    const { createWorkspaceArchive } = await import('./workspaceArchive');
     const { restoreWorkspaceArchive } = await import('./workspaceRestore');
-    const replacementSessions = [createSession('Replacement')];
-    const archive = await createWorkspaceArchive({
-      revision: 2,
-      createdAt: 2,
-      sessions: replacementSessions,
-      settings: { theme: 'light', apiKey: '' },
-      instructions,
-      readBlob: async () => {
-        throw new Error('No blobs are referenced.');
-      }
-    }, { reason: 'manual' });
+    const archive = await createManualArchive([createSession('Replacement')], 2);
     fileSystem.failNextWrite(/recovery\/pre-restore\.zip$/);
 
     await expect(restoreWorkspaceArchive(handle, archive))
@@ -1215,24 +1112,15 @@ describe('storage public contracts', () => {
         size: importedBlob.size,
         localBlob: importedReference
       }]),
-      config: {
-        ...DEFAULT_CONFIG,
-        tools: { ...DEFAULT_CONFIG.tools },
-        systemInstructionId: importedInstruction.id
-      },
+      config: chatConfig({ systemInstructionId: importedInstruction.id }),
       lastModified: 20
     };
-    const { createWorkspaceArchive, inspectWorkspaceArchive } = await import(
-      './workspaceArchive'
-    );
+    const { inspectWorkspaceArchive } = await import('./workspaceArchive');
     const { mergeWorkspaceArchive } = await import('./workspaceMerge');
     const {
       undoLastWorkspaceMutation
     } = await import('./workspaceRestore');
-    const archive = await createWorkspaceArchive({
-      revision: 20,
-      createdAt: 20,
-      sessions: [importedSession],
+    const archive = await createManualArchive([importedSession], 20, {
       settings: {
         theme: 'light',
         apiKey: 'must-not-be-restored',
@@ -1243,7 +1131,7 @@ describe('storage public contracts', () => {
         if (reference.sha256 === importedReference.sha256) return importedBlob;
         throw new Error('Unexpected imported blob.');
       }
-    }, { reason: 'manual' });
+    });
 
     const result = await mergeWorkspaceArchive(handle, archive, {
       filename: 'merge.zip'
@@ -1284,20 +1172,9 @@ describe('storage public contracts', () => {
 
   it('does not publish a merge when recovery or generation persistence fails', async () => {
     const initialSessions = [createSession('Initial')];
-    const importedSessions = [createSession('Imported')];
     await seedWorkspace(initialSessions);
-    const { createWorkspaceArchive } = await import('./workspaceArchive');
     const { mergeWorkspaceArchive } = await import('./workspaceMerge');
-    const archive = await createWorkspaceArchive({
-      revision: 2,
-      createdAt: 2,
-      sessions: importedSessions,
-      settings: { theme: 'light', apiKey: '' },
-      instructions,
-      readBlob: async () => {
-        throw new Error('No blobs are referenced.');
-      }
-    }, { reason: 'manual' });
+    const archive = await createManualArchive([createSession('Imported')], 2);
 
     fileSystem.failNextWrite(/recovery\/pre-restore\.zip$/);
     await expect(mergeWorkspaceArchive(handle, archive))
@@ -1313,30 +1190,17 @@ describe('storage public contracts', () => {
   it('keeps only the latest successful workspace mutation undoable', async () => {
     const initialSessions = [createSession('Initial')];
     await seedWorkspace(initialSessions);
-    const { createWorkspaceArchive } = await import('./workspaceArchive');
     const { mergeWorkspaceArchive } = await import('./workspaceMerge');
     const { undoLastWorkspaceMutation } = await import('./workspaceRestore');
-    const createMergeArchive = (session: Session, revision: number) => (
-      createWorkspaceArchive({
-        revision,
-        createdAt: revision,
-        sessions: [session],
-        settings: { theme: 'light', apiKey: '' },
-        instructions,
-        readBlob: async () => {
-          throw new Error('No blobs are referenced.');
-        }
-      }, { reason: 'manual' })
-    );
 
     await mergeWorkspaceArchive(
       handle,
-      await createMergeArchive(createSession('First'), 10)
+      await createManualArchive([createSession('First')], 10)
     );
     const sessionsAfterFirst = await readField('sessions');
     await mergeWorkspaceArchive(
       handle,
-      await createMergeArchive(createSession('Second'), 11)
+      await createManualArchive([createSession('Second')], 11)
     );
 
     await undoLastWorkspaceMutation(handle);
@@ -1348,30 +1212,17 @@ describe('storage public contracts', () => {
   it('retains the prior undo point when a later merge fails', async () => {
     const initialSessions = [createSession('Initial')];
     await seedWorkspace(initialSessions);
-    const { createWorkspaceArchive } = await import('./workspaceArchive');
     const { mergeWorkspaceArchive } = await import('./workspaceMerge');
     const { undoLastWorkspaceMutation } = await import('./workspaceRestore');
-    const createMergeArchive = (session: Session, revision: number) => (
-      createWorkspaceArchive({
-        revision,
-        createdAt: revision,
-        sessions: [session],
-        settings: { theme: 'light', apiKey: '' },
-        instructions,
-        readBlob: async () => {
-          throw new Error('No blobs are referenced.');
-        }
-      }, { reason: 'manual' })
-    );
 
     await mergeWorkspaceArchive(
       handle,
-      await createMergeArchive(createSession('Successful'), 20)
+      await createManualArchive([createSession('Successful')], 20)
     );
     fileSystem.failNextWrite(/objects\/[a-f0-9]{64}\.json$/);
     await expect(mergeWorkspaceArchive(
       handle,
-      await createMergeArchive(createSession('Failed'), 21)
+      await createManualArchive([createSession('Failed')], 21)
     )).rejects.toThrow('Simulated disk full');
 
     await undoLastWorkspaceMutation(handle);

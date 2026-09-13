@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, FileAttachment, Project, Session } from '../types';
+import { chatConfig, projectFixture } from '../test/fixtures';
+import { FileAttachment, Project, Session } from '../types';
 import {
   parseAppSettings,
   parseJsonText,
@@ -13,18 +14,7 @@ import {
 const createSession = (): Session => ({
   id: 'session-1',
   title: 'Test',
-  config: {
-    ...DEFAULT_CONFIG,
-    tools: {
-      ...DEFAULT_CONFIG.tools,
-      webSearchOptions: {
-        ...DEFAULT_CONFIG.tools.webSearchOptions,
-        userLocation: DEFAULT_CONFIG.tools.webSearchOptions.userLocation
-          ? { ...DEFAULT_CONFIG.tools.webSearchOptions.userLocation }
-          : null
-      }
-    }
-  },
+  config: chatConfig(),
   lastModified: 1,
   messages: [
     {
@@ -86,32 +76,23 @@ const parseWorkspace = (workspace: ReturnType<typeof createBackup>) => {
   return { sessions, settings, instructions };
 };
 
-const createProject = (overrides: Partial<Project> = {}): Project => {
-  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = DEFAULT_CONFIG;
-  return {
-    id: 'project-1',
-    name: 'Research',
-    icon: 'research',
-    instructions: 'Use project sources.',
-    defaultConfig,
-    sources: [{
-      id: 'source-1',
-      name: 'notes.txt',
-      mimeType: 'text/plain',
+const createProject = (overrides: Partial<Project> = {}): Project => projectFixture({
+  instructions: 'Use project sources.',
+  sources: [{
+    id: 'source-1',
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    byteSize: 5,
+    localBlob: {
+      sha256: 'a'.repeat(64),
       byteSize: 5,
-      localBlob: {
-        sha256: 'a'.repeat(64),
-        byteSize: 5,
-        mimeType: 'text/plain'
-      },
-      capability: 'file_search',
-      addedAt: 1
-    }],
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides
-  };
-};
+      mimeType: 'text/plain'
+    },
+    capability: 'file_search',
+    addedAt: 1
+  }],
+  ...overrides
+});
 
 describe('workspace runtime schema', () => {
   it('accepts complete current workspace records', () => {
