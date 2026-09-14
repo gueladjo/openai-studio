@@ -18,6 +18,16 @@ const packageJson = JSON.parse(
 );
 const appVersion = packageJson.version;
 
+type PrecacheEntry = string | { url: string };
+
+export const excludeWebManifestFromPrecache = <Entry extends PrecacheEntry>(
+  entries: Entry[] = []
+): Entry[] => entries.filter(entry => (
+  typeof entry === 'string'
+    ? !entry.endsWith('manifest.webmanifest')
+    : !entry.url.endsWith('manifest.webmanifest')
+));
+
 export const getAppBase = (mode: string): string => (
   mode === 'electron' ? './' : '/openai-studio/'
 );
@@ -38,7 +48,7 @@ export const getPwaManifest = (base: string) => ({
   name: 'OpenAI Studio',
   short_name: 'AI Studio',
   description: 'A professional chat interface for OpenAI models',
-  theme_color: '#121211',
+  theme_color: '#ffffff',
   background_color: '#121211',
   display: 'standalone' as const,
   scope: base,
@@ -96,9 +106,27 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['icons/*.png', 'icons/*.svg'],
         manifest: getPwaManifest(base),
+        integration: {
+          beforeBuildServiceWorker(options) {
+            options.workbox.additionalManifestEntries = excludeWebManifestFromPrecache(
+              options.workbox.additionalManifestEntries
+            );
+          }
+        },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
           runtimeCaching: [
+            {
+              urlPattern: /\/manifest\.webmanifest$/,
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'pwa-manifest',
+                fetchOptions: { cache: 'no-cache' },
+                cacheableResponse: {
+                  statuses: [0, 200]
+                }
+              }
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',

@@ -532,24 +532,21 @@ describe('App workspace and request lifecycle', () => {
   });
 
   it('keeps the PWA theme color aligned with the restored and selected theme', async () => {
-    const themeColor = document.createElement('meta');
-    themeColor.name = 'theme-color';
-    themeColor.content = '#121211';
-    document.head.append(themeColor);
     mocks.theme = 'light';
 
     await renderApp();
     await finishInitialization();
 
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(themeColor.content).toBe('#ffffff');
+    expect(themeColor?.content).toBe('#ffffff');
 
     await act(async () => {
       getSidebarProps().toggleTheme();
     });
 
     expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(themeColor.content).toBe('#1a1a19');
+    expect(themeColor?.content).toBe('#1a1a19');
   });
 
   it('keeps responsive panels mounted while crossing the mobile breakpoint', async () => {

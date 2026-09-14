@@ -751,13 +751,14 @@ manifest and service worker.
 
 The PWA caches the compiled shell and selected assets, including Tailwind CSS.
 Google Fonts remain external and are runtime-cached by Workbox. OpenAI requests
-remain network-dependent. The manifest and initial HTML provide the dark
-startup color used by the pre-loader. After workspace settings load, the app
-updates the document `theme-color` alongside the root theme class so Android's
-status bar matches the light or dark header surface. The generated service
-worker revisions both the shell bundle and manifest, so an auto-update refreshes
-their cached versions together. `__APP_VERSION__` is read from `package.json`
-at build time.
+remain network-dependent. The manifest and initial HTML provide a light header
+color as Android's installed-app fallback, while the separate manifest
+`background_color` remains aligned with the dark pre-loader. After workspace
+settings load, the app updates the document `theme-color` from the computed
+header-surface token alongside the root theme class. The web manifest is kept
+out of the revisioned shell precache: requests revalidate it online and retain
+the latest successful response in a network-first cache for offline fallback.
+`__APP_VERSION__` is read from `package.json` at build time.
 
 The responsive breakpoint is Tailwind's 768 px `md` boundary. A single mounted
 sidebar and chat settings panel adapt between desktop and mobile presentation
@@ -873,7 +874,7 @@ The following tests are the executable contracts for this specification:
 | Daily eligibility, destination read-back, close failure, corruption handling, and three-valid-file retention | [services/backupScheduler.test.ts](../services/backupScheduler.test.ts) |
 | Save versioning, retry, flush, cross-tab coordination, operation ownership, and destructive serialization | [saveQueue.test.ts](../services/saveQueue.test.ts), [workspaceSync.test.ts](../services/workspaceSync.test.ts), [operationRegistry.test.ts](../services/operationRegistry.test.ts), and [serializedOperationQueue.test.ts](../services/serializedOperationQueue.test.ts) |
 | Electron navigation, window isolation, close coordination, managed IPC, streamed file publication, and partial cleanup | [urlPolicy.test.js](../electron/urlPolicy.test.js), [main.test.js](../electron/main.test.js), and [backupFiles.test.js](../electron/backupFiles.test.js) |
-| Web/Electron base paths, PWA navigation, and production secret exclusion | [buildPolicy.test.ts](../buildPolicy.test.ts) |
+| Web/Electron base paths, PWA navigation/manifest caching, and production secret exclusion | [buildPolicy.test.ts](../buildPolicy.test.ts) |
 
 Use this table to select tests for affected contracts, not as a checklist for
 every change. [AGENTS.md](../AGENTS.md#definition-of-done) owns completion rules;

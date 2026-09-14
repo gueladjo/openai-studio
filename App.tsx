@@ -117,7 +117,7 @@ import {
 } from './services/projectOperationOwner';
 
 const MOBILE_BREAKPOINT_PX = 768;
-const THEME_COLORS = {
+const THEME_COLOR_FALLBACKS = {
   dark: '#1a1a19',
   light: '#ffffff'
 } as const;
@@ -351,9 +351,13 @@ function App() {
   // theme-color in preference to the manifest once the app is running, so keep
   // its status bar aligned with the header surface too.
   useLayoutEffect(() => {
-    document.documentElement.classList.toggle('dark', isDarkMode);
-    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-      ?.setAttribute('content', isDarkMode ? THEME_COLORS.dark : THEME_COLORS.light);
+    const root = document.documentElement;
+    root.classList.toggle('dark', isDarkMode);
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?? document.head.appendChild(document.createElement('meta'));
+    themeColor.name = 'theme-color';
+    themeColor.content = getComputedStyle(root).getPropertyValue('--surface').trim()
+      || (isDarkMode ? THEME_COLOR_FALLBACKS.dark : THEME_COLOR_FALLBACKS.light);
   }, [isDarkMode]);
 
   // Refs are written by these setters before state so effects and async
