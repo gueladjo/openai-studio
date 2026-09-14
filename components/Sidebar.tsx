@@ -202,7 +202,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               label="Hide sidebar"
               icon={PanelLeftClose}
               size="sm"
-              className="hidden md:inline-flex"
+              className="max-md:hidden"
               onClick={onCollapse}
             />
           )}

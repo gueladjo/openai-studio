@@ -87,6 +87,46 @@ describe('ProjectHome', () => {
     expect(window.electronAPI?.restoreFocusAfterDialog).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the drawer opener mobile-only and the sidebar restore control desktop-only', async () => {
+    const onOpenSidebar = vi.fn();
+    const onToggleSidebar = vi.fn();
+    container = await view.render(
+      <ProjectHome
+        project={createProject()}
+        sessions={[]}
+        totalIndexedUsageBytes={0}
+        onUpdate={() => undefined}
+        onNewChat={() => undefined}
+        onAddSources={() => undefined}
+        onDeleteSource={() => undefined}
+        onRetrySource={() => undefined}
+        onDownloadSource={() => undefined}
+        onDeleteProject={() => undefined}
+        onOpenSidebar={onOpenSidebar}
+        onToggleSidebar={onToggleSidebar}
+        isSidebarCollapsed
+      />
+    );
+
+    const openMenu = container.querySelector<HTMLButtonElement>('button[aria-label="Open menu"]')!;
+    const showSidebar = container.querySelector<HTMLButtonElement>('button[aria-label="Show sidebar"]')!;
+    expect(openMenu.classList).toContain('md:hidden');
+    expect(showSidebar.classList).toContain('max-md:hidden');
+    expect(openMenu.classList).not.toContain('hidden');
+    expect(showSidebar.classList).not.toContain('hidden');
+
+    await act(async () => {
+      openMenu.click();
+    });
+    expect(onOpenSidebar).toHaveBeenCalledTimes(1);
+    expect(onToggleSidebar).not.toHaveBeenCalled();
+
+    await act(async () => {
+      showSidebar.click();
+    });
+    expect(onToggleSidebar).toHaveBeenCalledTimes(1);
+  });
+
   it('shows source capabilities, durable statuses, usage, and project errors', async () => {
     container = await view.render(
       <ProjectHome

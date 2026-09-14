@@ -20,7 +20,9 @@ describe('Sidebar workspace merge controls', () => {
     onApiKeySave,
     onNewSession = vi.fn(),
     onRefreshManagedBackups = vi.fn(),
-    automaticBackupsSupported = false
+    automaticBackupsSupported = false,
+    onClose,
+    onCollapse
   }: {
     onMergeData?: (file: File) => void;
     mergeDisabled?: boolean;
@@ -31,6 +33,8 @@ describe('Sidebar workspace merge controls', () => {
     onNewSession?: (projectId?: string) => void;
     onRefreshManagedBackups?: () => void;
     automaticBackupsSupported?: boolean;
+    onClose?: () => void;
+    onCollapse?: () => void;
   } = {}) => {
     container = await view.render(
       <Sidebar
@@ -40,6 +44,8 @@ describe('Sidebar workspace merge controls', () => {
         onSelectSession={() => undefined}
         onNewSession={onNewSession}
         onDeleteSession={() => undefined}
+        onClose={onClose}
+        onCollapse={onCollapse}
         isDarkMode={false}
         toggleTheme={() => undefined}
         apiKey=""
@@ -208,5 +214,32 @@ describe('Sidebar workspace merge controls', () => {
       expect(shortcut.classList).toContain('md:focus:opacity-100');
       expect(shortcut.parentElement?.classList).toContain('group');
     });
+  });
+
+  it('splits the drawer close and desktop collapse controls at the breakpoint', async () => {
+    const onClose = vi.fn();
+    const onCollapse = vi.fn();
+    await renderSidebar({ onClose, onCollapse });
+
+    const closeMenu = container.querySelector<HTMLButtonElement>('button[aria-label="Close menu"]')!;
+    const hideSidebar = container.querySelector<HTMLButtonElement>('button[aria-label="Hide sidebar"]')!;
+    // Both buttons render `inline-flex`, which outranks a bare `hidden` in the
+    // compiled stylesheet, so each side must hide through a breakpoint variant.
+    expect(closeMenu.classList).toContain('md:hidden');
+    expect(hideSidebar.classList).toContain('max-md:hidden');
+    expect(closeMenu.classList).not.toContain('hidden');
+    expect(hideSidebar.classList).not.toContain('hidden');
+
+    await act(async () => {
+      hideSidebar.click();
+    });
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      closeMenu.click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCollapse).toHaveBeenCalledTimes(1);
   });
 });

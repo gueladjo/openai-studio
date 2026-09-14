@@ -97,6 +97,8 @@ export interface IconButtonProps extends React.ButtonHTMLAttributes<HTMLButtonEl
   active?: boolean;
 }
 
+/** Renders `inline-flex`, which outranks a bare `hidden` in the compiled
+    stylesheet; hide it responsively with `md:hidden` / `max-md:hidden`. */
 export const IconButton: React.FC<IconButtonProps> = ({
   label,
   icon: Icon,
@@ -599,7 +601,7 @@ export const SidebarControls: React.FC<{
       <IconButton
         label="Show sidebar"
         icon={PanelLeftOpen}
-        className="hidden md:inline-flex"
+        className="max-md:hidden"
         onClick={onToggleSidebar}
       />
     )}

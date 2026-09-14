@@ -768,8 +768,11 @@ column (hidden from its own header, restored from the view header) and the chat
 settings panel is a toggleable right-hand column; below the breakpoint the
 sidebar is a drawer and the chat settings panel is a bottom sheet. Each view
 header carries the sidebar controls, and the composer's model summary also
-opens chat settings. The sidebar drawer avoids CSS transforms so the
-fixed-position Settings dialog it owns stays viewport-bound. The project home
+opens chat settings. Those controls are mobile-only or desktop-only through
+breakpoint variants (`md:hidden`, `max-md:hidden`): the shared buttons set
+their own display utility, which outranks a bare `hidden`. The sidebar drawer
+avoids CSS transforms so the fixed-position Settings dialog it owns stays
+viewport-bound. The project home
 adapts within the full main sheet. Layout changes must preserve
 hierarchy/search usability, keyboard send behavior, scrolling, overflow, and
 light/dark themes at both sizes. The app shell uses the dynamic viewport height. The mobile chat settings sheet has a
