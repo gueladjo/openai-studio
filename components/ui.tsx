@@ -229,8 +229,9 @@ export interface LevelScaleProps<T extends string> {
   className?: string;
 }
 
-/** Ordered choices rendered as a filled level meter with equal-width steps,
-    so any number of options fits without stretching the last one. */
+/** Ordered choices rendered as equal-width steps with a marker bar, so any
+    number of options fits without stretching the last one. Only the selected
+    step is highlighted; the scale is a choice, not a progress meter. */
 export function LevelScale<T extends string>({
   options,
   value,
@@ -249,7 +250,6 @@ export function LevelScale<T extends string>({
     >
       {options.map((option, index) => {
         const selected = index === selectedIndex;
-        const filled = index < selectedIndex;
         return (
           <button
             key={option.value}
@@ -264,11 +264,7 @@ export function LevelScale<T extends string>({
               aria-hidden="true"
               className={cx(
                 'h-1.5 rounded-full transition-colors',
-                selected
-                  ? 'bg-accent'
-                  : filled
-                    ? 'bg-accent/45'
-                    : 'bg-line-strong group-hover:bg-accent/30'
+                selected ? 'bg-accent' : 'bg-line-strong group-hover:bg-accent/30'
               )}
             />
             <span

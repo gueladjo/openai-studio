@@ -266,6 +266,13 @@ describe('ConfigPanel', () => {
     expect(steps.map(step => step.getAttribute('aria-checked'))).toEqual([
       'false', 'false', 'true', 'false', 'false', 'false'
     ]);
+    const bars = steps.map(step => step.querySelector<HTMLSpanElement>('[aria-hidden="true"]')!);
+    expect(bars.map(bar => bar.classList.contains('bg-accent'))).toEqual([
+      false, false, true, false, false, false
+    ]);
+    expect(bars.map(bar => bar.classList.contains('bg-line-strong'))).toEqual([
+      true, true, false, true, true, true
+    ]);
 
     await act(async () => {
       steps[5].click();
