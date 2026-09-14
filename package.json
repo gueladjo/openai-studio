@@ -65,13 +65,16 @@
       "package.json"
     ],
     "mac": {
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "public/icons/icon-512.png"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "public/icons/icon.ico"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "public/icons/icon-512.png"
     }
   }
 }

@@ -120,7 +120,7 @@ either the Settings key or the compiled local key.
 | `npm run preview` | Serve the existing `dist/` directory; run `build:web` first for PWA verification. |
 | `npm run dist` | Build and package the configured Electron target into `release/`. |
 | `npm run deploy` | Build the web app and publish `dist/` with `gh-pages`. |
-| `node scripts/generate-icons.js` | Regenerate the PNG application icons. |
+| `node scripts/generate-icons.js` | Regenerate the PNG and Windows `.ico` application icons from `public/icons/favicon.svg`. |
 
 The Vitest suite is deterministic and does not require a live API key, browser
 profile, OPFS directory, or Electron process. It covers the App request

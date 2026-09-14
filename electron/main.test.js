@@ -64,6 +64,7 @@ const harness = vi.hoisted(() => {
     }),
     quit: vi.fn(),
     requestSingleInstanceLock: vi.fn(() => true),
+    setAppUserModelId: vi.fn(),
     whenReady: vi.fn(() => Promise.resolve())
   };
   const clipboard = {
@@ -188,6 +189,21 @@ describe('Electron main-process policy', () => {
     navigate(localFileEvent, 'file:///tmp/another.html');
     expect(localFileEvent.preventDefault).toHaveBeenCalledTimes(1);
     expect(harness.shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it('claims the Windows application identity and its own taskbar icon', async () => {
+    await loadMain();
+
+    expect(harness.app.setAppUserModelId).toHaveBeenCalledWith(
+      'com.openaistudio.app'
+    );
+
+    const options = harness.BrowserWindow.mock.calls[0][0];
+    expect(options.icon).toMatch(
+      process.platform === 'win32'
+        ? /dist[/\\]icons[/\\]icon\.ico$/
+        : /dist[/\\]icons[/\\]icon-512\.png$/
+    );
   });
 
   it('restores main-window and web-content focus after a renderer file dialog', async () => {

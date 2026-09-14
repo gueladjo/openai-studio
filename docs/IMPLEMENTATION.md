@@ -778,6 +778,15 @@ and `electron/preload.test.ts` checks the exposed shape and backup adapter flow.
 New-window and external navigation are denied in the renderer and opened in the
 system browser under `electron/urlPolicy.js`.
 
+The desktop window claims the application identity `com.openaistudio.app`, which
+must stay equal to the packaging `appId`, and sets its own window icon so
+Windows does not fall back to the generic Electron taskbar entry. Icons come
+from `public/icons` when unpackaged and the bundled `dist/icons` copy when
+packaged; Windows uses the multi-resolution `icon.ico` and other platforms use
+`icon-512.png`. `scripts/generate-icons.js` derives every icon from
+`public/icons/favicon.svg`, so the brand mark is changed there and regenerated
+rather than edited per file.
+
 When a native file or directory chooser closes, Electron explicitly restores
 both the main window and its web contents as the focus target. Renderer file
 inputs request this through a sender-validated, focus-only IPC method; the

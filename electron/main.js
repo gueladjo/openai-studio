@@ -180,11 +180,24 @@ ipcMain.handle('backup-delete', async (event, filename) => {
   await backupFileManager.delete(filename);
 });
 
+// Windows draws the taskbar entry from the window icon while running
+// unpackaged; packaged builds take it from the executable instead.
+function resolveAppIcon() {
+  const iconsDir = app.isPackaged
+    ? path.join(__dirname, '../dist/icons')
+    : path.join(__dirname, '../public/icons');
+  return path.join(
+    iconsDir,
+    process.platform === 'win32' ? 'icon.ico' : 'icon-512.png'
+  );
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     title: "OpenAI Studio",
+    icon: resolveAppIcon(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -328,6 +341,10 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  // Without an explicit model ID, Windows groups the unpackaged app under the
+  // generic Electron identity and shows its icon in the taskbar.
+  app.setAppUserModelId('com.openaistudio.app');
+
   app.on('before-quit', (event) => {
     if (closeConfirmed || !mainWindow) return;
 
