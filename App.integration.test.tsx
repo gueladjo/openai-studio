@@ -2,7 +2,7 @@
 
 import React, { act } from 'react';
 import { createElectronBridgeMock } from './test/electronBridge';
-import { createDeferred, projectFixture, sessionFixture } from './test/fixtures';
+import { chatConfig, createDeferred, projectFixture, sessionFixture } from './test/fixtures';
 import { useReactView } from './test/reactView';
 import {
   afterEach,
@@ -14,6 +14,7 @@ import {
 } from 'vitest';
 import {
   DEFAULT_CONFIG,
+  ModelId,
   type AssistantOutputMessage,
   type AssistantPhase,
   type GeneratedFile,
@@ -781,53 +782,49 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.writeWorkspaceState).not.toHaveBeenCalled();
   });
 
-  it('creates project chats from defaults without changing standalone defaults', async () => {
+  it('creates chats from the last used configuration across projects and standalone chats', async () => {
+    const project = createProject();
     mocks.loadedInstructions = [{
       id: 'instruction-1',
       title: 'Global',
       content: 'Use global instructions.'
     }];
-    mocks.loadedSessions[0].config.systemInstructionId = 'instruction-1';
+    mocks.loadedProjects = [project];
+    mocks.loadedSessions[0].config = chatConfig({
+      reasoningEffort: 'high',
+      systemInstructionId: 'instruction-1'
+    });
+    mocks.loadedSessions[1].projectId = project.id;
+    mocks.loadedSessions[1].config = chatConfig({ model: ModelId.GPT_5_NANO });
     await renderApp();
     await finishInitialization();
     await drainInitialSaves();
 
-    await act(async () => {
-      getSidebarProps().onNewProject();
-    });
-    await flushMicrotasks();
-    const createdProject = getProjectHomeProps().project;
-    const projectDefaults = {
-      ...createdProject.defaultConfig,
-      reasoningEffort: 'high'
-    };
-    await act(async () => {
-      getProjectHomeProps().onUpdate({
-        ...createdProject,
-        name: 'Client work',
-        defaultConfig: projectDefaults,
-        updatedAt: 2
-      });
-    });
-    await act(async () => {
-      getSidebarProps().onNewSession(createdProject.id);
-    });
-    await flushMicrotasks();
+    const loadedConfig = (sessionId: string) => getSidebarProps().sessions
+      .find(session => session.id === sessionId)!.config;
 
-    const projectChat = getSidebarProps().sessions.find(
-      session => session.projectId === createdProject.id
-    );
-    expect(projectChat?.config).toMatchObject(projectDefaults);
-    expect(projectChat?.config.systemInstructionId).toBeUndefined();
+    await act(async () => {
+      getSidebarProps().onNewSession(project.id);
+    });
+    const projectChat = getSidebarProps().sessions.find(session => (
+      session.projectId === project.id && session.id !== 'session-b'
+    ));
+    expect(projectChat?.config).toEqual(loadedConfig('session-a'));
+    expect(projectChat?.config).not.toBe(loadedConfig('session-a'));
+    expect(projectChat?.config.systemInstructionId).toBe('instruction-1');
+    expect(projectChat?.config).not.toEqual(project.defaultConfig);
 
+    await act(async () => {
+      getSidebarProps().onSelectSession('session-b');
+    });
     await act(async () => {
       getSidebarProps().onNewSession();
     });
     const standaloneChat = getSidebarProps().sessions.find(session => (
-      !session.projectId && !['session-a', 'session-b'].includes(session.id)
+      !session.projectId && session.id !== 'session-a'
     ));
-    expect(standaloneChat?.config.reasoningEffort)
-      .toBe(DEFAULT_CONFIG.reasoningEffort);
+    expect(standaloneChat?.config).toEqual(loadedConfig('session-b'));
+    expect(standaloneChat?.config.model).toBe(ModelId.GPT_5_NANO);
   });
 
   it.each([

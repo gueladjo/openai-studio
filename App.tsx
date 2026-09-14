@@ -1064,13 +1064,15 @@ function App() {
   const createSession = (projectId?: string) => {
     if (!canMutateWorkspace()) return;
 
-    const project = projectId
-      ? projectsRef.current.find(item => item.id === projectId)
-      : undefined;
-    const standaloneConfig = currentSession && !currentSession.projectId
-      ? currentSession.config
-      : sessionsRef.current.find(session => !session.projectId)?.config;
-    const sourceConfig = project?.defaultConfig || standaloneConfig || DEFAULT_CONFIG;
+    // New chats inherit the last used configuration regardless of project
+    // membership: the current chat, else the most recently modified chat.
+    const currentConfig = sessionsRef.current.find(session => (
+      session.id === currentSessionIdRef.current
+    ))?.config;
+    const latestConfig = sessionsRef.current.reduce<Session | null>((latest, session) => (
+      !latest || session.lastModified > latest.lastModified ? session : latest
+    ), null)?.config;
+    const sourceConfig = currentConfig || latestConfig || DEFAULT_CONFIG;
     const configToUse: ChatConfig = {
       ...sourceConfig,
       tools: {

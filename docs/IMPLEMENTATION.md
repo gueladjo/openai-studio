@@ -141,8 +141,8 @@ locally canonical sources. The sidebar provides project hierarchy, expandable
 member chats, separate Projects and Chats sections, and global project/chat
 search with the project path shown for chat matches. Project rows show their
 icon and name without an aggregate chat counter, plus a shortcut that creates a
-new chat with that project's defaults and membership. The standalone Chats
-section has the same shortcut for creating a chat outside every project. These
+new chat with that project's membership. The standalone Chats section has the
+same shortcut for creating a chat outside every project. These
 shortcuts appear on row or section hover and keyboard focus on desktop, and
 remain visible on mobile where hover is unavailable. The Projects heading has
 the same hover-revealed shortcut for creating a project, and the welcome screen
@@ -157,10 +157,16 @@ member chat header. Project chat headers use `Icon Project / Chat`; standalone
 chat headers continue to show only the chat title. The icon enum includes a
 health option.
 
-Project defaults are captured from the current chat's configuration (or the
-application default) when the project is created; the application exposes no
-editor for them afterward. They exclude `systemInstructionId` and affect only
-subsequently created project chats. Project instructions are resolved live
+Every new chat, standalone or project member, copies the last used chat
+configuration: the current chat's configuration, else the most recently
+modified chat's, else the application default. This is one global preference
+shared across projects, so settings chosen in one project's chat carry into
+the next chat created anywhere. The copy includes `systemInstructionId`;
+project instructions still take precedence at request time. The persisted
+project `defaultConfig` is a snapshot of the creating chat's configuration
+without `systemInstructionId`, retained for archive compatibility; the
+application exposes no editor for it and no longer consults it when creating
+chats. Project instructions are resolved live
 when each request starts and override the chat's reusable global instruction.
 Existing project chats therefore see instruction edits on their next request,
 while an in-flight request retains its snapshot. Project sources configure
@@ -169,8 +175,6 @@ memory.
 
 Project membership is assigned when a project chat is created or when a
 portable archive is imported. The application exposes no chat-moving workflow.
-New standalone chats inherit the current standalone configuration, not project
-defaults.
 
 Project source selection permits at most 10 files at once and preserves the
 strict per-file limit of less than 50 MiB. Each file is stored and verified in
