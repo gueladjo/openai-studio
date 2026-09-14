@@ -40,6 +40,8 @@ interface CapturedChatAreaProps {
 interface CapturedSidebarProps {
   sessions: Session[];
   projects: Project[];
+  isDarkMode: boolean;
+  toggleTheme: () => void;
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onSelectProject: (projectId: string) => void;
@@ -92,6 +94,7 @@ const mocks = vi.hoisted(() => ({
   WorkspaceRevisionConflictError: class WorkspaceRevisionConflictError extends Error {},
   apiKey: 'workspace-key',
   bundledApiKey: '',
+  theme: 'dark' as 'dark' | 'light',
   chatAreaProps: null as CapturedChatAreaProps | null,
   chatAreaMountCount: 0,
   chatAreaUnmountCount: 0,
@@ -308,6 +311,7 @@ describe('App workspace and request lifecycle', () => {
     }).showSaveFilePicker;
     mocks.apiKey = 'workspace-key';
     mocks.bundledApiKey = '';
+    mocks.theme = 'dark';
     mocks.chatAreaProps = null;
     mocks.chatAreaMountCount = 0;
     mocks.chatAreaUnmountCount = 0;
@@ -391,7 +395,7 @@ describe('App workspace and request lifecycle', () => {
       revision: mocks.currentRevision,
       sessions: structuredClone(mocks.loadedSessions),
       settings: {
-        theme: 'dark',
+        theme: mocks.theme,
         apiKey: mocks.apiKey,
         lastActiveSessionId: mocks.loadedSessions[0]?.id
       },
@@ -424,6 +428,7 @@ describe('App workspace and request lifecycle', () => {
   });
 
   afterEach(() => {
+    document.querySelector('meta[name="theme-color"]')?.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -524,6 +529,27 @@ describe('App workspace and request lifecycle', () => {
       await backupStatus.promise;
     });
     await flushMicrotasks();
+  });
+
+  it('keeps the PWA theme color aligned with the restored and selected theme', async () => {
+    const themeColor = document.createElement('meta');
+    themeColor.name = 'theme-color';
+    themeColor.content = '#121211';
+    document.head.append(themeColor);
+    mocks.theme = 'light';
+
+    await renderApp();
+    await finishInitialization();
+
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(themeColor.content).toBe('#ffffff');
+
+    await act(async () => {
+      getSidebarProps().toggleTheme();
+    });
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(themeColor.content).toBe('#1a1a19');
   });
 
   it('keeps responsive panels mounted while crossing the mobile breakpoint', async () => {

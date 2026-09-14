@@ -117,6 +117,10 @@ import {
 } from './services/projectOperationOwner';
 
 const MOBILE_BREAKPOINT_PX = 768;
+const THEME_COLORS = {
+  dark: '#1a1a19',
+  light: '#ffffff'
+} as const;
 const isMobileViewport = (): boolean => window.innerWidth < MOBILE_BREAKPOINT_PX;
 
 type SaveKey =
@@ -343,9 +347,13 @@ function App() {
   }, []);
 
   // Theme tokens live on the document root so dialogs, native controls, and
-  // scrollbars follow the selected theme everywhere.
+  // scrollbars follow the selected theme everywhere. Android uses the page
+  // theme-color in preference to the manifest once the app is running, so keep
+  // its status bar aligned with the header surface too.
   useLayoutEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute('content', isDarkMode ? THEME_COLORS.dark : THEME_COLORS.light);
   }, [isDarkMode]);
 
   // Refs are written by these setters before state so effects and async

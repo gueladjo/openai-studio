@@ -751,8 +751,13 @@ manifest and service worker.
 
 The PWA caches the compiled shell and selected assets, including Tailwind CSS.
 Google Fonts remain external and are runtime-cached by Workbox. OpenAI requests
-remain network-dependent. `__APP_VERSION__` is read from `package.json` at
-build time.
+remain network-dependent. The manifest and initial HTML provide the dark
+startup color used by the pre-loader. After workspace settings load, the app
+updates the document `theme-color` alongside the root theme class so Android's
+status bar matches the light or dark header surface. The generated service
+worker revisions both the shell bundle and manifest, so an auto-update refreshes
+their cached versions together. `__APP_VERSION__` is read from `package.json`
+at build time.
 
 The responsive breakpoint is Tailwind's 768 px `md` boundary. A single mounted
 sidebar and chat settings panel adapt between desktop and mobile presentation
@@ -856,7 +861,7 @@ The following tests are the executable contracts for this specification:
 
 | Area | Primary contracts |
 | --- | --- |
-| App startup, request routing, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
+| App startup and PWA theme metadata, request routing, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
 | Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
