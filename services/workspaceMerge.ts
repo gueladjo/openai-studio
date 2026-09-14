@@ -66,7 +66,6 @@ const projectContentKey = (project: Project): string => serializeCanonical({
   name: project.name,
   icon: project.icon,
   instructions: project.instructions,
-  defaultConfig: project.defaultConfig,
   sources: project.sources.map(source => ({
     name: source.name,
     mimeType: source.mimeType,

@@ -2,7 +2,6 @@ import {
   DEFAULT_CONFIG,
   type ChatConfig,
   type Project,
-  type ProjectDefaultConfig,
   type Session
 } from '../types';
 
@@ -32,17 +31,11 @@ export const chatConfig = (overrides: Partial<ChatConfig> = {}): ChatConfig => {
   };
 };
 
-export const projectDefaultConfig = (): ProjectDefaultConfig => {
-  const { systemInstructionId: _systemInstructionId, ...defaultConfig } = chatConfig();
-  return defaultConfig;
-};
-
 export const projectFixture = (overrides: Partial<Project> = {}): Project => ({
   id: 'project-1',
   name: 'Research',
   icon: 'research',
   instructions: '',
-  defaultConfig: projectDefaultConfig(),
   sources: [],
   createdAt: 1,
   updatedAt: 1,

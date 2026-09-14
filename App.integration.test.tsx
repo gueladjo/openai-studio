@@ -812,7 +812,6 @@ describe('App workspace and request lifecycle', () => {
     expect(projectChat?.config).toEqual(loadedConfig('session-a'));
     expect(projectChat?.config).not.toBe(loadedConfig('session-a'));
     expect(projectChat?.config.systemInstructionId).toBe('instruction-1');
-    expect(projectChat?.config).not.toEqual(project.defaultConfig);
 
     await act(async () => {
       getSidebarProps().onSelectSession('session-b');

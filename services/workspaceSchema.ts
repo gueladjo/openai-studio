@@ -11,7 +11,6 @@ import {
   Source,
   SystemInstruction
 } from '../types';
-import { normalizeProjectDefaultConfig } from '../constants';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 import { MAX_PROJECT_SOURCES } from '../utils/projectSources';
 import { SHA256_PATTERN } from './contentAddressing';
@@ -554,15 +553,6 @@ export const parseSystemInstructions = (value: unknown): SystemInstruction[] => 
   return value as SystemInstruction[];
 };
 
-const parseProjectDefaultConfig = (value: unknown, path: string): Project['defaultConfig'] => {
-  const config = assertRecord(value, path);
-  if (config.systemInstructionId !== undefined) {
-    fail(`${path}.systemInstructionId`, 'is not supported for project defaults');
-  }
-  parseConfig(config, path);
-  return normalizeProjectDefaultConfig(config);
-};
-
 const parseProjectSource = (value: unknown, path: string, sourceIds: Set<string>): ProjectSource => {
   const source = assertObject(value, path, [
     'id',
@@ -597,6 +587,8 @@ export const parseProjects = (value: unknown): Project[] => {
       'name',
       'icon',
       'instructions',
+      // Legacy per-project chat defaults: accepted and ignored so earlier v5
+      // workspaces and archives still load.
       'defaultConfig',
       'sources',
       'createdAt',
@@ -607,13 +599,12 @@ export const parseProjects = (value: unknown): Project[] => {
     const name = assertString(project.name, `${path}.name`, MAX_SHORT_TEXT_LENGTH, false);
     const icon = assertEnum(project.icon, `${path}.icon`, PROJECT_ICONS) as Project['icon'];
     const instructions = assertString(project.instructions, `${path}.instructions`, MAX_INSTRUCTION_CONTENT_LENGTH);
-    const defaultConfig = parseProjectDefaultConfig(project.defaultConfig, `${path}.defaultConfig`);
     const sources = assertArray(project.sources, `${path}.sources`, MAX_PROJECT_SOURCES)
       .map((source, sourceIndex) => parseProjectSource(source, `${path}.sources[${sourceIndex}]`, sourceIds));
     const createdAt = assertTimestamp(project.createdAt, `${path}.createdAt`);
     const updatedAt = assertTimestamp(project.updatedAt, `${path}.updatedAt`);
     if (updatedAt < createdAt) fail(`${path}.updatedAt`, 'must not be earlier than createdAt');
-    return { id, name, icon, instructions, defaultConfig, sources, createdAt, updatedAt };
+    return { id, name, icon, instructions, sources, createdAt, updatedAt };
   });
 };
 

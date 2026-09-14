@@ -136,8 +136,7 @@ and generated-file references.
 ### Projects And Reusable Sources
 
 A project owns a required name, fixed-enum icon, inline project
-instructions, defaults for newly created chats, member chats, and at most 40
-locally canonical sources. The sidebar provides project hierarchy, expandable
+instructions, member chats, and at most 40 locally canonical sources. The sidebar provides project hierarchy, expandable
 member chats, separate Projects and Chats sections, and global project/chat
 search with the project path shown for chat matches. Project rows show their
 icon and name without an aggregate chat counter, plus a shortcut that creates a
@@ -162,11 +161,9 @@ configuration: the current chat's configuration, else the most recently
 modified chat's, else the application default. This is one global preference
 shared across projects, so settings chosen in one project's chat carry into
 the next chat created anywhere. The copy includes `systemInstructionId`;
-project instructions still take precedence at request time. The persisted
-project `defaultConfig` is a snapshot of the creating chat's configuration
-without `systemInstructionId`, retained for archive compatibility; the
-application exposes no editor for it and no longer consults it when creating
-chats. Project instructions are resolved live
+project instructions still take precedence at request time. Projects carry no
+per-project chat defaults; a legacy `defaultConfig` key in a stored project is
+accepted and dropped on read. Project instructions are resolved live
 when each request starts and override the chat's reusable global instruction.
 Existing project chats therefore see instruction edits on their next request,
 while an in-flight request retains its snapshot. Project sources configure
@@ -533,7 +530,9 @@ Local schema v5 is the only supported persisted format and uses the strict
 color-free project shape. Earlier generation versions are rejected without
 republishing or changing their records. Portable archives use a separate v3
 format. Optional-field defaults apply within these supported formats and do not
-migrate earlier local or archive versions.
+migrate earlier local or archive versions. Within v5 and archive v3, the
+retired project `defaultConfig` key is the one tolerated legacy key: it is
+ignored on read, never written, and excluded from project merge identity.
 
 `ProjectRemoteState` is a separate nonportable registry of project vector-store
 IDs, project-exclusive OpenAI File IDs, transient status/error/usage, SHA-256 API

@@ -1102,14 +1102,11 @@ function App() {
   const createNewProject = () => {
     if (!canMutateWorkspace()) return;
     const now = Date.now();
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } =
-      normalizeChatConfig(currentSession?.config || DEFAULT_CONFIG);
     const project: Project = {
       id: crypto.randomUUID(),
       name: 'New Project',
       icon: 'folder',
       instructions: '',
-      defaultConfig,
       sources: [],
       createdAt: now,
       updatedAt: now

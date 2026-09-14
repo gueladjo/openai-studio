@@ -369,13 +369,14 @@ describe('workspace runtime schema', () => {
         }
       }]
     })])).toThrow('byteSize must be a finite number between 0 and 52428799');
+  });
 
-    expect(() => parseProjects([createProject({
-      defaultConfig: {
-        ...createProject().defaultConfig,
-        systemInstructionId: 'instruction-1'
-      } as any
-    })])).toThrow('systemInstructionId is not supported');
+  it('ignores the legacy project defaultConfig field', () => {
+    const legacyProject = {
+      ...createProject(),
+      defaultConfig: { model: 'retired-model', systemInstructionId: 'instruction-1' }
+    };
+    expect(parseProjects([legacyProject])).toEqual([createProject()]);
   });
 
   it('validates project membership and live remote-registry references', () => {

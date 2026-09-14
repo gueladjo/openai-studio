@@ -199,14 +199,11 @@ export interface ProjectSource {
   addedAt: number;
 }
 
-export type ProjectDefaultConfig = Omit<ChatConfig, 'systemInstructionId'>;
-
 export interface Project {
   id: string;
   name: string;
   icon: ProjectIcon;
   instructions: string;
-  defaultConfig: ProjectDefaultConfig;
   sources: ProjectSource[];
   createdAt: number;
   updatedAt: number;
