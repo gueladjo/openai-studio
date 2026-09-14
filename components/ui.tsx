@@ -207,7 +207,7 @@ export function Segmented<T extends string>({
               'inline-flex min-w-[3.25rem] flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed',
               capitalize && 'capitalize',
               selected
-                ? 'bg-surface text-ink shadow-card'
+                ? 'bg-accent text-accent-ink shadow-card'
                 : 'text-ink-2 hover:text-ink'
             )}
           >
