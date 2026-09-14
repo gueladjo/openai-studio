@@ -159,6 +159,28 @@ const getLatestContextTokenUsage = (messages: Message[]): number => {
   return 0;
 };
 
+const MODEL_SUMMARY_CLASS =
+  'flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left text-[11px] text-ink-3';
+
+const ModelSummary = ({
+  modelName,
+  reasoningEffort,
+  enabledTools
+}: {
+  modelName: string;
+  reasoningEffort: string;
+  enabledTools: string[];
+}) => (
+  <>
+    <SlidersHorizontal size={12} aria-hidden="true" className="shrink-0" />
+    <span className="truncate font-medium text-ink-2">{modelName}</span>
+    <span className="shrink-0 capitalize">· {reasoningEffort}</span>
+    {enabledTools.length > 0 && (
+      <span className="hidden truncate sm:inline">· {enabledTools.join(', ')}</span>
+    )}
+  </>
+);
+
 export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) => {
   const modelConfig = getModelConfig(session.config.model);
   const contextTokens = getLatestContextTokenUsage(session.messages);
@@ -177,12 +199,12 @@ export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) 
 
   return (
     <div
-      className="flex items-center gap-1.5 px-1 text-[10px] text-ink-3"
+      className="flex shrink-0 items-center gap-1.5 text-[10px] text-ink-3"
       title={description}
     >
       <span>Context</span>
       <div
-        className="h-1 w-12 overflow-hidden rounded-full bg-line"
+        className="h-1 w-16 overflow-hidden rounded-full bg-line"
         role="progressbar"
         aria-label="Context usage"
         aria-valuemin={0}
@@ -1562,7 +1584,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const enabledTools = [
     session.config.tools.webSearch ? 'Web' : null,
     session.config.tools.codeInterpreter ? 'Code' : null
-  ].filter(Boolean);
+  ].filter((tool): tool is string => tool !== null);
+  const modelSummary = (
+    <ModelSummary
+      modelName={modelConfig.name}
+      reasoningEffort={session.config.reasoningEffort}
+      enabledTools={enabledTools}
+    />
+  );
 
   return (
     <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-surface">
@@ -1741,26 +1770,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   onSelect={attachProjectSource}
                 />
               )}
-              {onToggleConfig && (
-                <button
-                  type="button"
-                  onClick={onToggleConfig}
-                  aria-label="Open chat settings"
-                  title="Model, reasoning, and tools"
-                  className="ml-0.5 inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                >
-                  <SlidersHorizontal size={13} aria-hidden="true" className="shrink-0 text-ink-3" />
-                  <span className="truncate font-medium">{modelConfig.name}</span>
-                  <span className="hidden capitalize text-ink-3 sm:inline">· {session.config.reasoningEffort}</span>
-                  {enabledTools.length > 0 && (
-                    <span className="hidden text-ink-3 md:inline">· {enabledTools.join(', ')}</span>
-                  )}
-                </button>
-              )}
               <div className="min-w-0 flex-1" />
-              <div className="hidden sm:block">
-                <ContextWindowUsage session={session} />
-              </div>
               {isLoading ? (
                 <button
                   type="button"
@@ -1791,7 +1801,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               )}
             </div>
           </div>
-          <div className="sm:hidden">
+          <div className="flex min-w-0 items-center justify-between gap-3 px-1">
+            {onToggleConfig ? (
+              <button
+                type="button"
+                onClick={onToggleConfig}
+                aria-label="Open chat settings"
+                title="Model, reasoning, and tools"
+                className={cx(MODEL_SUMMARY_CLASS, 'transition-colors hover:bg-surface-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40')}
+              >
+                {modelSummary}
+              </button>
+            ) : (
+              <span className={MODEL_SUMMARY_CLASS}>{modelSummary}</span>
+            )}
             <ContextWindowUsage session={session} />
           </div>
         </div>
