@@ -1,4 +1,4 @@
-import { readdir, rm } from 'node:fs/promises';
+import { readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,11 +10,23 @@ const generatedDirectories = [
   'node_modules',
   'release',
 ];
+// Tool-generated Git refs that live outside the working tree. Their deeply
+// nested names break Windows MAX_PATH when the repository is copied out of WSL.
+const generatedNestedDirectories = ['.git/refs/codex'];
 const generatedFilePatterns = [
   /\.log(?:\..*)?$/,
   /^(?:npm|yarn|pnpm|lerna)-debug\.log.*$/,
   /^yarn-error\.log.*$/,
 ];
+
+const exists = async (relativePath) => {
+  try {
+    await stat(join(projectRoot, relativePath));
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -33,8 +45,15 @@ if (unsupportedArgs.length > 0) {
         generatedFilePatterns.some((pattern) => pattern.test(entry.name)),
     )
     .map((entry) => entry.name);
+  const presentNestedDirectories = [];
+  for (const nestedDirectory of generatedNestedDirectories) {
+    if (await exists(nestedDirectory)) {
+      presentNestedDirectories.push(nestedDirectory);
+    }
+  }
   const targets = [
     ...generatedDirectories.filter((name) => rootEntryNames.has(name)),
+    ...presentNestedDirectories,
     ...generatedFiles,
   ].sort();
 

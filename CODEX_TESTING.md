@@ -68,7 +68,7 @@ finish local preparation before asking for any still-needed external action.
 
 | Command | Effect |
 | --- | --- |
-| `npm run clean` | Removes dependencies, build/package output, and logs; inspect with `npm run clean -- --dry-run` first |
+| `npm run clean` | Removes dependencies, build/package output, logs, and Codex turn-diff checkpoint refs in `.git/refs/codex`; inspect with `npm run clean -- --dry-run` first |
 | `node scripts/generate-icons.js` | Overwrites tracked PNG icons |
 | `npm version patch\|minor\|major` | Changes version files and creates a commit/tag by default |
 | `npm run dist` | Builds and packages Electron artifacts in `release/` |
