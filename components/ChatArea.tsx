@@ -59,7 +59,6 @@ import {
   Button,
   Callout,
   IconButton,
-  Pill,
   SidebarControls,
   ViewHeader,
   cx,
@@ -1073,17 +1072,9 @@ export const MessageRow = React.memo(({
     );
   }
 
-  const modelLabel = message.modelName || 'Assistant';
-
   return (
     <div className="group flex w-full min-w-0 flex-col items-start gap-2">
-      <div className="flex items-center gap-2">
-        <BrandMark size={20} className="rounded-md" />
-        <span className="text-xs font-medium text-ink-2">{modelLabel}</span>
-        {message.reasoningEffort && (
-          <Pill className="capitalize">{message.reasoningEffort}</Pill>
-        )}
-      </div>
+      <BrandMark size={20} className="rounded-md" />
 
       <div className="w-full min-w-0 space-y-2 pl-0 sm:pl-7">
         {message.thinking && (
