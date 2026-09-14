@@ -538,7 +538,7 @@ describe('App workspace and request lifecycle', () => {
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[aria-label="Open menu"]')?.click();
-      container.querySelector<HTMLButtonElement>('[aria-label="Open settings"]')?.click();
+      container.querySelector<HTMLButtonElement>('[aria-label="Open chat settings"]')?.click();
     });
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,

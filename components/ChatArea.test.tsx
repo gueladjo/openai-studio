@@ -233,9 +233,10 @@ describe('ChatArea responsive message layout', () => {
       </>
     );
 
-    expect(html.match(/flex w-full min-w-0 gap-4 max-w-4xl/g)).toHaveLength(2);
-    expect(html.match(/flex min-w-0 max-w-\[85%\] flex-col/g)).toHaveLength(2);
-    expect(html.match(/class="message-content min-w-0 max-w-full/g)).toHaveLength(2);
+    expect(html.match(/flex w-full min-w-0 flex-col items-end/g)).toHaveLength(1);
+    expect(html.match(/flex w-full min-w-0 flex-col items-start/g)).toHaveLength(1);
+    expect(html.match(/class="message-content min-w-0 max-w-\[85%\]/g)).toHaveLength(1);
+    expect(html.match(/class="message-content min-w-0 max-w-full/g)).toHaveLength(1);
   });
 });
 

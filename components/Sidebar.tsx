@@ -1,33 +1,22 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { Project, Session } from '../types';
 import { APP_VERSION } from '../constants';
 import {
-  Plus,
+  ChevronRight,
+  FolderPlus,
   MessageSquare,
-  Trash2,
+  PanelLeftClose,
+  Plus,
   Search,
-  Sun,
-  Moon,
-  Key,
-  ChevronUp,
-  ChevronDown,
-  Download,
-  Upload,
-  Database,
-  Loader2,
-  FolderOpen,
-  RefreshCw,
-  ShieldCheck,
-  GitMerge,
   Settings,
-  SquarePen
+  SquarePen,
+  Trash2,
+  X
 } from 'lucide-react';
 import { BackupSchedulerState } from '../services/backupScheduler';
-import {
-  registerFileDialogFocusRecovery,
-  restoreFocusAfterFileDialog
-} from '../utils/focusRecovery';
 import { ProjectIconGlyph } from './ProjectIcon';
+import { SettingsDialog } from './SettingsDialog';
+import { Button, IconButton, Spinner, cx } from './ui';
 
 interface SidebarProps {
   sessions: Session[];
@@ -39,6 +28,8 @@ interface SidebarProps {
   onNewProject?: () => void;
   onNewSession: (projectId?: string) => void;
   onDeleteSession: (e: React.MouseEvent, id: string) => void;
+  onClose?: () => void;
+  onCollapse?: () => void;
   isDarkMode: boolean;
   toggleTheme: () => void;
   apiKey: string;
@@ -67,6 +58,20 @@ interface SidebarProps {
   readOnly?: boolean;
 }
 
+// Shortcuts stay visible on touch layouts and reveal on hover/focus on desktop.
+const HOVER_REVEAL_CLASS =
+  'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 md:group-hover:disabled:opacity-50';
+
+const SectionHeading: React.FC<{
+  title: string;
+  action: React.ReactNode;
+}> = ({ title, action }) => (
+  <div className="group flex h-8 items-center justify-between pl-2 pr-0.5">
+    <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3">{title}</h3>
+    {action}
+  </div>
+);
+
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
   projects = [],
@@ -77,6 +82,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNewProject,
   onNewSession,
   onDeleteSession,
+  onClose,
+  onCollapse,
   isDarkMode,
   toggleTheme,
   apiKey,
@@ -105,42 +112,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   readOnly = false
 }) => {
   const [showSettings, setShowSettings] = useState(false);
-  const [isAutomaticBackupOpen, setIsAutomaticBackupOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(
-    new Set(projects.map(project => project.id))
+    () => new Set(projects.map(project => project.id))
   );
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const mergeFileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => setApiKeyDraft(apiKey), [apiKey]);
-
-  const toggleAutomaticBackupDetails = () => {
-    const opening = !isAutomaticBackupOpen;
-    setIsAutomaticBackupOpen(opening);
-    if (opening) onRefreshManagedBackups();
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    restoreFocusAfterFileDialog();
-    if (e.target.files && e.target.files.length > 0) {
-      onImportData(e.target.files[0]);
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const handleMergeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    restoreFocusAfterFileDialog();
-    if (e.target.files && e.target.files.length > 0) {
-      onMergeData(e.target.files[0]);
-    }
-    if (mergeFileInputRef.current) mergeFileInputRef.current.value = '';
-  };
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredSessions = sessions
-    .filter(session => (session.title || 'Untitled Chat').toLowerCase().includes(searchQuery.toLowerCase()))
+    .filter(session => (session.title || 'Untitled Chat').toLowerCase().includes(normalizedSearch))
     .sort((a, b) => b.lastModified - a.lastModified);
   const standaloneSessions = filteredSessions.filter(session => !session.projectId);
   const matchingProjects = projects.filter(project => (
@@ -151,424 +130,284 @@ export const Sidebar: React.FC<SidebarProps> = ({
       (session.title || 'Untitled Chat').toLowerCase().includes(normalizedSearch)
     ))
   ));
+  const needsAttention = pendingRemoteCleanupCount > 0 || Boolean(remoteCleanupError);
 
-  const renderSession = (session: Session, projectName?: string) => (
-    <div
-      key={session.id}
-      onClick={() => onSelectSession(session.id)}
-      className={`group flex items-center justify-between rounded-md p-2 text-sm transition-colors cursor-pointer ${
-        currentSessionId === session.id
-          ? 'bg-gray-200 dark:bg-[#1f2937] text-gray-900 dark:text-white font-medium'
-          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#161b22] hover:text-gray-900 dark:hover:text-gray-200'
-      }`}
-    >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+  const toggleProject = (projectId: string) => {
+    setExpandedProjectIds(current => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
+
+  const renderSession = (session: Session, projectName?: string) => {
+    const title = session.title || 'Untitled Chat';
+    const active = currentSessionId === session.id;
+    return (
+      <div
+        key={session.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelectSession(session.id)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSelectSession(session.id);
+          }
+        }}
+        className={cx(
+          'group flex h-9 cursor-pointer items-center gap-2 rounded-lg pl-2 pr-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          active
+            ? 'bg-surface-3 font-medium text-ink'
+            : 'text-ink-2 hover:bg-surface-3/70 hover:text-ink'
+        )}
+      >
         {processingSessionIds?.has(session.id)
-          ? <Loader2 size={14} className="shrink-0 animate-spin text-blue-500" />
-          : <MessageSquare size={14} className="shrink-0 text-gray-400" />}
+          ? <Spinner size={14} className="shrink-0" />
+          : <MessageSquare size={14} className="shrink-0 text-ink-3" aria-hidden="true" />}
         <span className="min-w-0 flex-1 truncate">
-          {session.title || 'Untitled Chat'}
+          {title}
           {normalizedSearch && projectName && (
-            <span className="ml-1 text-[10px] font-normal text-gray-400">/ {projectName}</span>
+            <span className="ml-1 text-[10px] font-normal text-ink-3">/ {projectName}</span>
           )}
         </span>
+        <button
+          type="button"
+          onClick={(event) => onDeleteSession(event, session.id)}
+          disabled={readOnly}
+          className={cx(
+            'rounded-md p-1.5 text-ink-3 transition-all hover:bg-danger-soft hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+            readOnly ? 'hidden' : active ? 'opacity-100' : HOVER_REVEAL_CLASS
+          )}
+          aria-label={`Delete ${title}`}
+          title="Delete chat"
+        >
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={(event) => onDeleteSession(event, session.id)}
-        disabled={readOnly}
-        className={`rounded p-1 text-gray-400 transition-all hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/50 dark:hover:text-red-400 ${
-          readOnly ? 'hidden' : currentSessionId === session.id
-            ? 'opacity-100'
-            : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100'
-        }`}
-        aria-label={`Delete ${session.title || 'Untitled Chat'}`}
-        title="Delete chat"
-      >
-        <Trash2 size={12} />
-      </button>
-    </div>
-  );
+    );
+  };
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col bg-gray-50 transition-colors duration-200 dark:bg-[#0d1117]">
-      {/* Top section */}
-      <div className="space-y-2 p-4">
-        <button
-          onClick={() => onNewSession()}
-          disabled={readOnly}
-          title={readOnly ? 'Another tab is editing this workspace' : undefined}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 px-4 flex items-center justify-center gap-2 transition-colors font-medium text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Plus size={16} />
-          <span>New Chat</span>
-        </button>
-        <button
-          onClick={onNewProject}
-          disabled={readOnly || !onNewProject}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:bg-[#161b22] dark:text-gray-200 dark:hover:bg-gray-800"
-        >
-          <FolderOpen size={16} />
-          <span>New Project</span>
-        </button>
+    <div className="flex h-full min-h-0 flex-col bg-canvas pt-[env(safe-area-inset-top)] md:pt-0">
+      <div className="flex h-14 shrink-0 items-center justify-between pl-[max(1rem,env(safe-area-inset-left))] pr-2">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-accent text-accent-ink" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 12a8 8 0 0 1 8-8" />
+              <path d="M20 12a8 8 0 0 1-8 8" />
+              <circle cx="12" cy="12" r="2.5" />
+            </svg>
+          </span>
+          <span className="text-sm font-semibold tracking-tight text-ink">OpenAI Studio</span>
+        </div>
+        <div className="flex items-center">
+          {onCollapse && (
+            <IconButton
+              label="Hide sidebar"
+              icon={PanelLeftClose}
+              size="sm"
+              className="hidden md:inline-flex"
+              onClick={onCollapse}
+            />
+          )}
+          {onClose && (
+            <IconButton label="Close menu" icon={X} className="md:hidden" onClick={onClose} />
+          )}
+        </div>
       </div>
 
-      <div className="px-4 pb-2">
+      <div className="space-y-2 px-3 pb-1 pl-[max(0.75rem,env(safe-area-inset-left))]">
+        <Button
+          variant="primary"
+          size="md"
+          block
+          icon={Plus}
+          onClick={() => onNewSession()}
+          disabled={readOnly}
+          title={readOnly ? 'Another tab is editing this workspace' : 'Start a standalone chat'}
+        >
+          New chat
+        </Button>
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
+          <Search
+            size={14}
+            aria-hidden="true"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3"
+          />
           <input
-            type="text"
+            type="search"
             placeholder="Search projects and chats..."
+            aria-label="Search projects and chats"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-800 rounded-md py-1.5 pl-9 pr-3 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
+            className="h-9 w-full rounded-lg border border-transparent bg-surface-3/70 pl-9 pr-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent focus:bg-surface focus:ring-2 focus:ring-accent/25"
           />
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1 py-2">
-        <h3 className="mb-1 px-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Projects</h3>
-        {matchingProjects.map(project => {
-          const projectSessions = filteredSessions.filter(session => session.projectId === project.id);
-          const expanded = normalizedSearch || expandedProjectIds.has(project.id);
-          return (
-            <div key={project.id}>
-              <div className={`group flex items-center rounded-md ${selectedProjectId === project.id ? 'bg-gray-200 dark:bg-[#1f2937]' : ''}`}>
-                <button type="button" onClick={() => setExpandedProjectIds(current => {
-                  const next = new Set(current);
-                  if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
-                  return next;
-                })} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`} className="p-2 text-gray-400">
-                  {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} className="rotate-90" />}
-                </button>
-                <button type="button" onClick={() => onSelectProject?.(project.id)} className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-2 text-left text-sm font-medium text-gray-700 dark:text-gray-200">
-                  <ProjectIconGlyph icon={project.icon} size={14} className="shrink-0" />
-                  <span className="truncate">{project.name}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onNewSession(project.id)}
-                  disabled={readOnly}
-                  className="mr-1 rounded-md p-2 text-gray-400 opacity-100 transition-all hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 md:group-hover:disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-                  aria-label={`New chat in ${project.name}`}
-                  title={`New chat in ${project.name}`}
+      <nav
+        aria-label="Projects and chats"
+        className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-1 pl-[max(0.5rem,env(safe-area-inset-left))]"
+      >
+        <SectionHeading
+          title="Projects"
+          action={(
+            <IconButton
+              label="New project"
+              icon={FolderPlus}
+              iconSize={15}
+              size="sm"
+              onClick={onNewProject}
+              disabled={readOnly || !onNewProject}
+              className={HOVER_REVEAL_CLASS}
+            />
+          )}
+        />
+        <div className="space-y-0.5">
+          {matchingProjects.map(project => {
+            const projectSessions = filteredSessions.filter(session => session.projectId === project.id);
+            const expanded = Boolean(normalizedSearch) || expandedProjectIds.has(project.id);
+            const selected = selectedProjectId === project.id;
+            return (
+              <div key={project.id}>
+                <div
+                  className={cx(
+                    'group flex h-9 items-center rounded-lg pr-1 transition-colors',
+                    selected ? 'bg-surface-3 text-ink' : 'text-ink-2 hover:bg-surface-3/70 hover:text-ink'
+                  )}
                 >
-                  <SquarePen size={15} />
-                </button>
-              </div>
-              {expanded && <div className="ml-5 space-y-1">{projectSessions.map(session => renderSession(session, project.name))}</div>}
-            </div>
-          );
-        })}
-        <div className="group mb-1 mt-4 flex items-center justify-between px-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Chats</h3>
-          <button
-            type="button"
-            onClick={() => onNewSession()}
-            disabled={readOnly}
-            className="rounded-md p-1.5 text-gray-400 opacity-100 transition-all hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 md:group-hover:disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-            aria-label="New standalone chat"
-            title="New standalone chat"
-          >
-            <SquarePen size={15} />
-          </button>
-        </div>
-        {standaloneSessions.map(session => renderSession(session))}
-        {matchingProjects.length === 0 && standaloneSessions.length === 0 && (
-          <div className="mt-10 text-center text-sm text-gray-500">No projects or chats found</div>
-        )}
-      </div>
-      
-      <div className="border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0d1117] transition-colors">
-         <div 
-            className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-100 dark:hover:bg-[#161b22] transition-colors"
-            onClick={() => setShowSettings(!showSettings)}
-         >
-             <div className="flex items-center gap-3">
-                <div className="w-8 h-8 flex items-center justify-center text-gray-500 dark:text-gray-400">
-                  <Settings size={20} aria-hidden="true" />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-base font-medium text-gray-700 dark:text-gray-200">Settings</span>
-                </div>
-             </div>
-             {showSettings ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
-         </div>
-
-         {showSettings && (
-            <div className="max-h-[70vh] min-h-0 overflow-y-auto px-4 pb-4 space-y-4">
-                {/* Theme Toggle */}
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                        {isDarkMode ? <Moon size={16} /> : <Sun size={16} />}
-                        <span>Theme</span>
-                    </div>
-                    <button 
-                        onClick={toggleTheme}
-                        disabled={readOnly}
-                        className="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-300 dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <span 
-                            className={`${isDarkMode ? 'translate-x-6' : 'translate-x-1'} inline-block h-4 w-4 transform rounded-full bg-white transition`}
-                        />
-                    </button>
-                </div>
-
-                {/* API Key Input */}
-                <div className="space-y-2">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                        <Key size={12} />
-                        <span>API Key</span>
-                    </label>
-                    <input 
-                        type="password" 
-                        value={onApiKeySave ? apiKeyDraft : apiKey}
-                        onChange={(e) => {
-                          if (onApiKeySave) setApiKeyDraft(e.target.value);
-                          else onApiKeyChange(e.target.value);
-                        }}
-                        disabled={readOnly}
-                        placeholder="sk-..."
-                        className="w-full bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 rounded px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 focus:border-blue-500 focus:outline-none placeholder-gray-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  <button
+                    type="button"
+                    onClick={() => toggleProject(project.id)}
+                    aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`}
+                    aria-expanded={expanded}
+                    className="flex h-9 w-7 shrink-0 items-center justify-center rounded-md text-ink-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <ChevronRight
+                      size={14}
+                      aria-hidden="true"
+                      className={cx('transition-transform duration-150', expanded && 'rotate-90')}
                     />
-                    <div className="text-[10px] text-gray-500 leading-tight">
-                        Overrides .env key. Saved locally.
-                    </div>
-                    {onApiKeySave && (
-                      <button
-                        type="button"
-                        onClick={() => onApiKeySave(apiKeyDraft)}
-                        disabled={readOnly || apiKeyDraft === apiKey}
-                        className="w-full rounded bg-blue-600 px-2 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                      >
-                        Save API key
-                      </button>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectProject?.(project.id)}
+                    aria-current={selected ? 'page' : undefined}
+                    className="flex h-9 min-w-0 flex-1 items-center gap-2 pr-1 text-left text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <ProjectIconGlyph icon={project.icon} size={15} className="shrink-0 text-ink-3" />
+                    <span className="truncate">{project.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNewSession(project.id)}
+                    disabled={readOnly}
+                    className={cx(
+                      'rounded-md p-1.5 text-ink-3 transition-all hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50',
+                      HOVER_REVEAL_CLASS
                     )}
-                    {(pendingRemoteCleanupCount > 0 || remoteCleanupError) && (
-                      <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                        <div>
-                          {pendingRemoteCleanupCount > 0
-                            ? `Project deletion pending (${pendingRemoteCleanupCount})`
-                            : 'Project source issue'}
-                        </div>
-                        {remoteCleanupError && <div className="mt-1">{remoteCleanupError}</div>}
-                        {pendingRemoteCleanupCount > 0 && onRetryRemoteCleanup && (
-                          <button type="button" onClick={onRetryRemoteCleanup} className="mt-2 inline-flex items-center gap-1 rounded border border-amber-400 px-2 py-1">
-                            <RefreshCw size={10} /> Retry cleanup
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    aria-label={`New chat in ${project.name}`}
+                    title={`New chat in ${project.name}`}
+                  >
+                    <SquarePen size={15} aria-hidden="true" />
+                  </button>
                 </div>
+                {expanded && projectSessions.length > 0 && (
+                  <div className="my-0.5 ml-[1.1rem] space-y-0.5 border-l border-line pl-1.5">
+                    {projectSessions.map(session => renderSession(session, project.name))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {projects.length === 0 && !normalizedSearch && (
+            <p className="px-2 py-1.5 text-xs leading-relaxed text-ink-3">
+              Projects keep instructions, chat defaults, and reusable sources together.
+            </p>
+          )}
+        </div>
 
-                <div className="h-px bg-gray-200 dark:bg-gray-800 my-2" />
+        <div className="mt-3">
+          <SectionHeading
+            title="Chats"
+            action={(
+              <button
+                type="button"
+                onClick={() => onNewSession()}
+                disabled={readOnly}
+                className={cx(
+                  'inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-3 transition-all hover:bg-surface-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50',
+                  HOVER_REVEAL_CLASS
+                )}
+                aria-label="New standalone chat"
+                title="New standalone chat"
+              >
+                <SquarePen size={15} aria-hidden="true" />
+              </button>
+            )}
+          />
+          <div className="space-y-0.5">
+            {standaloneSessions.map(session => renderSession(session))}
+          </div>
+        </div>
 
-                {/* Data Management */}
-                <div className="space-y-2">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                        <Database size={12} />
-                        <span>Data Management</span>
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
-                        <button
-                            onClick={onExportData}
-                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors"
-                        >
-                            <Download className="shrink-0" size={12} />
-                            Backup
-                        </button>
-                        <button
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={readOnly}
-                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <Upload className="shrink-0" size={12} />
-                            Restore
-                        </button>
-                        <button
-                            onClick={() => mergeFileInputRef.current?.click()}
-                            disabled={mergeDisabled}
-                            title={mergeDisabled ? 'Merge is unavailable while the workspace or a response is active' : undefined}
-                            className="flex items-center justify-center gap-1 px-2 py-1.5 bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f2937] text-xs font-medium text-gray-700 dark:text-gray-300 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <GitMerge size={12} />
-                            Merge
-                        </button>
-                        <input
-                            type="file"
-                            accept=".zip,application/zip"
-                            ref={input => {
-                              fileInputRef.current = input;
-                              registerFileDialogFocusRecovery(input);
-                            }}
-                            onChange={handleFileSelect}
-                            disabled={readOnly}
-                            className="hidden"
-                        />
-                        <input
-                            type="file"
-                            accept=".zip,application/zip"
-                            ref={input => {
-                              mergeFileInputRef.current = input;
-                              registerFileDialogFocusRecovery(input);
-                            }}
-                            onChange={handleMergeFileSelect}
-                            disabled={mergeDisabled}
-                            className="hidden"
-                        />
-                    </div>
-                    {undoWorkspaceAction && (
-                      <button
-                        type="button"
-                        onClick={onUndoWorkspaceMutation}
-                        disabled={readOnly}
-                        className="flex w-full items-center justify-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-                      >
-                        <RefreshCw size={12} />
-                        Undo last {undoWorkspaceAction}
-                      </button>
-                    )}
-                    {backupState.supported ? (
-                      <div className="space-y-2 rounded-md border border-gray-200 p-2 dark:border-gray-700">
-                        <button
-                          type="button"
-                          onClick={toggleAutomaticBackupDetails}
-                          aria-expanded={isAutomaticBackupOpen}
-                          className="flex w-full items-center justify-between gap-2 text-left group"
-                        >
-                          <span className="text-xs text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition-colors">
-                            Automatic daily backups
-                          </span>
-                          {isAutomaticBackupOpen
-                            ? <ChevronUp size={14} className="shrink-0 text-gray-400" />
-                            : <ChevronDown size={14} className="shrink-0 text-gray-400" />}
-                        </button>
-                        {isAutomaticBackupOpen && (
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                                Enable automatic backups
-                              </span>
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-checked={backupState.enabled}
-                                onClick={() => onToggleAutomaticBackups(!backupState.enabled)}
-                                disabled={readOnly || backupState.running}
-                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
-                                  backupState.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
-                                }`}
-                              >
-                                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                                  backupState.enabled ? 'translate-x-5' : 'translate-x-1'
-                                }`} />
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                onClick={onChooseBackupFolder}
-                                disabled={backupState.running}
-                                className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                              >
-                                <FolderOpen size={11} />
-                                {backupState.destinationStatus === 'unavailable' ? 'Choose folder' : 'Change folder'}
-                              </button>
-                              {backupState.destinationStatus === 'permission-required' ? (
-                                <button
-                                  type="button"
-                                  onClick={onReconnectBackupFolder}
-                                  className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                                >
-                                  <RefreshCw size={11} />
-                                  Reconnect
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={onBackUpNow}
-                                  disabled={readOnly || backupState.running || backupState.destinationStatus !== 'connected'}
-                                  className="flex items-center justify-center gap-1 rounded border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                                >
-                                  {backupState.running ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
-                                  Back up now
-                                </button>
-                              )}
-                            </div>
-                            <div className="text-[10px] leading-4 text-gray-500">
-                              {backupState.lastSuccessAt
-                                ? `Last successful: ${new Date(backupState.lastSuccessAt).toLocaleString()}`
-                                : 'No successful managed backup yet.'}
-                              {backupState.nextDueAt
-                                ? ` Next due: ${new Date(backupState.nextDueAt).toLocaleString()}.`
-                                : ''}
-                            </div>
-                            {backupState.backups.slice(0, 3).map(backup => (
-                              <div
-                                key={backup.filename}
-                                className="rounded border border-gray-200 p-2 text-[10px] dark:border-gray-700"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="truncate text-gray-700 dark:text-gray-200">
-                                    {backup.preview
-                                      ? new Date(backup.preview.createdAt).toLocaleString()
-                                      : backup.filename}
-                                  </span>
-                                  <span className={
-                                    backup.integrity === 'valid'
-                                      ? 'text-green-600'
-                                      : backup.integrity === 'corrupt'
-                                        ? 'text-red-500'
-                                        : 'text-gray-500 dark:text-gray-400'
-                                  }>
-                                    {backup.integrity === 'unverified'
-                                      ? 'not verified'
-                                      : backup.integrity}
-                                  </span>
-                                </div>
-                                <div className="mt-1 text-gray-500">
-                                  {(backup.size / (1024 * 1024)).toFixed(1)} MB
-                                </div>
-                                {backup.integrity === 'valid' && (
-                                  <div className="mt-2 flex flex-wrap gap-1">
-                                    <button disabled={readOnly} onClick={() => onRestoreManagedBackup(backup.filename)} className="rounded bg-blue-600 px-2 py-1 text-white disabled:opacity-50">Restore</button>
-                                    <button onClick={() => onExportManagedBackup(backup.filename)} className="rounded border border-gray-300 px-2 py-1 dark:border-gray-600">Export</button>
-                                    <button disabled={readOnly} onClick={() => onDeleteManagedBackup(backup.filename)} className="rounded border border-red-300 px-2 py-1 text-red-600 disabled:opacity-50 dark:border-red-800">Delete</button>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                            {(backupActionError || backupState.error) && (
-                              <div className="rounded bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
-                                {backupActionError || backupState.error}
-                              </div>
-                            )}
-                            {backupState.warning && (
-                              <div className="text-[10px] text-amber-700 dark:text-amber-300">
-                                {backupState.warning}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-[10px] leading-4 text-gray-500">
-                        Automatic folders are unavailable in this browser. Use Backup, Merge, and Restore.
-                      </p>
-                    )}
-                </div>
+        {matchingProjects.length === 0 && standaloneSessions.length === 0 && (
+          <div className="mt-10 px-2 text-center text-sm text-ink-3">
+            {normalizedSearch ? 'No projects or chats found' : 'No chats yet'}
+          </div>
+        )}
+      </nav>
 
-                <div className="space-y-1">
-                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                        Release Version
-                    </label>
-                    <div className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#161b22] px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
-                        v{APP_VERSION}
-                    </div>
-                </div>
-            </div>
-         )}
+      <div className="shrink-0 border-t border-line p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))]">
+        <button
+          type="button"
+          onClick={() => setShowSettings(true)}
+          className="flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <Settings size={17} aria-hidden="true" className="shrink-0 text-ink-3" />
+          <span className="min-w-0 flex-1 truncate text-left">Settings</span>
+          {needsAttention && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-warn"
+              role="img"
+              aria-label="Project cleanup needs attention"
+            />
+          )}
+          <span className="font-mono text-[10px] text-ink-3">v{APP_VERSION}</span>
+        </button>
       </div>
+
+      <SettingsDialog
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        isDarkMode={isDarkMode}
+        toggleTheme={toggleTheme}
+        apiKey={apiKey}
+        onApiKeyChange={onApiKeyChange}
+        onApiKeySave={onApiKeySave}
+        pendingRemoteCleanupCount={pendingRemoteCleanupCount}
+        remoteCleanupError={remoteCleanupError}
+        onRetryRemoteCleanup={onRetryRemoteCleanup}
+        onExportData={onExportData}
+        onImportData={onImportData}
+        onMergeData={onMergeData}
+        mergeDisabled={mergeDisabled}
+        backupState={backupState}
+        backupActionError={backupActionError}
+        onToggleAutomaticBackups={onToggleAutomaticBackups}
+        onChooseBackupFolder={onChooseBackupFolder}
+        onReconnectBackupFolder={onReconnectBackupFolder}
+        onRefreshManagedBackups={onRefreshManagedBackups}
+        onBackUpNow={onBackUpNow}
+        onRestoreManagedBackup={onRestoreManagedBackup}
+        onExportManagedBackup={onExportManagedBackup}
+        onDeleteManagedBackup={onDeleteManagedBackup}
+        undoWorkspaceAction={undoWorkspaceAction}
+        onUndoWorkspaceMutation={onUndoWorkspaceMutation}
+        readOnly={readOnly}
+      />
     </div>
   );
 };

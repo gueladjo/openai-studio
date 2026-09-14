@@ -140,10 +140,11 @@ describe('ProjectHome', () => {
     expect(container.querySelector(
       'button[aria-label="Delete evidence.txt"][title="Delete evidence.txt"]'
     )).not.toBeNull();
-    expect(container.querySelector('option[value="health"]')?.textContent)
-      .toBe('Health');
+    expect(container.querySelector(
+      '[role="radiogroup"][aria-label="Project icon"] [role="radio"][aria-label="Health icon"]'
+    )?.getAttribute('aria-checked')).toBe('false');
     expect(Array.from(container.querySelectorAll('h2')).filter(
-      heading => heading.textContent === 'Configuration'
+      heading => heading.textContent === 'Default chat settings'
     )).toHaveLength(1);
     const deleteButton = Array.from(container.querySelectorAll('button')).find(
       button => button.textContent?.includes('Delete permanently')

@@ -193,7 +193,7 @@ function createWindow() {
     },
     // Frameless window for custom title bar (Discord-style)
     frame: false,
-    backgroundColor: '#0d1117'
+    backgroundColor: '#1a1a19'
   });
   mainWindow = win;
 

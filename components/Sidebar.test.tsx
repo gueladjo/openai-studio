@@ -68,10 +68,8 @@ describe('Sidebar workspace merge controls', () => {
         onUndoWorkspaceMutation={() => undefined}
       />
     );
-    const settingsLabel = Array.from(container.querySelectorAll('span'))
-      .find(element => element.textContent === 'Settings');
     await act(async () => {
-      settingsLabel?.parentElement?.parentElement?.parentElement?.click();
+      findButton(container, 'Settings')?.click();
     });
   };
 
@@ -156,7 +154,7 @@ describe('Sidebar workspace merge controls', () => {
     await renderSidebar({ sessions: [session], projects: [project], onApiKeySave });
 
     expect(container.querySelector('.lucide-briefcase-business')).not.toBeNull();
-    expect(Array.from(container.querySelectorAll('h3')).map(heading => (
+    expect(Array.from(container.querySelectorAll('nav h3')).map(heading => (
       heading.textContent?.trim()
     ))).toEqual(['Projects', 'Chats']);
     expect(container.textContent).not.toContain('General chats');

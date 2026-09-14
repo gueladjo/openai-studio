@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Minus, Square, X, Copy } from 'lucide-react';
+import { BrandMark, cx } from './ui';
 
-interface TitleBarProps {
-  isDarkMode: boolean;
-}
+const CONTROL_CLASS =
+  'titlebar-no-drag flex h-full w-11 items-center justify-center text-ink-3 transition-colors';
 
-export function TitleBar({ isDarkMode }: TitleBarProps) {
+export function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -20,44 +20,24 @@ export function TitleBar({ isDarkMode }: TitleBarProps) {
   const handleClose = () => window.electronAPI?.close();
 
   return (
-    <div
-      className={`titlebar-drag flex items-center justify-between h-8 w-full select-none shrink-0 ${
-        isDarkMode ? 'bg-[#0d1117]' : 'bg-gray-100'
-      }`}
-    >
-      {/* Left side - App title */}
+    <div className="titlebar-drag flex h-9 w-full shrink-0 select-none items-center justify-between border-b border-line bg-canvas">
       <div className="flex items-center gap-2 px-3">
-        <span className={`text-xs font-medium ${
-          isDarkMode ? 'text-gray-400' : 'text-gray-600'
-        }`}>
-          OpenAI Studio
-        </span>
+        <BrandMark size={16} />
+        <span className="text-xs font-medium text-ink-3">OpenAI Studio</span>
       </div>
 
-      {/* Right side - Window controls */}
       <div className="flex h-full">
-        {/* Minimize */}
         <button
           onClick={handleMinimize}
-          className={`titlebar-no-drag flex items-center justify-center w-11 h-full transition-colors ${
-            isDarkMode
-              ? 'hover:bg-gray-700/50 text-gray-400 hover:text-gray-200'
-              : 'hover:bg-gray-200 text-gray-600 hover:text-gray-800'
-          }`}
+          className={cx(CONTROL_CLASS, 'hover:bg-surface-3 hover:text-ink')}
           aria-label="Minimize"
         >
           <Minus size={14} strokeWidth={1.5} />
         </button>
-
-        {/* Maximize/Restore */}
         <button
           onClick={handleMaximize}
-          className={`titlebar-no-drag flex items-center justify-center w-11 h-full transition-colors ${
-            isDarkMode
-              ? 'hover:bg-gray-700/50 text-gray-400 hover:text-gray-200'
-              : 'hover:bg-gray-200 text-gray-600 hover:text-gray-800'
-          }`}
-          aria-label={isMaximized ? "Restore" : "Maximize"}
+          className={cx(CONTROL_CLASS, 'hover:bg-surface-3 hover:text-ink')}
+          aria-label={isMaximized ? 'Restore' : 'Maximize'}
         >
           {isMaximized ? (
             <Copy size={12} strokeWidth={1.5} className="rotate-180" />
@@ -65,15 +45,9 @@ export function TitleBar({ isDarkMode }: TitleBarProps) {
             <Square size={11} strokeWidth={1.5} />
           )}
         </button>
-
-        {/* Close */}
         <button
           onClick={handleClose}
-          className={`titlebar-no-drag flex items-center justify-center w-11 h-full transition-colors ${
-            isDarkMode
-              ? 'hover:bg-red-600 text-gray-400 hover:text-white'
-              : 'hover:bg-red-500 text-gray-600 hover:text-white'
-          }`}
+          className={cx(CONTROL_CLASS, 'hover:bg-danger hover:text-white')}
           aria-label="Close"
         >
           <X size={15} strokeWidth={1.5} />

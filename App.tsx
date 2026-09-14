@@ -89,7 +89,8 @@ import {
 } from './utils/conversationExport';
 import { confirmChatDeletion } from './utils/chatDeletion';
 import { getModelConfig, normalizeChatConfig } from './constants';
-import { AlertTriangle, Loader2, Menu, RefreshCw, Settings, X } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { Button, Callout, Dialog, Spinner, cx } from './components/ui';
 import { validateAttachments } from './utils/attachmentValidation';
 import {
   ProjectSourceService,
@@ -326,18 +327,26 @@ function App() {
     apiKey: ''
   });
 
+  // Mobile drawer visibility, desktop column visibility, and the chat
+  // settings panel (bottom sheet below md, side panel above).
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
 
   useEffect(() => {
-    const closeMobilePanelsOnDesktop = () => {
+    const closeMobileDrawerOnDesktop = () => {
       if (isMobileViewport()) return;
       setIsSidebarOpen(false);
-      setIsConfigOpen(false);
     };
-    window.addEventListener('resize', closeMobilePanelsOnDesktop);
-    return () => window.removeEventListener('resize', closeMobilePanelsOnDesktop);
+    window.addEventListener('resize', closeMobileDrawerOnDesktop);
+    return () => window.removeEventListener('resize', closeMobileDrawerOnDesktop);
   }, []);
+
+  // Theme tokens live on the document root so dialogs, native controls, and
+  // scrollbars follow the selected theme everywhere.
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle('dark', isDarkMode);
+  }, [isDarkMode]);
 
   // Refs are written by these setters before state so effects and async
   // work read the committed value without a layout-effect mirror.
@@ -2908,44 +2917,40 @@ function App() {
 
   if (isInitializing) {
     return (
-      <div className={`flex h-screen w-full items-center justify-center transition-colors duration-200 ${isDarkMode ? 'dark bg-[#0d1117]' : 'bg-white'}`}>
-         <div className="flex flex-col items-center gap-4">
-             <Loader2 size={40} className="animate-spin text-blue-600 dark:text-blue-500" />
-             <div className="text-sm text-gray-500 dark:text-gray-400 font-medium">Loading Workspace...</div>
-         </div>
+      <div className="flex h-dvh w-full items-center justify-center bg-surface text-ink">
+        <div className="flex flex-col items-center gap-4">
+          <Spinner size={32} />
+          <div className="text-sm font-medium text-ink-2">Loading Workspace...</div>
+        </div>
       </div>
     );
   }
 
   if (workspaceLoadError) {
     return (
-      <div className={isDarkMode ? 'dark' : ''}>
-        <div className="flex flex-col h-dvh w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
-          {window.electronAPI && (
-            <div className="hidden md:block">
-              <TitleBar isDarkMode={isDarkMode} />
-            </div>
-          )}
-          <div className="flex flex-1 items-center justify-center px-6">
-            <div className="w-full max-w-lg rounded-lg border border-red-200 bg-red-50 p-6 shadow-sm dark:border-red-900/60 dark:bg-red-950/20">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" size={24} />
-                <div className="min-w-0">
-                  <h1 className="text-base font-semibold text-red-900 dark:text-red-100">Workspace storage could not be loaded</h1>
-                  <p className="mt-2 text-sm leading-6 text-red-800 dark:text-red-200">
-                    OpenAI Studio did not write an empty workspace. Resolve the storage issue below, then retry.
-                  </p>
-                  <pre className="mt-3 max-h-32 overflow-auto rounded-md bg-white/70 p-3 text-xs text-red-950 dark:bg-black/20 dark:text-red-100">
-                    {workspaceLoadError}
-                  </pre>
-                  <button
-                    type="button"
-                    onClick={() => window.location.reload()}
-                    className="mt-4 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
-                  >
-                    Retry
-                  </button>
-                </div>
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-surface font-sans text-ink">
+        {window.electronAPI && (
+          <div className="hidden md:block">
+            <TitleBar />
+          </div>
+        )}
+        <div className="flex flex-1 items-center justify-center px-6">
+          <div className="w-full max-w-lg rounded-2xl border border-danger/30 bg-surface p-6 shadow-card">
+            <div className="flex items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-danger-soft text-danger">
+                <AlertTriangle size={20} aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h1 className="text-base font-semibold text-ink">Workspace storage could not be loaded</h1>
+                <p className="mt-2 text-sm leading-6 text-ink-2">
+                  OpenAI Studio did not write an empty workspace. Resolve the storage issue below, then retry.
+                </p>
+                <pre className="mt-3 max-h-32 overflow-auto rounded-lg bg-danger-soft p-3 font-mono text-xs text-danger">
+                  {workspaceLoadError}
+                </pre>
+                <Button variant="primary" className="mt-4" onClick={() => window.location.reload()}>
+                  Retry
+                </Button>
               </div>
             </div>
           </div>
@@ -2954,448 +2959,364 @@ function App() {
     );
   }
 
+  const openSidebar = () => setIsSidebarOpen(true);
+  const toggleSidebarCollapsed = () => setIsSidebarCollapsed(collapsed => !collapsed);
+  const toggleConfig = () => setIsConfigOpen(open => !open);
+  const statusStripClass =
+    'flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-b px-4 py-1.5 text-xs font-medium';
+
   return (
-    <div className={isDarkMode ? 'dark' : ''}>
-      <div className="flex flex-col h-dvh w-full bg-white dark:bg-[#0d1117] text-gray-900 dark:text-gray-200 font-sans overflow-hidden transition-colors duration-200">
-        {/* Custom Title Bar - Electron desktop only */}
-        {window.electronAPI && (
-          <div className="hidden md:block">
-            <TitleBar isDarkMode={isDarkMode} />
-          </div>
-        )}
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-surface font-sans text-ink">
+      {/* Custom Title Bar - Electron desktop only */}
+      {window.electronAPI && (
+        <div className="hidden md:block">
+          <TitleBar />
+        </div>
+      )}
 
-        {isWorkspaceReadOnly && (
-          <div
-            role="status"
-            className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
-          >
-            This workspace is open for editing in another tab. This tab is read-only and follows saved changes automatically.
-          </div>
-        )}
+      {isWorkspaceReadOnly && (
+        <div role="status" className={cx(statusStripClass, 'border-warn/30 bg-warn-soft text-warn')}>
+          This workspace is open for editing in another tab. This tab is read-only and follows saved changes automatically.
+        </div>
+      )}
 
-        {isClosing && !closeSaveError && (
-          <div
-            role="status"
-            className="flex flex-wrap items-center justify-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-xs font-medium text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
-          >
-            <span>Finishing project work and saving before closing…</span>
-            <button
-              type="button"
-              onClick={cancelCloseAfterSaveFailure}
-              className="rounded border border-blue-300 px-2 py-1 hover:bg-blue-100 dark:border-blue-700 dark:hover:bg-blue-900"
-            >
-              Keep working
-            </button>
-          </div>
-        )}
+      {isClosing && !closeSaveError && (
+        <div role="status" className={cx(statusStripClass, 'border-accent/30 bg-accent-soft text-ink')}>
+          <span>Finishing project work and saving before closing…</span>
+          <Button size="sm" onClick={cancelCloseAfterSaveFailure}>
+            Keep working
+          </Button>
+        </div>
+      )}
 
-        {isWorkspaceMutating && !isClosing && (
-          <div
-            role="status"
-            className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-center text-xs font-medium text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
-          >
-            Updating workspace… editing and new requests are temporarily paused.
-          </div>
-        )}
+      {isWorkspaceMutating && !isClosing && (
+        <div role="status" className={cx(statusStripClass, 'border-accent/30 bg-accent-soft text-ink')}>
+          Updating workspace… editing and new requests are temporarily paused.
+        </div>
+      )}
 
-        {saveFailure && (
-          <div
-            role="alert"
-            className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-900 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200"
-          >
-            <span className="inline-flex items-center gap-2">
-              <AlertTriangle size={15} className="shrink-0" />
-              <span>
-                Workspace changes are not saved: {saveFailure.error.message}
-                {saveFailure.nextRetryDelayMs === null
-                  ? ' Automatic retries are paused.'
-                  : ` Retrying in ${Math.ceil(saveFailure.nextRetryDelayMs / 1000)}s.`}
-              </span>
+      {saveFailure && (
+        <div role="alert" className={cx(statusStripClass, 'border-danger/30 bg-danger-soft text-danger')}>
+          <span className="inline-flex items-center gap-2">
+            <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
+            <span>
+              Workspace changes are not saved: {saveFailure.error.message}
+              {saveFailure.nextRetryDelayMs === null
+                ? ' Automatic retries are paused.'
+                : ` Retrying in ${Math.ceil(saveFailure.nextRetryDelayMs / 1000)}s.`}
             </span>
-            <button
-              type="button"
-              onClick={() => void retryPendingSaves()}
-              disabled={isRetryingSave || isWorkspaceInteractionReadOnly}
-              className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-2.5 py-1.5 font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RefreshCw size={13} className={isRetryingSave ? 'animate-spin' : ''} />
-              {isRetryingSave ? 'Retrying…' : 'Retry now'}
-            </button>
-          </div>
+          </span>
+          <Button
+            size="sm"
+            variant="danger"
+            icon={RefreshCw}
+            iconSize={13}
+            onClick={() => void retryPendingSaves()}
+            disabled={isRetryingSave || isWorkspaceInteractionReadOnly}
+            className={isRetryingSave ? '[&_svg]:animate-spin' : undefined}
+          >
+            {isRetryingSave ? 'Retrying…' : 'Retry now'}
+          </Button>
+        </div>
+      )}
+
+      {/* Main App Content */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden">
+        {/* Sidebar - desktop: collapsible column, mobile: drawer. Kept free of
+            transforms so the fixed settings dialog inside it stays viewport-bound. */}
+        {isSidebarOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-overlay animate-fade-in md:hidden"
+            onClick={() => setIsSidebarOpen(false)}
+          />
         )}
-
-        {/* Mobile Header */}
-          <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:hidden dark:border-gray-800 dark:bg-[#0d1117]">
-            <button
-              onClick={() => setIsSidebarOpen(true)}
-              className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              aria-label="Open menu"
-            >
-              <Menu size={24} />
-            </button>
-            <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate max-w-[200px]">
-              OpenAI Studio
-            </h1>
-            <button
-              onClick={() => setIsConfigOpen(true)}
-              className="p-2 -mr-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              aria-label="Open settings"
-              disabled={!currentSession}
-            >
-              <Settings size={24} className={!currentSession ? 'opacity-40' : ''} />
-            </button>
+        <aside
+          className={cx(
+            'fixed inset-y-0 left-0 z-50 w-[19rem] max-w-[85vw] overflow-hidden shadow-pop md:static md:z-auto md:max-w-none md:shadow-none md:transition-[width] md:duration-200 md:ease-out',
+            isSidebarOpen ? 'block animate-drawer-in' : 'hidden md:block',
+            isSidebarCollapsed ? 'md:w-0' : 'md:w-[17rem] md:border-r md:border-line'
+          )}
+        >
+          <div className="h-full w-[19rem] max-w-[85vw] md:w-[17rem] md:max-w-none">
+            <Sidebar
+              sessions={sessions}
+              projects={projects}
+              currentSessionId={currentSessionId}
+              selectedProjectId={selectedProjectId}
+              onSelectSession={handleSelectSession}
+              onSelectProject={handleSelectProject}
+              onNewProject={createNewProject}
+              onNewSession={projectId => {
+                createSession(projectId);
+                setIsSidebarOpen(false);
+              }}
+              onDeleteSession={deleteSession}
+              onClose={() => setIsSidebarOpen(false)}
+              onCollapse={() => setIsSidebarCollapsed(true)}
+              isDarkMode={isDarkMode}
+              toggleTheme={() => {
+                if (canMutateWorkspace()) setIsDarkMode(!isDarkMode);
+              }}
+              apiKey={apiKey}
+              onApiKeySave={saveApiKey}
+              pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
+              remoteCleanupError={projectActionError}
+              onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
+              onApiKeyChange={key => {
+                if (canMutateWorkspace()) setApiKey(key);
+              }}
+              onExportData={handleExportData}
+              onImportData={handleImportData}
+              onMergeData={handleMergeData}
+              mergeDisabled={
+                isWorkspaceInteractionReadOnly ||
+                processingSessionIds.size > 0 ||
+                projectOperationStatus.isBusy
+              }
+              backupState={backupState}
+              backupActionError={backupActionError}
+              onToggleAutomaticBackups={handleToggleAutomaticBackups}
+              onChooseBackupFolder={handleChooseBackupFolder}
+              onReconnectBackupFolder={handleReconnectBackupFolder}
+              onRefreshManagedBackups={handleRefreshManagedBackups}
+              onBackUpNow={handleBackUpNow}
+              onRestoreManagedBackup={handleManagedBackupRestore}
+              onExportManagedBackup={handleManagedBackupExport}
+              onDeleteManagedBackup={handleManagedBackupDelete}
+              undoWorkspaceAction={undoWorkspaceAction}
+              onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
+              processingSessionIds={processingSessionIds}
+              readOnly={isWorkspaceInteractionReadOnly}
+            />
           </div>
+        </aside>
 
-        {/* Main App Content */}
-        <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
-          {/* Sidebar - Desktop: always visible, Mobile: slide-out drawer */}
-          {isSidebarOpen && (
-            <div
-              className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
-              onClick={() => setIsSidebarOpen(false)}
+        <main className="flex min-w-0 flex-1 overflow-hidden">
+          {selectedProject && (
+            <ProjectHome
+              project={selectedProject}
+              sessions={sessions.filter(session => session.projectId === selectedProject.id)}
+              remoteIndex={projectRemoteState.indexes[selectedProject.id]}
+              totalIndexedUsageBytes={totalIndexedUsageBytes}
+              busySourceIds={projectOperationStatus.busySourceIds}
+              sourceWorkBusy={projectOperationStatus.isBusy}
+              error={projectActionError}
+              readOnly={isWorkspaceInteractionReadOnly}
+              onUpdate={updateProject}
+              onNewChat={() => createSession(selectedProject.id)}
+              onAddSources={files => addProjectSources(selectedProject.id, files)}
+              onDeleteSource={source => deleteProjectSource(selectedProject.id, source)}
+              onRetrySource={source => retryProjectSource(selectedProject.id, source)}
+              onDownloadSource={downloadProjectSource}
+              onDeleteProject={() => deleteProject(selectedProject.id)}
+              onOpenSidebar={openSidebar}
+              onToggleSidebar={toggleSidebarCollapsed}
+              isSidebarCollapsed={isSidebarCollapsed}
             />
           )}
-          <div
-            className={`fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] transform transition-transform duration-300 ease-out md:static md:z-auto md:w-64 md:max-w-none md:flex-shrink-0 md:translate-x-0 md:border-r md:border-gray-200 md:transition-none md:dark:border-gray-800 ${
-              isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-            }`}
-          >
-            <div className="flex h-full flex-col bg-gray-50 pl-[env(safe-area-inset-left)] md:pl-0 dark:bg-[#0d1117]">
-              <div className="flex items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
-                <span className="font-semibold text-gray-800 dark:text-gray-200">Chats</span>
-                <button
-                  onClick={() => setIsSidebarOpen(false)}
-                  className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-                  aria-label="Close menu"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <Sidebar
-                sessions={sessions}
-                projects={projects}
-                currentSessionId={currentSessionId}
-                selectedProjectId={selectedProjectId}
-                onSelectSession={handleSelectSession}
-                onSelectProject={handleSelectProject}
-                onNewProject={createNewProject}
-                onNewSession={projectId => {
-                  createSession(projectId);
-                  setIsSidebarOpen(false);
-                }}
-                onDeleteSession={deleteSession}
-                isDarkMode={isDarkMode}
-                toggleTheme={() => {
-                  if (canMutateWorkspace()) setIsDarkMode(!isDarkMode);
-                }}
-                apiKey={apiKey}
-                onApiKeySave={saveApiKey}
-                pendingRemoteCleanupCount={projectRemoteState.cleanupTombstones.length}
-                remoteCleanupError={projectActionError}
-                onRetryRemoteCleanup={() => { void retryRemoteCleanup(); }}
-                onApiKeyChange={key => {
-                  if (canMutateWorkspace()) setApiKey(key);
-                }}
-                onExportData={handleExportData}
-                onImportData={handleImportData}
-                onMergeData={handleMergeData}
-                mergeDisabled={
-                  isWorkspaceInteractionReadOnly ||
-                  processingSessionIds.size > 0 ||
-                  projectOperationStatus.isBusy
-                }
-                backupState={backupState}
-                backupActionError={backupActionError}
-                onToggleAutomaticBackups={handleToggleAutomaticBackups}
-                onChooseBackupFolder={handleChooseBackupFolder}
-                onReconnectBackupFolder={handleReconnectBackupFolder}
-                onRefreshManagedBackups={handleRefreshManagedBackups}
-                onBackUpNow={handleBackUpNow}
-                onRestoreManagedBackup={handleManagedBackupRestore}
-                onExportManagedBackup={handleManagedBackupExport}
-                onDeleteManagedBackup={handleManagedBackupDelete}
-                undoWorkspaceAction={undoWorkspaceAction}
-                onUndoWorkspaceMutation={handleUndoWorkspaceMutation}
-                processingSessionIds={processingSessionIds}
-                readOnly={isWorkspaceInteractionReadOnly}
-              />
-            </div>
-          </div>
+          <div className={selectedProject ? 'hidden' : 'contents'}>
+            <ChatArea
+              key={draftWorkspaceEpoch}
+              session={currentSession}
+              availableSessionIds={sessions.map(session => session.id)}
+              onSendMessage={handleSendMessage}
+              onStopGenerating={handleStopGenerating}
+              onRetryFailedMessage={handleRetryFailedMessage}
+              onRemoveFailedAttachment={handleRemoveFailedAttachment}
+              onReplaceFailedAttachments={handleReplaceFailedAttachments}
+              onRegenerateResponse={handleRegenerateLatestResponse}
+              onShareConversation={handleShareConversation}
+              onDownloadGeneratedFile={cacheGeneratedFile}
+              apiKey={apiKey}
+              isLoading={isCurrentSessionProcessing}
+              readOnly={isWorkspaceInteractionReadOnly}
+              projectSources={currentSessionProject?.sources.filter(
+                source => source.capability === 'direct_attachment'
+              ) || []}
+              onLoadProjectSource={loadProjectSourceFile}
+              project={currentSessionProject || undefined}
+              onOpenSidebar={openSidebar}
+              onToggleSidebar={toggleSidebarCollapsed}
+              isSidebarCollapsed={isSidebarCollapsed}
+              onToggleConfig={toggleConfig}
+              isConfigOpen={isConfigOpen}
+              onNewSession={() => createSession()}
+              onNewProject={createNewProject}
+            />
 
-          <main className="flex-1 flex min-w-0 w-full overflow-hidden">
-            {selectedProject && (
-              <ProjectHome
-                project={selectedProject}
-                sessions={sessions.filter(session => session.projectId === selectedProject.id)}
-                remoteIndex={projectRemoteState.indexes[selectedProject.id]}
-                totalIndexedUsageBytes={totalIndexedUsageBytes}
-                busySourceIds={projectOperationStatus.busySourceIds}
-                sourceWorkBusy={projectOperationStatus.isBusy}
-                error={projectActionError}
-                readOnly={isWorkspaceInteractionReadOnly}
-                onUpdate={updateProject}
-                onNewChat={() => createSession(selectedProject.id)}
-                onAddSources={files => addProjectSources(selectedProject.id, files)}
-                onDeleteSource={source => deleteProjectSource(selectedProject.id, source)}
-                onRetrySource={source => retryProjectSource(selectedProject.id, source)}
-                onDownloadSource={downloadProjectSource}
-                onDeleteProject={() => deleteProject(selectedProject.id)}
-              />
-            )}
-            <div className={selectedProject ? 'hidden' : 'contents'}>
-              <ChatArea
-                key={draftWorkspaceEpoch}
-                session={currentSession}
-                availableSessionIds={sessions.map(session => session.id)}
-                onSendMessage={handleSendMessage}
-                onStopGenerating={handleStopGenerating}
-                onRetryFailedMessage={handleRetryFailedMessage}
-                onRemoveFailedAttachment={handleRemoveFailedAttachment}
-                onReplaceFailedAttachments={handleReplaceFailedAttachments}
-                onRegenerateResponse={handleRegenerateLatestResponse}
-                onShareConversation={handleShareConversation}
-                onDownloadGeneratedFile={cacheGeneratedFile}
-                apiKey={apiKey}
-                isLoading={isCurrentSessionProcessing}
-                readOnly={isWorkspaceInteractionReadOnly}
-                projectSources={currentSessionProject?.sources.filter(
-                  source => source.capability === 'direct_attachment'
-                ) || []}
-                onLoadProjectSource={loadProjectSourceFile}
-                project={currentSessionProject || undefined}
-              />
-
-              {currentSession && (
-                <>
-                  {isConfigOpen && (
-                    <div
-                      className="fixed inset-0 z-40 animate-in bg-black/50 fade-in duration-200 md:hidden"
-                      onClick={() => setIsConfigOpen(false)}
-                    />
-                  )}
+            {currentSession && (
+              <>
+                {isConfigOpen && (
                   <div
-                    className={`${isConfigOpen ? 'flex' : 'hidden'} fixed inset-x-0 bottom-0 z-50 h-[85dvh] flex-col overflow-hidden rounded-t-2xl bg-gray-50 pb-[env(safe-area-inset-bottom)] animate-in slide-in-from-bottom duration-300 md:static md:z-auto md:flex md:h-full md:max-h-none md:flex-shrink-0 md:rounded-none md:pb-0 md:animate-none dark:bg-[#0d1117]`}
-                  >
-                    <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 p-4 md:hidden dark:border-gray-800">
-                      <span className="font-semibold text-gray-800 dark:text-gray-200">Configuration</span>
-                      <button
-                        onClick={() => setIsConfigOpen(false)}
-                        className="-mr-2 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-                        aria-label="Close configuration"
-                      >
-                        <X size={20} />
-                      </button>
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-hidden md:contents">
-                      <ConfigPanel
-                        config={currentSession.config}
-                        onChange={updateConfig}
-                        systemInstructions={systemInstructions}
-                        onCreateSystemInstruction={handleCreateSystemInstruction}
-                        onUpdateSystemInstruction={handleUpdateSystemInstruction}
-                        onDeleteSystemInstruction={handleDeleteSystemInstruction}
-                        hideSystemInstructions={Boolean(currentSession.projectId)}
-                        readOnly={isWorkspaceInteractionReadOnly}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </main>
-        </div>
-
-        {archiveProgress && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 px-4">
-            <div
-              role="status"
-              className="w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-700 dark:bg-[#161b22]"
-            >
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <Loader2 size={16} className="animate-spin text-blue-500" />
-                {archiveProgress.phase === 'preparing'
-                  ? 'Preparing portable backup…'
-                  : 'Validating backup integrity…'}
-              </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                    className="fixed inset-0 z-40 bg-overlay animate-fade-in md:hidden"
+                    onClick={() => setIsConfigOpen(false)}
+                  />
+                )}
+                {/* Chat settings: bottom sheet below md, side panel above. */}
                 <div
-                  className="h-full rounded-full bg-blue-600 transition-[width]"
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      archiveProgress.totalBytes > 0
-                        ? archiveProgress.completedBytes /
-                          archiveProgress.totalBytes * 100
-                        : archiveProgress.completedEntries /
-                          Math.max(1, archiveProgress.totalEntries) * 100
-                    )}%`
-                  }}
-                />
-              </div>
-              <div className="mt-2 text-xs text-gray-500">
-                {archiveProgress.completedEntries} of {archiveProgress.totalEntries} entries
-              </div>
-              <button
-                type="button"
-                onClick={() => archiveAbortRef.current?.abort()}
-                className="mt-4 w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {pendingRestore && (
-          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 px-4">
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="restore-preview-title"
-              className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-[#161b22]"
-            >
-              <h2 id="restore-preview-title" className="text-base font-semibold">
-                Restore verified backup?
-              </h2>
-              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                The archive passed ZIP, size, schema, reference, and SHA-256 validation. A verified recovery point will be created before the workspace changes.
-              </p>
-              <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg bg-gray-50 p-3 text-xs dark:bg-[#0d1117]">
-                <dt className="text-gray-500">Created</dt>
-                <dd>{new Date(pendingRestore.preview.createdAt).toLocaleString()}</dd>
-                <dt className="text-gray-500">App version</dt>
-                <dd>v{pendingRestore.preview.appVersion}</dd>
-                <dt className="text-gray-500">Workspace revision</dt>
-                <dd>{pendingRestore.preview.workspaceRevision}</dd>
-                <dt className="text-gray-500">Sessions / messages</dt>
-                <dd>{pendingRestore.preview.counts.sessions} / {pendingRestore.preview.counts.messages}</dd>
-                <dt className="text-gray-500">Attachments / files</dt>
-                <dd>{pendingRestore.preview.counts.attachments} / {pendingRestore.preview.counts.generatedFiles}</dd>
-                <dt className="text-gray-500">Archive size</dt>
-                <dd>{(pendingRestore.preview.archiveBytes / (1024 * 1024)).toFixed(1)} MB</dd>
-              </dl>
-              {pendingRestore.preview.uncachedGeneratedFileCount > 0 && (
-                <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                  {pendingRestore.preview.uncachedGeneratedFileCount} generated-file reference(s) were not cached when this backup was created.
-                </p>
-              )}
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPendingRestore(null)}
-                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                  className={cx(
+                    'fixed inset-x-0 bottom-0 z-50 h-[85dvh] flex-col overflow-hidden rounded-t-2xl border-t border-line bg-canvas shadow-pop md:static md:z-auto md:h-full md:w-[21rem] md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none',
+                    isConfigOpen ? 'flex animate-sheet-in md:animate-none' : 'hidden'
+                  )}
                 >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void confirmWorkspaceRestore()}
-                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                >
-                  Create recovery point and restore
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {preparedPortableBackup && (
-          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 px-4">
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="portable-backup-ready-title"
-              className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl dark:border-gray-700 dark:bg-[#161b22]"
-            >
-              <h2
-                id="portable-backup-ready-title"
-                className="text-base font-semibold text-gray-900 dark:text-gray-100"
-              >
-                Portable backup ready
-              </h2>
-              <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                The verified ZIP is ready. Use the button below to
-                {preparedPortableBackup.canShare ? ' share or save it' : ' save it'}.
-              </p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPreparedPortableBackup(null)}
-                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSavePreparedPortableBackup}
-                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                >
-                  {preparedPortableBackup.canShare ? 'Share or save' : 'Save backup'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {closeSaveError && window.electronAPI && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4">
-            <div
-              role="alertdialog"
-              aria-modal="true"
-              aria-labelledby="close-save-error-title"
-              className="w-full max-w-md rounded-xl border border-red-200 bg-white p-6 shadow-2xl dark:border-red-900/60 dark:bg-[#161b22]"
-            >
-              <div className="flex items-start gap-3">
-                <AlertTriangle
-                  size={24}
-                  className="mt-0.5 shrink-0 text-red-600 dark:text-red-400"
-                />
-                <div className="min-w-0">
-                  <h2
-                    id="close-save-error-title"
-                    className="text-base font-semibold text-gray-900 dark:text-gray-100"
-                  >
-                    Couldn’t finish close-time protection
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                    Project work, a workspace save, or a due backup failed. Retry saving, or choose Keep working to resolve failed project work. Closing without the backup can lose unsaved changes and remote cleanup records.
-                  </p>
-                  <pre className="mt-3 max-h-28 overflow-auto rounded-md bg-red-50 p-3 text-xs text-red-900 dark:bg-red-950/30 dark:text-red-100">
-                    {closeSaveError}
-                  </pre>
+                  <ConfigPanel
+                    variant="panel"
+                    onClose={() => setIsConfigOpen(false)}
+                    config={currentSession.config}
+                    onChange={updateConfig}
+                    systemInstructions={systemInstructions}
+                    onCreateSystemInstruction={handleCreateSystemInstruction}
+                    onUpdateSystemInstruction={handleUpdateSystemInstruction}
+                    onDeleteSystemInstruction={handleDeleteSystemInstruction}
+                    hideSystemInstructions={Boolean(currentSession.projectId)}
+                    readOnly={isWorkspaceInteractionReadOnly}
+                  />
                 </div>
-              </div>
-              <div className="mt-5 flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={cancelCloseAfterSaveFailure}
-                  disabled={isRetryingSave}
-                  className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-                >
-                  Keep working
-                </button>
-                <button
-                  type="button"
-                  onClick={() => window.electronAPI?.confirmClose()}
-                  disabled={isRetryingSave}
-                  className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/30"
-                >
-                  Close without backup
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void retryCloseAfterSaveFailure()}
-                  disabled={isRetryingSave}
-                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <RefreshCw size={15} className={isRetryingSave ? 'animate-spin' : ''} />
-                  {isRetryingSave ? 'Retrying…' : 'Retry'}
-                </button>
-              </div>
+              </>
+            )}
+          </div>
+        </main>
+      </div>
+
+      {archiveProgress && (
+        <Dialog
+          open
+          title={archiveProgress.phase === 'preparing'
+            ? 'Preparing portable backup…'
+            : 'Validating backup integrity…'}
+          titleId="archive-progress-title"
+          size="sm"
+          hideClose
+          footer={(
+            <Button onClick={() => archiveAbortRef.current?.abort()}>
+              Cancel
+            </Button>
+          )}
+        >
+          <div role="status" className="space-y-2">
+            <div className="flex items-center gap-2 text-xs text-ink-2">
+              <Spinner size={14} />
+              {archiveProgress.completedEntries} of {archiveProgress.totalEntries} entries
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-line">
+              <div
+                className="h-full rounded-full bg-accent transition-[width]"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    archiveProgress.totalBytes > 0
+                      ? archiveProgress.completedBytes /
+                        archiveProgress.totalBytes * 100
+                      : archiveProgress.completedEntries /
+                        Math.max(1, archiveProgress.totalEntries) * 100
+                  )}%`
+                }}
+              />
             </div>
           </div>
-        )}
-      </div>
+        </Dialog>
+      )}
+
+      {pendingRestore && (
+        <Dialog
+          open
+          onClose={() => setPendingRestore(null)}
+          title="Restore verified backup?"
+          titleId="restore-preview-title"
+          description="The archive passed ZIP, size, schema, reference, and SHA-256 validation. A verified recovery point will be created before the workspace changes."
+          footer={(
+            <>
+              <Button onClick={() => setPendingRestore(null)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={() => void confirmWorkspaceRestore()}>
+                Create recovery point and restore
+              </Button>
+            </>
+          )}
+        >
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl bg-surface-2 p-3 text-xs">
+            <dt className="text-ink-3">Created</dt>
+            <dd className="text-ink">{new Date(pendingRestore.preview.createdAt).toLocaleString()}</dd>
+            <dt className="text-ink-3">App version</dt>
+            <dd className="text-ink">v{pendingRestore.preview.appVersion}</dd>
+            <dt className="text-ink-3">Workspace revision</dt>
+            <dd className="text-ink">{pendingRestore.preview.workspaceRevision}</dd>
+            <dt className="text-ink-3">Sessions / messages</dt>
+            <dd className="text-ink">{pendingRestore.preview.counts.sessions} / {pendingRestore.preview.counts.messages}</dd>
+            <dt className="text-ink-3">Attachments / files</dt>
+            <dd className="text-ink">{pendingRestore.preview.counts.attachments} / {pendingRestore.preview.counts.generatedFiles}</dd>
+            <dt className="text-ink-3">Archive size</dt>
+            <dd className="text-ink">{(pendingRestore.preview.archiveBytes / (1024 * 1024)).toFixed(1)} MB</dd>
+          </dl>
+          {pendingRestore.preview.uncachedGeneratedFileCount > 0 && (
+            <Callout tone="warn" className="mt-3">
+              {pendingRestore.preview.uncachedGeneratedFileCount} generated-file reference(s) were not cached when this backup was created.
+            </Callout>
+          )}
+        </Dialog>
+      )}
+
+      {preparedPortableBackup && (
+        <Dialog
+          open
+          onClose={() => setPreparedPortableBackup(null)}
+          title="Portable backup ready"
+          titleId="portable-backup-ready-title"
+          size="sm"
+          description={`The verified ZIP is ready. Use the button below to ${preparedPortableBackup.canShare ? 'share or save it' : 'save it'}.`}
+          footer={(
+            <>
+              <Button onClick={() => setPreparedPortableBackup(null)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleSavePreparedPortableBackup}>
+                {preparedPortableBackup.canShare ? 'Share or save' : 'Save backup'}
+              </Button>
+            </>
+          )}
+        />
+      )}
+
+      {closeSaveError && window.electronAPI && (
+        <Dialog
+          open
+          role="alertdialog"
+          tone="danger"
+          icon={AlertTriangle}
+          hideClose
+          title="Couldn’t finish close-time protection"
+          titleId="close-save-error-title"
+          description="Project work, a workspace save, or a due backup failed. Retry saving, or choose Keep working to resolve failed project work. Closing without the backup can lose unsaved changes and remote cleanup records."
+          footer={(
+            <>
+              <Button onClick={cancelCloseAfterSaveFailure} disabled={isRetryingSave}>
+                Keep working
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => window.electronAPI?.confirmClose()}
+                disabled={isRetryingSave}
+              >
+                Close without backup
+              </Button>
+              <Button
+                variant="primary"
+                icon={RefreshCw}
+                onClick={() => void retryCloseAfterSaveFailure()}
+                disabled={isRetryingSave}
+                className={isRetryingSave ? '[&_svg]:animate-spin' : undefined}
+              >
+                {isRetryingSave ? 'Retrying…' : 'Retry'}
+              </Button>
+            </>
+          )}
+        >
+          <pre className="max-h-28 overflow-auto rounded-lg bg-danger-soft p-3 font-mono text-xs text-danger">
+            {closeSaveError}
+          </pre>
+        </Dialog>
+      )}
     </div>
   );
 }

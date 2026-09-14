@@ -93,7 +93,7 @@ describe('ConfigPanel', () => {
 
   const getContextButton = (label: string): HTMLButtonElement => (
     Array.from(container.querySelectorAll<HTMLButtonElement>(
-      'button[aria-pressed]'
+      '[role="radiogroup"][aria-label="Search context size"] [role="radio"]'
     )).find(button => (
       button.textContent?.trim().toLowerCase() === label.toLowerCase()
     ))!
@@ -151,7 +151,7 @@ describe('ConfigPanel', () => {
     await changeValue(getInput('Region'), 'England');
     await changeValue(getInput('Country'), 'g-b');
 
-    expect(getContextButton('High').getAttribute('aria-pressed')).toBe('true');
+    expect(getContextButton('High').getAttribute('aria-checked')).toBe('true');
     expect(getInput('Country').value).toBe('GB');
     expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
       tools: expect.objectContaining({

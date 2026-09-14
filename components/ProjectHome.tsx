@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Download,
   FileSearch,
   FileText,
   Loader2,
   Plus,
   RefreshCw,
+  Table2,
   Trash2,
   Upload
 } from 'lucide-react';
@@ -25,6 +27,17 @@ import {
 import { MAX_INDEXED_USAGE_BYTES, MAX_PROJECT_SOURCES } from '../utils/projectSources';
 import { ConfigPanel } from './ConfigPanel';
 import { PROJECT_ICON_OPTIONS, ProjectIconGlyph } from './ProjectIcon';
+import {
+  Button,
+  Callout,
+  IconButton,
+  Pill,
+  SidebarControls,
+  ViewHeader,
+  cx,
+  formatBytes,
+  textareaClass
+} from './ui';
 
 interface ProjectHomeProps {
   project: Project;
@@ -42,19 +55,56 @@ interface ProjectHomeProps {
   onRetrySource: (source: ProjectSource) => void;
   onDownloadSource: (source: ProjectSource) => void;
   onDeleteProject: () => void;
+  onOpenSidebar?: () => void;
+  onToggleSidebar?: () => void;
+  isSidebarCollapsed?: boolean;
 }
-
-const formatBytes = (bytes: number): string => {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-};
 
 const getCapabilityLabel = (source: ProjectSource): string => {
   if (source.capability === 'file_search') return 'Searchable';
   if (source.capability === 'code_interpreter') return 'Analysis';
   return 'Attach when needed';
 };
+
+const STATUS_TONES: Record<string, 'neutral' | 'accent' | 'danger' | 'warn'> = {
+  ready: 'accent',
+  failed: 'danger',
+  uploading: 'warn',
+  indexing: 'warn',
+  removing: 'neutral',
+  'needs indexing': 'warn'
+};
+
+const SourceIcon: React.FC<{ source: ProjectSource }> = ({ source }) => {
+  const Icon = source.capability === 'file_search'
+    ? FileSearch
+    : source.capability === 'code_interpreter'
+      ? Table2
+      : FileText;
+  return (
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-3 text-ink-2">
+      <Icon size={17} aria-hidden="true" />
+    </span>
+  );
+};
+
+const Card: React.FC<{
+  title: string;
+  description?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ title, description, action, children }) => (
+  <section className="rounded-2xl border border-line bg-surface shadow-card">
+    <div className="flex flex-wrap items-start justify-between gap-3 px-5 pb-3 pt-4">
+      <div className="min-w-0">
+        <h2 className="text-sm font-semibold text-ink">{title}</h2>
+        {description && <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{description}</p>}
+      </div>
+      {action}
+    </div>
+    <div className="px-5 pb-5">{children}</div>
+  </section>
+);
 
 export const ProjectHome: React.FC<ProjectHomeProps> = ({
   project,
@@ -71,7 +121,10 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
   onDeleteSource,
   onRetrySource,
   onDownloadSource,
-  onDeleteProject
+  onDeleteProject,
+  onOpenSidebar,
+  onToggleSidebar,
+  isSidebarCollapsed
 }) => {
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const [nameDraft, setNameDraft] = useState(project.name);
@@ -89,197 +142,255 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
     100,
     totalIndexedUsageBytes / MAX_INDEXED_USAGE_BYTES * 100
   );
+  const chatCountLabel = `${sessions.length} project chat${sessions.length === 1 ? '' : 's'}`;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-white md:flex-row md:overflow-hidden dark:bg-[#0d1117]">
-      <div className="contents md:block md:min-w-0 md:flex-1 md:overflow-y-auto">
-      <div className="order-1 min-w-0 px-4 pt-6 sm:px-8 md:pb-0">
-        <div className="mx-auto max-w-4xl space-y-8">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                  <ProjectIconGlyph icon={project.icon} size={22} />
-                </div>
-                <input
-                  value={nameDraft}
-                  onChange={event => setNameDraft(event.target.value)}
-                  onBlur={() => {
-                    const name = nameDraft.trim();
-                    if (name) update({ name });
-                    else setNameDraft(project.name);
-                  }}
-                  disabled={readOnly}
-                  aria-label="Project name"
-                  className="min-w-0 flex-1 border-0 bg-transparent text-2xl font-semibold text-gray-900 outline-none dark:text-white"
-                />
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <select
-                  value={project.icon}
-                  onChange={event => update({ icon: event.target.value as ProjectIcon })}
-                  disabled={readOnly}
-                  aria-label="Project icon"
-                  className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-[#161b22]"
-                >
-                  {PROJECT_ICON_OPTIONS.map(item => (
-                    <option key={item.value} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
-              </div>
+    <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
+      <ViewHeader>
+        <SidebarControls
+          onOpenSidebar={onOpenSidebar}
+          onToggleSidebar={onToggleSidebar}
+          isSidebarCollapsed={isSidebarCollapsed}
+        />
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+          <ProjectIconGlyph icon={project.icon} size={16} className="shrink-0 text-ink-3" />
+          <span className="truncate text-sm font-semibold text-ink">{project.name}</span>
+          <span className="hidden text-xs text-ink-3 sm:inline">· {chatCountLabel}</span>
+        </div>
+        <Button variant="primary" size="sm" icon={Plus} onClick={onNewChat} disabled={readOnly}>
+          New chat
+        </Button>
+      </ViewHeader>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-6 sm:px-8">
+          <section className="space-y-4">
+            <div className="flex items-center gap-4">
+              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-accent-soft text-accent">
+                <ProjectIconGlyph icon={project.icon} size={26} />
+              </span>
+              <input
+                value={nameDraft}
+                onChange={event => setNameDraft(event.target.value)}
+                onBlur={() => {
+                  const name = nameDraft.trim();
+                  if (name) update({ name });
+                  else setNameDraft(project.name);
+                }}
+                disabled={readOnly}
+                aria-label="Project name"
+                placeholder="Project name"
+                className="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight text-ink outline-none transition-colors hover:border-line focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:opacity-60"
+              />
             </div>
-            <button
-              type="button"
-              onClick={onNewChat}
-              disabled={readOnly}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            <div
+              role="radiogroup"
+              aria-label="Project icon"
+              className="flex flex-wrap gap-1.5"
             >
-              <Plus size={16} />
-              New chat
-            </button>
-          </div>
+              {PROJECT_ICON_OPTIONS.map(item => {
+                const selected = project.icon === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    aria-label={`${item.label} icon`}
+                    title={item.label}
+                    disabled={readOnly}
+                    onClick={() => update({ icon: item.value as ProjectIcon })}
+                    className={cx(
+                      'flex h-9 w-9 items-center justify-center rounded-lg border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50',
+                      selected
+                        ? 'border-accent bg-accent-soft text-accent'
+                        : 'border-line bg-surface text-ink-3 hover:border-line-strong hover:text-ink'
+                    )}
+                  >
+                    <ProjectIconGlyph icon={item.value} size={16} />
+                  </button>
+                );
+              })}
+            </div>
+          </section>
 
           {error && (
-            <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
-              {error}
-            </div>
+            <Callout role="alert" tone="danger" icon={AlertTriangle}>{error}</Callout>
           )}
 
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Project instructions</h2>
-            <p className="text-xs text-gray-500">Applied live to future requests in all {sessions.length} project chat{sessions.length === 1 ? '' : 's'}.</p>
+          <Card
+            title="Project instructions"
+            description={`Applied live to future requests in all ${chatCountLabel}.`}
+          >
             <textarea
               value={project.instructions}
               onChange={event => update({ instructions: event.target.value })}
               disabled={readOnly}
               placeholder="Tell the model how to work in this project…"
-              className="min-h-36 w-full resize-y rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-[#161b22]"
+              className={cx(textareaClass, 'min-h-36 bg-surface-2')}
             />
-          </section>
+          </Card>
 
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Files / Sources</h2>
-                <p className="mt-1 text-xs text-gray-500">{project.sources.length} of {MAX_PROJECT_SOURCES} sources</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => sourceInputRef.current?.click()}
-                disabled={readOnly || sourceWorkBusy || project.sources.length >= MAX_PROJECT_SOURCES}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
-              >
-                <Upload size={14} />
-                Add sources
-              </button>
-              <input
-                ref={input => {
-                  sourceInputRef.current = input;
-                  registerFileDialogFocusRecovery(input);
-                }}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={event => {
-                  const files = Array.from(event.target.files || []);
-                  event.target.value = '';
-                  restoreFocusAfterFileDialog();
-                  if (files.length > 0) onAddSources(files);
-                }}
-              />
-            </div>
-
-            <div className="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="text-gray-500">App-managed indexed storage</span>
-                <span className="font-medium">{formatBytes(totalIndexedUsageBytes)} / 900 MiB</span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-                <div className="h-full rounded-full bg-blue-600" style={{ width: `${usagePercent}%` }} />
-              </div>
-            </div>
-
-            {project.sources.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-gray-300 px-4 py-10 text-center text-sm text-gray-500 dark:border-gray-700">
-                Add reusable documents, data files, or images to this project.
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-200 overflow-hidden rounded-xl border border-gray-200 dark:divide-gray-700 dark:border-gray-700">
-                {project.sources.map(source => {
-                  const remote = remoteIndex?.files[source.id];
-                  const busy = busySourceIds.has(source.id);
-                  const status = source.capability === 'direct_attachment'
-                    ? 'ready'
-                    : remote?.status || 'needs indexing';
-                  const displayStatus = busy && status === 'needs indexing'
-                    ? 'uploading'
-                    : status;
-                  return (
-                    <div key={source.id} className="flex min-w-0 items-center gap-3 p-3">
-                      {source.capability === 'file_search'
-                        ? <FileSearch size={18} className="shrink-0 text-blue-500" />
-                        : <FileText size={18} className="shrink-0 text-gray-500" />}
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{source.name}</div>
-                        <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-gray-500">
-                          <span>{source.mimeType}</span>
-                          <span>{formatBytes(source.byteSize)}</span>
-                          <span>{getCapabilityLabel(source)}</span>
-                          <span className={status === 'failed' ? 'text-red-500' : ''}>{displayStatus}</span>
-                        </div>
-                        {remote?.lastError && <p className="mt-1 text-[11px] text-red-500">{remote.lastError}</p>}
-                        {source.capability === 'direct_attachment' && (
-                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">Not automatically injected; attach it to a message when needed.</p>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        {(status === 'failed' || status === 'needs indexing') && source.capability !== 'direct_attachment' && (
-                          <button type="button" onClick={() => onRetrySource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Retry indexing ${source.name}`} title={`Retry indexing ${source.name}`} className="rounded p-2 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800">
-                            {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                          </button>
-                        )}
-                        <button type="button" onClick={() => onDownloadSource(source)} aria-label={`Download ${source.name}`} title={`Download ${source.name}`} className="rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800">
-                          <Download size={14} />
-                        </button>
-                        <button type="button" onClick={() => onDeleteSource(source)} disabled={readOnly || sourceWorkBusy} aria-label={`Delete ${source.name}`} title={`Delete ${source.name}`} className="rounded p-2 text-red-500 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950/30">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+          <Card
+            title="Sources"
+            description={`${project.sources.length} of ${MAX_PROJECT_SOURCES} sources. Searchable documents become File Search context, data files feed Code Interpreter, and other files can be attached when needed.`}
+            action={(
+              <>
+                <Button
+                  size="sm"
+                  icon={Upload}
+                  onClick={() => sourceInputRef.current?.click()}
+                  disabled={readOnly || sourceWorkBusy || project.sources.length >= MAX_PROJECT_SOURCES}
+                >
+                  Add sources
+                </Button>
+                <input
+                  ref={input => {
+                    sourceInputRef.current = input;
+                    registerFileDialogFocusRecovery(input);
+                  }}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={event => {
+                    const files = Array.from(event.target.files || []);
+                    event.target.value = '';
+                    restoreFocusAfterFileDialog();
+                    if (files.length > 0) onAddSources(files);
+                  }}
+                />
+              </>
             )}
-          </section>
+          >
+            <div className="space-y-4">
+              <div className="rounded-xl bg-surface-2 p-3">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-ink-2">Indexed storage across projects</span>
+                  <span className="font-medium tabular-nums text-ink">
+                    {formatBytes(totalIndexedUsageBytes)} / 900 MiB
+                  </span>
+                </div>
+                <div
+                  className="mt-2 h-1.5 overflow-hidden rounded-full bg-line"
+                  role="progressbar"
+                  aria-label="Indexed storage usage"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(usagePercent)}
+                >
+                  <div
+                    className={cx('h-full rounded-full transition-[width]', usagePercent > 90 ? 'bg-danger' : 'bg-accent')}
+                    style={{ width: `${usagePercent}%` }}
+                  />
+                </div>
+              </div>
 
-        </div>
-      </div>
-      <div className="order-3 min-w-0 px-4 pb-6 pt-8 sm:px-8">
-        <div className="mx-auto max-w-4xl">
-          <section className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Delete project</h2>
-            <p className="mt-1 text-xs text-gray-500">Permanently removes this project, its chats, instructions, and local sources. Existing external backups are not erased.</p>
-            <button type="button" onClick={onDeleteProject} disabled={readOnly || sourceWorkBusy} className="mt-3 inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:bg-[#161b22] dark:text-gray-200 dark:hover:bg-gray-800">
-              <Trash2 size={14} />
+              {project.sources.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-line-strong px-4 py-10 text-center text-sm text-ink-3">
+                  Add reusable documents, data files, or images to this project.
+                </div>
+              ) : (
+                <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+                  {project.sources.map(source => {
+                    const remote = remoteIndex?.files[source.id];
+                    const busy = busySourceIds.has(source.id);
+                    const status = source.capability === 'direct_attachment'
+                      ? 'ready'
+                      : remote?.status || 'needs indexing';
+                    const displayStatus = busy && status === 'needs indexing'
+                      ? 'uploading'
+                      : status;
+                    return (
+                      <li key={source.id} className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+                        <SourceIcon source={source} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-ink">{source.name}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3">
+                            <span className="truncate">{source.mimeType}</span>
+                            <span>{formatBytes(source.byteSize)}</span>
+                            <Pill>{getCapabilityLabel(source)}</Pill>
+                            <Pill tone={STATUS_TONES[displayStatus] || 'neutral'}>
+                              {busy && <Loader2 size={10} className="animate-spin" aria-hidden="true" />}
+                              {displayStatus}
+                            </Pill>
+                          </div>
+                          {remote?.lastError && (
+                            <p className="mt-1 text-[11px] text-danger">{remote.lastError}</p>
+                          )}
+                          {source.capability === 'direct_attachment' && (
+                            <p className="mt-1 text-[11px] text-warn">
+                              Not automatically injected; attach it to a message when needed.
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center">
+                          {(status === 'failed' || status === 'needs indexing') && source.capability !== 'direct_attachment' && (
+                            <IconButton
+                              size="sm"
+                              iconSize={15}
+                              label={`Retry indexing ${source.name}`}
+                              icon={busy ? Loader2 : RefreshCw}
+                              className={busy ? '[&_svg]:animate-spin' : undefined}
+                              onClick={() => onRetrySource(source)}
+                              disabled={readOnly || sourceWorkBusy}
+                            />
+                          )}
+                          <IconButton
+                            size="sm"
+                            iconSize={15}
+                            label={`Download ${source.name}`}
+                            icon={Download}
+                            onClick={() => onDownloadSource(source)}
+                          />
+                          <IconButton
+                            size="sm"
+                            iconSize={15}
+                            tone="danger"
+                            label={`Delete ${source.name}`}
+                            icon={Trash2}
+                            onClick={() => onDeleteSource(source)}
+                            disabled={readOnly || sourceWorkBusy}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </Card>
+
+          <Card
+            title="Default chat settings"
+            description="Copied into chats created in this project. Existing chats keep their own settings."
+          >
+            <ConfigPanel
+              variant="embedded"
+              config={{ ...project.defaultConfig, systemInstructionId: undefined }}
+              onChange={updateConfig}
+              systemInstructions={[]}
+              onUpdateSystemInstruction={() => undefined}
+              onCreateSystemInstruction={() => undefined}
+              onDeleteSystemInstruction={() => undefined}
+              hideSystemInstructions
+              readOnly={readOnly}
+            />
+          </Card>
+
+          <Card
+            title="Delete project"
+            description="Permanently removes this project, its chats, instructions, and local sources. Existing external backups are not erased."
+          >
+            <Button
+              icon={Trash2}
+              onClick={onDeleteProject}
+              disabled={readOnly || sourceWorkBusy}
+            >
               Delete permanently
-            </button>
-          </section>
+            </Button>
+          </Card>
         </div>
       </div>
-      </div>
-
-      <section className="order-2 mx-4 mt-8 overflow-hidden rounded-xl border border-gray-200 sm:mx-8 md:order-none md:m-0 md:h-full md:rounded-none md:border-0 dark:border-gray-700">
-        <ConfigPanel
-          config={{ ...project.defaultConfig, systemInstructionId: undefined }}
-          onChange={updateConfig}
-          systemInstructions={[]}
-          onUpdateSystemInstruction={() => undefined}
-          onCreateSystemInstruction={() => undefined}
-          onDeleteSystemInstruction={() => undefined}
-          hideSystemInstructions
-          readOnly={readOnly}
-        />
-      </section>
     </div>
   );
 };

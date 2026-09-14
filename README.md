@@ -25,7 +25,7 @@ rules, task routing, and verification commands.
 - GitHub Flavored Markdown, code blocks, tables, citations, generated Code Interpreter files, and response copying.
 - Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
-- Global project/chat search with membership paths, plus light and dark themes.
+- Global project/chat search with membership paths, a collapsible sidebar, and light and dark themes.
 - Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
 - Responsive mobile layout, installable PWA output, and Electron desktop packaging.
 
@@ -68,12 +68,14 @@ npm run dev
 
 Open `http://localhost:5173/openai-studio/`. Vite provides hot module replacement; a production build is not required for normal development.
 
-Create a chat, open Settings from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
+Create a chat, open **Settings** from the bottom of the sidebar, and enter an API key. The value entered in Settings takes precedence over an environment key.
 
-For a standalone chat, the reusable **System instructions** picker stays at the
-top of Configuration. Expand its inline options to create, edit, or delete an
-instruction without leaving the chat settings. Project chats use their
-project's live instructions instead of this reusable-instruction picker.
+Open **Chat settings** from the sliders button in the chat header or the model
+summary in the composer; it is a side panel on desktop and a bottom sheet on
+mobile. For a standalone chat, the reusable **System instructions** picker stays
+at the top of that panel. Expand its inline options to create, edit, or delete an
+instruction without leaving the panel. Project chats use their project's live
+instructions instead of this reusable-instruction picker.
 
 On WSL, a non-interactive command runner may skip user shell initialization. If
 an expected tool is missing or resolves to a Windows executable under `/mnt/c`,
@@ -176,7 +178,8 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 
 ## Projects And Sources
 
-Use **New Project** in the sidebar to create a recurring-work container. A
+Use the **New project** shortcut beside the sidebar's **Projects** heading, or
+the button on the welcome screen, to create a recurring-work container. A
 project owns its instructions, default model/reasoning/verbosity/tool settings,
 chats, and source library. Defaults are copied only into newly created project
 chats. Project instructions are resolved live for every future request; changing
@@ -292,7 +295,7 @@ including the iOS path, retain **Backup** (Share when available, download
 otherwise), **Merge**, and **Restore**. Browser folder handles and scheduler
 history are device-local and excluded from archives.
 
-The chat header's Share button does not publish a link; it downloads a local Markdown file containing message text, labeling assistant progress and final-answer phases when available. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
+The chat header's **Export** button does not publish a link; it downloads a local Markdown file containing message text, labeling assistant progress and final-answer phases when available. That file omits response details, sources, generated-file references, and attachment data, using a placeholder only for attachment-only messages. Remote generated files can expire before caching succeeds, and archives report how many generated-file references lack local bytes.
 
 Chat deletion asks for confirmation and has no in-app undo. Project deletion is
 also permanent and clears the current merge/restore undo point. Export the

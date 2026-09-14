@@ -83,9 +83,11 @@ in the top-level Responses API `instructions` field. Model identities,
 capabilities, cutoff metadata, defaults, and configuration normalization are
 owned by `constants.ts`.
 
-For standalone chats, the reusable System instructions picker remains visible
-at the top of the Configuration panel on desktop and mobile. Its adjacent
-accessible disclosure starts collapsed, keeps local unpersisted state, and
+For standalone chats, the reusable System instructions picker remains at the
+top of the Chat settings panel on desktop and mobile. That panel is hidden
+until toggled from the chat header or the composer's model summary; it opens
+as a side panel at or above 768 px and as a bottom sheet below. The picker's
+adjacent accessible disclosure starts collapsed, keeps local unpersisted state, and
 reveals the inline name/content editor plus explicit create and immediate-delete
 actions. Instruction management does not open a separate page or modal. Project
 chats hide this picker because their project instructions are resolved live.
@@ -126,7 +128,7 @@ Cached files remain downloadable without an API key. An uncached download
 requires the in-app key plus both remote container and file IDs. Cache failure
 must preserve the remote metadata and must not fail the completed response.
 
-The chat Share control downloads a Markdown transcript; it does not publish a
+The chat Export control downloads a Markdown transcript; it does not publish a
 link. The transcript contains message text and uses a placeholder for an
 attachment-only turn. It omits attachment bytes, response details, sources,
 and generated-file references.
@@ -142,7 +144,9 @@ icon and name without an aggregate chat counter, plus a shortcut that creates a
 new chat with that project's defaults and membership. The standalone Chats
 section has the same shortcut for creating a chat outside every project. These
 shortcuts appear on row or section hover and keyboard focus on desktop, and
-remain visible on mobile where hover is unavailable.
+remain visible on mobile where hover is unavailable. The Projects heading has
+the same hover-revealed shortcut for creating a project, and the welcome screen
+shown without a selected chat offers new-chat and new-project actions.
 Selecting a project opens its project home; below 768 px that home and its
 settings occupy the full main sheet. The chat composer remains mounted behind
 the project home so its per-session text, attachments, and validation state
@@ -277,15 +281,21 @@ ChatArea user input -> App request/session state -> openaiService streaming API
 Primary boundaries are:
 
 - `components/ChatArea.tsx`: composer, per-session drafts, attachments, message
-  rendering, response details, citations, generated files, copying, and
-  conversation export.
-- `components/Sidebar.tsx`: chat search and selection, theme, API key,
-  project hierarchy and global search, workspace backup/merge/restore controls,
-  pending remote cleanup, and application version.
-- `components/ProjectHome.tsx`: project metadata, instructions, defaults,
+  rendering, response details, citations, generated files, copying,
+  conversation export, and the welcome screen shown without a chat.
+- `components/Sidebar.tsx`: chat search and selection, project hierarchy and
+  global search, chat/project creation shortcuts, and the Settings entry.
+- `components/SettingsDialog.tsx`: theme, API key, pending remote cleanup,
+  workspace backup/merge/restore controls, automatic backups, and application
+  version, rendered as a dialog owned by the sidebar.
+- `components/ProjectHome.tsx`: project metadata, icon, instructions, defaults,
   source lifecycle and usage, new project chats, and permanent deletion.
 - `components/ConfigPanel.tsx`: custom instructions, model, reasoning,
-  verbosity, and tool configuration.
+  verbosity, and tool configuration, rendered as the chat settings panel or
+  embedded in the project home.
+- `components/ui.tsx`: shared presentational primitives (buttons, switches,
+  segmented radio groups, dialogs, callouts, view headers) built on the
+  semantic design tokens.
 - `components/TitleBar.tsx`: Electron-only window controls.
 - `services/openaiService.ts`: Responses API request construction, streaming,
   cancellation, title generation, citation processing, and generated-file
@@ -721,8 +731,12 @@ records. Keep working is also available while close is waiting for project work.
 ## Web, PWA, Mobile, And Electron Constraints
 
 The build toolchain requires Node.js 22.12 or newer. Tailwind CSS is compiled
-through its dedicated PostCSS adapter, with `index.css` loading the canonical
-JavaScript theme configuration before importing Tailwind.
+through its dedicated PostCSS adapter. `index.css` is the CSS-first theme: it
+declares the class-based `dark` variant, fonts, motion, and the semantic color
+tokens (`surface`, `ink`, `line`, `accent`, …) whose light and dark values are
+CSS variables on `:root` and `.dark`. Components use those semantic utilities
+rather than raw palette colors, and `App.tsx` toggles the `dark` class on the
+document root so dialogs, native controls, and scrollbars follow the theme.
 
 Electron mode uses relative asset paths and disables PWA generation. Every
 non-Electron Vite mode currently uses `/openai-studio/`; the generated PWA
@@ -736,16 +750,22 @@ remain network-dependent. `__APP_VERSION__` is read from `package.json` at
 build time.
 
 The responsive breakpoint is Tailwind's 768 px `md` boundary. A single mounted
-sidebar and configuration panel adapt between fixed desktop controls and
-mobile drawer/sheet presentation through responsive classes, so crossing the
-breakpoint must not discard their local drafts or disclosure state. The project
-home and its single project-settings panel similarly adapt within the full main
-sheet. Layout changes must preserve hierarchy/search usability, keyboard send
-behavior, scrolling, overflow, and light/dark themes at both sizes. The app shell
-uses the dynamic viewport height. The mobile configuration sheet has a definite
-85dvh height, with a fixed close header and bottom safe-area padding; its remaining
-height bounds the scrollable settings panel so every tool stays reachable even
-when instruction or Web Search options are expanded.
+sidebar and chat settings panel adapt between desktop and mobile presentation
+through responsive classes, so crossing the breakpoint must not discard their
+local drafts or disclosure state. On desktop the sidebar is a collapsible
+column (hidden from its own header, restored from the view header) and the chat
+settings panel is a toggleable right-hand column; below the breakpoint the
+sidebar is a drawer and the chat settings panel is a bottom sheet. Each view
+header carries the sidebar controls, and the composer's model summary also
+opens chat settings. The sidebar drawer avoids CSS transforms so the
+fixed-position Settings dialog it owns stays viewport-bound. The project home
+and its embedded default-settings panel adapt within the full main sheet.
+Layout changes must preserve hierarchy/search usability, keyboard send
+behavior, scrolling, overflow, and light/dark themes at both sizes. The app
+shell uses the dynamic viewport height. The mobile chat settings sheet has a
+definite 85dvh height, with a fixed close header and bottom safe-area padding;
+its remaining height bounds the scrollable settings panel so every tool stays
+reachable even when instruction or Web Search options are expanded.
 
 Electron is a frameless, single-instance window. `nodeIntegration` is off and
 `contextIsolation` is on. The preload bridge is limited to window controls,
