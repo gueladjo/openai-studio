@@ -242,6 +242,42 @@ describe('ConfigPanel', () => {
     expect(getButton('max')).toBeDefined();
   });
 
+  it('renders every reasoning effort as an equal-width step of the level scale', async () => {
+    const onConfigChange = vi.fn();
+    container = await view.render(
+      <ConfigPanelHarness
+        initialConfig={{
+          ...DEFAULT_CONFIG,
+          model: ModelId.GPT_5_6_SOL,
+          reasoningEffort: 'medium'
+        }}
+        onConfigChange={onConfigChange}
+      />
+    );
+    const scale = container.querySelector<HTMLDivElement>(
+      '[role="radiogroup"][aria-label="Reasoning effort"]'
+    )!;
+    const steps = Array.from(scale.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+
+    expect(scale.style.gridTemplateColumns).toBe('repeat(6, minmax(0, 1fr))');
+    expect(steps.map(step => step.textContent?.trim())).toEqual([
+      'none', 'low', 'medium', 'high', 'xhigh', 'max'
+    ]);
+    expect(steps.map(step => step.getAttribute('aria-checked'))).toEqual([
+      'false', 'false', 'true', 'false', 'false', 'false'
+    ]);
+
+    await act(async () => {
+      steps[5].click();
+    });
+
+    expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      reasoningEffort: 'max'
+    }));
+    expect(steps[5].getAttribute('aria-checked')).toBe('true');
+    expect(steps[2].getAttribute('aria-checked')).toBe('false');
+  });
+
   it('keeps the System instructions picker visible while its editor starts collapsed', async () => {
     const instructions: SystemInstruction[] = [{
       id: 'instruction-1',

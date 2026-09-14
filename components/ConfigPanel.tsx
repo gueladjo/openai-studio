@@ -23,6 +23,7 @@ import {
   Button,
   Field,
   IconButton,
+  LevelScale,
   SectionLabel,
   Segmented,
   Select,
@@ -270,12 +271,9 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
       </section>
 
       <section className="space-y-2.5">
-        <SectionLabel hint={<span className="capitalize">{selectedReasoningEffort}</span>}>
-          Reasoning effort
-        </SectionLabel>
-        <Segmented
+        <SectionLabel>Reasoning effort</SectionLabel>
+        <LevelScale
           label="Reasoning effort"
-          capitalize
           disabled={readOnly}
           value={selectedReasoningEffort}
           options={modelConfig.reasoningOptions.map(option => ({ value: option, label: option }))}

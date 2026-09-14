@@ -220,6 +220,72 @@ export function Segmented<T extends string>({
   );
 }
 
+export interface LevelScaleProps<T extends string> {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  value: T;
+  onChange: (value: T) => void;
+  label: string;
+  disabled?: boolean;
+  className?: string;
+}
+
+/** Ordered choices rendered as a filled level meter with equal-width steps,
+    so any number of options fits without stretching the last one. */
+export function LevelScale<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  disabled = false,
+  className
+}: LevelScaleProps<T>) {
+  const selectedIndex = options.findIndex(option => option.value === value);
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={cx('grid gap-1', className)}
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+    >
+      {options.map((option, index) => {
+        const selected = index === selectedIndex;
+        const filled = index < selectedIndex;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className="group flex min-w-0 flex-col items-stretch gap-1.5 rounded-md px-0.5 pb-1 pt-1.5 transition-colors hover:bg-surface-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed"
+          >
+            <span
+              aria-hidden="true"
+              className={cx(
+                'h-1.5 rounded-full transition-colors',
+                selected
+                  ? 'bg-accent'
+                  : filled
+                    ? 'bg-accent/45'
+                    : 'bg-line-strong group-hover:bg-accent/30'
+              )}
+            />
+            <span
+              className={cx(
+                'truncate text-center text-[10px] capitalize leading-none',
+                selected ? 'font-semibold text-accent' : 'text-ink-3'
+              )}
+            >
+              {option.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export const SectionLabel: React.FC<{
   children: React.ReactNode;
   htmlFor?: string;
