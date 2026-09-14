@@ -12,9 +12,7 @@ import {
   Upload
 } from 'lucide-react';
 import {
-  ChatConfig,
   Project,
-  ProjectDefaultConfig,
   ProjectIcon,
   ProjectRemoteIndex,
   ProjectSource,
@@ -25,7 +23,6 @@ import {
   restoreFocusAfterFileDialog
 } from '../utils/focusRecovery';
 import { MAX_INDEXED_USAGE_BYTES, MAX_PROJECT_SOURCES } from '../utils/projectSources';
-import { ConfigPanel } from './ConfigPanel';
 import { PROJECT_ICON_OPTIONS, ProjectIconGlyph } from './ProjectIcon';
 import {
   Button,
@@ -134,10 +131,6 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
     ...changes,
     updatedAt: Date.now()
   });
-  const updateConfig = (config: ChatConfig) => {
-    const { systemInstructionId: _systemInstructionId, ...defaultConfig } = config;
-    update({ defaultConfig: defaultConfig as ProjectDefaultConfig });
-  };
   const usagePercent = Math.min(
     100,
     totalIndexedUsageBytes / MAX_INDEXED_USAGE_BYTES * 100
@@ -358,23 +351,6 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
                 </ul>
               )}
             </div>
-          </Card>
-
-          <Card
-            title="Default chat settings"
-            description="Copied into chats created in this project. Existing chats keep their own settings."
-          >
-            <ConfigPanel
-              variant="embedded"
-              config={{ ...project.defaultConfig, systemInstructionId: undefined }}
-              onChange={updateConfig}
-              systemInstructions={[]}
-              onUpdateSystemInstruction={() => undefined}
-              onCreateSystemInstruction={() => undefined}
-              onDeleteSystemInstruction={() => undefined}
-              hideSystemInstructions
-              readOnly={readOnly}
-            />
           </Card>
 
           <Card

@@ -3160,7 +3160,6 @@ function App() {
                   )}
                 >
                   <ConfigPanel
-                    variant="panel"
                     onClose={() => setIsConfigOpen(false)}
                     config={currentSession.config}
                     onChange={updateConfig}

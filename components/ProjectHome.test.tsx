@@ -143,9 +143,7 @@ describe('ProjectHome', () => {
     expect(container.querySelector(
       '[role="radiogroup"][aria-label="Project icon"] [role="radio"][aria-label="Health icon"]'
     )?.getAttribute('aria-checked')).toBe('false');
-    expect(Array.from(container.querySelectorAll('h2')).filter(
-      heading => heading.textContent === 'Default chat settings'
-    )).toHaveLength(1);
+    expect(container.textContent).not.toContain('Default chat settings');
     const deleteButton = Array.from(container.querySelectorAll('button')).find(
       button => button.textContent?.includes('Delete permanently')
     );

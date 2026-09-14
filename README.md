@@ -13,7 +13,7 @@ rules, task routing, and verification commands.
 
 - Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
-- Local projects with names, icons, live project instructions, per-project chat defaults, grouped chats, and reusable source libraries.
+- Local projects with names, icons, live project instructions, grouped chats, and reusable source libraries.
 - Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.
 - Configured model picker for GPT-6 Astra, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.5, GPT-5 Nano, and o3. New chats default to GPT-6 Astra with Max reasoning. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.

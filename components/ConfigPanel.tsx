@@ -41,8 +41,6 @@ interface ConfigPanelProps {
   onDeleteSystemInstruction: (id: string) => void;
   readOnly?: boolean;
   hideSystemInstructions?: boolean;
-  /** `panel` adds the titled chrome used by the chat sheet/side panel. */
-  variant?: 'panel' | 'embedded';
   onClose?: () => void;
 }
 
@@ -94,7 +92,6 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   onDeleteSystemInstruction,
   readOnly = false,
   hideSystemInstructions = false,
-  variant = 'panel',
   onClose
 }) => {
   const [isSystemInstructionsOpen, setIsSystemInstructionsOpen] = useState(false);
@@ -428,10 +425,6 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
       </section>
     </fieldset>
   );
-
-  if (variant === 'embedded') {
-    return <div className="min-w-0">{body}</div>;
-  }
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-canvas">

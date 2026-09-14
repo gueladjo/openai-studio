@@ -324,7 +324,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })}
           {projects.length === 0 && !normalizedSearch && (
             <p className="px-2 py-1.5 text-xs leading-relaxed text-ink-3">
-              Projects keep instructions, chat defaults, and reusable sources together.
+              Projects keep instructions and reusable sources together.
             </p>
           )}
         </div>

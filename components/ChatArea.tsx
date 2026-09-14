@@ -1259,8 +1259,8 @@ const WelcomeScreen = ({
       <BrandMark size={56} className="rounded-2xl shadow-card" />
       <h1 className="mt-6 text-2xl font-semibold tracking-tight text-ink">Welcome to OpenAI Studio</h1>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-ink-2">
-        Start a chat with the Responses API, or create a project to keep instructions,
-        chat defaults, and reusable sources together.
+        Start a chat with the Responses API, or create a project to keep instructions
+        and reusable sources together.
       </p>
       {(onNewSession || onNewProject) && (
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
