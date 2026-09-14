@@ -147,22 +147,25 @@ shortcuts appear on row or section hover and keyboard focus on desktop, and
 remain visible on mobile where hover is unavailable. The Projects heading has
 the same hover-revealed shortcut for creating a project, and the welcome screen
 shown without a selected chat offers new-chat and new-project actions.
-Selecting a project opens its project home; below 768 px that home and its
-settings occupy the full main sheet. The chat composer remains mounted behind
-the project home so its per-session text, attachments, and validation state
-survive visiting a project from either a standalone or project chat.
+Selecting a project opens its project home; below 768 px that home occupies
+the full main sheet. The chat composer remains mounted behind the project home
+so its per-session text, attachments, and validation state survive visiting a
+project from either a standalone or project chat.
 
 The selected icon appears on the project home, in its sidebar row, and in each
 member chat header. Project chat headers use `Icon Project / Chat`; standalone
 chat headers continue to show only the chat title. The icon enum includes a
 health option.
 
-Project defaults exclude `systemInstructionId` and affect only subsequently
-created project chats. Project instructions are resolved live when each request
-starts and override the chat's reusable global instruction. Existing project
-chats therefore see instruction edits on their next request, while an in-flight
-request retains its snapshot. Project sources configure future context but do
-not add another chat's transcript or provide cross-chat memory.
+Project defaults are captured from the current chat's configuration (or the
+application default) when the project is created; the application exposes no
+editor for them afterward. They exclude `systemInstructionId` and affect only
+subsequently created project chats. Project instructions are resolved live
+when each request starts and override the chat's reusable global instruction.
+Existing project chats therefore see instruction edits on their next request,
+while an in-flight request retains its snapshot. Project sources configure
+future context but do not add another chat's transcript or provide cross-chat
+memory.
 
 Project membership is assigned when a project chat is created or when a
 portable archive is imported. The application exposes no chat-moving workflow.
@@ -288,11 +291,10 @@ Primary boundaries are:
 - `components/SettingsDialog.tsx`: theme, API key, pending remote cleanup,
   workspace backup/merge/restore controls, automatic backups, and application
   version, rendered as a dialog owned by the sidebar.
-- `components/ProjectHome.tsx`: project metadata, icon, instructions, defaults,
-  source lifecycle and usage, new project chats, and permanent deletion.
+- `components/ProjectHome.tsx`: project metadata, icon, instructions, source
+  lifecycle and usage, new project chats, and permanent deletion.
 - `components/ConfigPanel.tsx`: custom instructions, model, reasoning,
-  verbosity, and tool configuration, rendered as the chat settings panel or
-  embedded in the project home.
+  verbosity, and tool configuration, rendered as the chat settings panel.
 - `components/ui.tsx`: shared presentational primitives (buttons, switches,
   segmented radio groups, dialogs, callouts, view headers) built on the
   semantic design tokens.
@@ -732,10 +734,10 @@ records. Keep working is also available while close is waiting for project work.
 
 The build toolchain requires Node.js 22.12 or newer. Tailwind CSS is compiled
 through its dedicated PostCSS adapter. `index.css` is the CSS-first theme: it
-declares the class-based `dark` variant, fonts, motion, and the semantic color
-tokens (`surface`, `ink`, `line`, `accent`, …) whose light and dark values are
-CSS variables on `:root` and `.dark`. Components use those semantic utilities
-rather than raw palette colors, and `App.tsx` toggles the `dark` class on the
+declares fonts, motion, and the semantic color tokens (`surface`, `ink`,
+`line`, `accent`, …) whose light and dark values are CSS variables on `:root`
+and `.dark`. Components use those semantic utilities rather than raw palette
+colors or `dark:` variants, and `App.tsx` toggles the `dark` class on the
 document root so dialogs, native controls, and scrollbars follow the theme.
 
 Electron mode uses relative asset paths and disables PWA generation. Every
@@ -759,10 +761,9 @@ sidebar is a drawer and the chat settings panel is a bottom sheet. Each view
 header carries the sidebar controls, and the composer's model summary also
 opens chat settings. The sidebar drawer avoids CSS transforms so the
 fixed-position Settings dialog it owns stays viewport-bound. The project home
-and its embedded default-settings panel adapt within the full main sheet.
-Layout changes must preserve hierarchy/search usability, keyboard send
-behavior, scrolling, overflow, and light/dark themes at both sizes. The app
-shell uses the dynamic viewport height. The mobile chat settings sheet has a
+adapts within the full main sheet. Layout changes must preserve
+hierarchy/search usability, keyboard send behavior, scrolling, overflow, and
+light/dark themes at both sizes. The app shell uses the dynamic viewport height. The mobile chat settings sheet has a
 definite 85dvh height, with a fixed close header and bottom safe-area padding;
 its remaining height bounds the scrollable settings panel so every tool stays
 reachable even when instruction or Web Search options are expanded.

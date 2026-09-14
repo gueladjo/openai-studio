@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import {
   Project,
-  ProjectIcon,
   ProjectRemoteIndex,
   ProjectSource,
   Session
@@ -192,7 +191,7 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
                     aria-label={`${item.label} icon`}
                     title={item.label}
                     disabled={readOnly}
-                    onClick={() => update({ icon: item.value as ProjectIcon })}
+                    onClick={() => update({ icon: item.value })}
                     className={cx(
                       'flex h-9 w-9 items-center justify-center rounded-lg border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50',
                       selected

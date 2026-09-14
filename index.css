@@ -1,15 +1,11 @@
 /* Global styles and design tokens */
 @import "tailwindcss";
 
-/* Theme is toggled with a `.dark` class on the application root. */
-@custom-variant dark (&:where(.dark, .dark *));
-
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-xl: 0.875rem;
   --radius-2xl: 1.125rem;
-  --radius-3xl: 1.5rem;
   --animate-fade-in: fade-in 160ms ease-out both;
   --animate-pop-in: pop-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   --animate-sheet-in: sheet-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
@@ -39,7 +35,8 @@
 }
 
 /* Semantic colors resolve through the light/dark variables below, so the
-   utilities (`bg-surface`, `text-ink`, …) switch themes without `dark:`. */
+   utilities (`bg-surface`, `text-ink`, …) switch themes when `App.tsx` toggles
+   the `.dark` class on the document root; no `dark:` variant is needed. */
 @theme inline {
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);

@@ -180,9 +180,10 @@ The version displayed in Settings is compiled from `package.json`. Advance it wi
 
 Use the **New project** shortcut beside the sidebar's **Projects** heading, or
 the button on the welcome screen, to create a recurring-work container. A
-project owns its instructions, default model/reasoning/verbosity/tool settings,
-chats, and source library. Defaults are copied only into newly created project
-chats. Project instructions are resolved live for every future request; changing
+project owns its instructions, chats, and source library. New project chats
+start from the model, reasoning, verbosity, and tool settings that were active
+when the project was created; those defaults cannot be edited afterward.
+Project instructions are resolved live for every future request; changing
 them does not rewrite earlier messages. Create project chats from the project
 home or the shortcut beside its sidebar row. The shortcut beside **Chats**
 creates a standalone chat. Existing chats cannot be moved between projects or

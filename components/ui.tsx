@@ -11,17 +11,23 @@ export const formatBytes = (bytes: number): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 };
 
+/** Token-style counts: 1_050_000 -> "1.05M", 12_500 -> "12.5K", 900 -> "900". */
+export const formatCompactCount = (value: number): string => {
+  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(2))}M`;
+  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}K`;
+  return value.toLocaleString();
+};
+
 export const inputClass =
   'w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-60';
 
 export const textareaClass = cx(inputClass, 'resize-y leading-relaxed');
 
-type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
+type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger';
 type ButtonSize = 'sm' | 'md' | 'lg';
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-accent-ink shadow-card hover:bg-accent-hover',
-  secondary: 'bg-surface-3 text-ink hover:bg-line',
   outline: 'border border-line bg-surface text-ink hover:border-line-strong hover:bg-surface-2',
   ghost: 'text-ink-2 hover:bg-surface-3 hover:text-ink',
   danger: 'border border-danger/30 text-danger hover:bg-danger-soft'
@@ -69,12 +75,11 @@ export const Button: React.FC<ButtonProps> = ({
 );
 
 type IconButtonTone = 'default' | 'accent' | 'danger';
-type IconButtonSize = 'sm' | 'md' | 'lg';
+type IconButtonSize = 'sm' | 'md';
 
 const ICON_BUTTON_SIZES: Record<IconButtonSize, string> = {
   sm: 'h-8 w-8',
-  md: 'h-9 w-9',
-  lg: 'h-10 w-10'
+  md: 'h-9 w-9'
 };
 
 const ICON_BUTTON_TONES: Record<IconButtonTone, string> = {
@@ -346,10 +351,8 @@ export const Pill: React.FC<{
   tone?: PillTone;
   children: React.ReactNode;
   className?: string;
-  title?: string;
-}> = ({ tone = 'neutral', children, className, title }) => (
+}> = ({ tone = 'neutral', children, className }) => (
   <span
-    title={title}
     className={cx(
       'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium',
       PILL_TONES[tone],

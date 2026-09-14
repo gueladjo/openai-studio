@@ -29,6 +29,7 @@ import {
   Select,
   Switch,
   cx,
+  formatCompactCount,
   inputClass,
   textareaClass
 } from './ui';
@@ -44,12 +45,6 @@ interface ConfigPanelProps {
   hideSystemInstructions?: boolean;
   onClose?: () => void;
 }
-
-const formatContextWindow = (tokens: number): string => (
-  tokens >= 1_000_000
-    ? `${Number((tokens / 1_000_000).toFixed(2))}M`
-    : `${Math.round(tokens / 1_000)}K`
-);
 
 const ToolCard: React.FC<{
   icon: LucideIcon;
@@ -266,7 +261,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
           ))}
         </Select>
         <p className="text-[11px] text-ink-3">
-          {formatContextWindow(modelConfig.contextWindowTokens)} token context · knowledge to {modelConfig.knowledgeCutoff}
+          {formatCompactCount(modelConfig.contextWindowTokens)} token context · knowledge to {modelConfig.knowledgeCutoff}
         </p>
       </section>
 
@@ -339,7 +334,6 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                     label="Search context size"
                     capitalize
                     disabled={readOnly}
-                    className="bg-surface-3"
                     value={webSearchOptions.searchContextSize}
                     options={WEB_SEARCH_CONTEXT_SIZES.map(size => ({ value: size, label: size }))}
                     onChange={searchContextSize => updateWebSearchOptions({

@@ -16,7 +16,7 @@ import {
 import { BackupSchedulerState } from '../services/backupScheduler';
 import { ProjectIconGlyph } from './ProjectIcon';
 import { SettingsDialog } from './SettingsDialog';
-import { Button, IconButton, Spinner, cx } from './ui';
+import { BrandMark, Button, IconButton, Spinner, cx } from './ui';
 
 interface SidebarProps {
   sessions: Session[];
@@ -193,13 +193,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <div className="flex h-full min-h-0 flex-col bg-canvas pt-[env(safe-area-inset-top)] md:pt-0">
       <div className="flex h-14 shrink-0 items-center justify-between pl-[max(1rem,env(safe-area-inset-left))] pr-2">
         <div className="flex items-center gap-2.5">
-          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-accent text-accent-ink" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 12a8 8 0 0 1 8-8" />
-              <path d="M20 12a8 8 0 0 1-8 8" />
-              <circle cx="12" cy="12" r="2.5" />
-            </svg>
-          </span>
+          <BrandMark />
           <span className="text-sm font-semibold tracking-tight text-ink">OpenAI Studio</span>
         </div>
         <div className="flex items-center">
@@ -333,19 +327,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <SectionHeading
             title="Chats"
             action={(
-              <button
-                type="button"
+              <IconButton
+                label="New standalone chat"
+                icon={SquarePen}
+                iconSize={15}
+                size="sm"
                 onClick={() => onNewSession()}
                 disabled={readOnly}
-                className={cx(
-                  'inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-3 transition-all hover:bg-surface-3 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50',
-                  HOVER_REVEAL_CLASS
-                )}
-                aria-label="New standalone chat"
-                title="New standalone chat"
-              >
-                <SquarePen size={15} aria-hidden="true" />
-              </button>
+                className={HOVER_REVEAL_CLASS}
+              />
             )}
           />
           <div className="space-y-0.5">

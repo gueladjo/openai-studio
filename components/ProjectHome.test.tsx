@@ -143,12 +143,11 @@ describe('ProjectHome', () => {
     expect(container.querySelector(
       '[role="radiogroup"][aria-label="Project icon"] [role="radio"][aria-label="Health icon"]'
     )?.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).not.toContain('Default chat settings');
     const deleteButton = Array.from(container.querySelectorAll('button')).find(
       button => button.textContent?.includes('Delete permanently')
     );
-    expect(deleteButton?.className).not.toContain('red');
-    expect(deleteButton?.closest('section')?.className).not.toContain('red');
+    expect(deleteButton?.className).not.toContain('danger');
+    expect(deleteButton?.closest('section')?.className).not.toContain('danger');
   });
 
   it('disables source mutations for global project work without a source ID', async () => {

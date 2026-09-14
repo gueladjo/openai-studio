@@ -62,6 +62,7 @@ import {
   SidebarControls,
   ViewHeader,
   cx,
+  formatCompactCount,
   useDismiss
 } from './ui';
 
@@ -138,16 +139,6 @@ const formatDuration = (ms: number): string => {
 
 const formatTokenCount = (tokens: number): string => tokens.toLocaleString();
 
-const formatCompactTokenCount = (tokens: number): string => {
-  if (tokens >= 1_000_000) {
-    return `${Number((tokens / 1_000_000).toFixed(2))}M`;
-  }
-  if (tokens >= 1_000) {
-    return `${Number((tokens / 1_000).toFixed(1))}K`;
-  }
-  return formatTokenCount(tokens);
-};
-
 const getLatestContextTokenUsage = (messages: Message[]): number => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const totalTokens = messages[index].usage?.total_tokens;
@@ -192,7 +183,7 @@ export const ContextWindowUsage: React.FC<{ session: Session }> = ({ session }) 
   const percentageLabel = contextTokens > 0 && usedPercentage < 1
     ? '<1%'
     : `${roundedPercentage}%`;
-  const compactTokenUsage = `${formatCompactTokenCount(contextTokens)} / ${formatCompactTokenCount(modelConfig.contextWindowTokens)}`;
+  const compactTokenUsage = `${formatCompactCount(contextTokens)} / ${formatCompactCount(modelConfig.contextWindowTokens)}`;
   const description = contextTokens > 0
     ? `${formatTokenCount(contextTokens)} of ${formatTokenCount(modelConfig.contextWindowTokens)} tokens used through the latest completed response with ${modelConfig.name}.`
     : `No completed request yet. ${modelConfig.name} has a ${formatTokenCount(modelConfig.contextWindowTokens)} token context window.`;
