@@ -1618,11 +1618,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <h3 className="mt-5 text-xl font-semibold tracking-tight text-ink">
               What can I help with?
             </h3>
-            <p className="mt-2 max-w-sm text-sm leading-relaxed text-ink-2">
-              {project
-                ? `Instructions and sources from ${project.name} apply to this chat.`
-                : `Answers come from ${modelConfig.name} with ${session.config.reasoningEffort} reasoning.`}
-            </p>
+            {project && (
+              <p className="mt-2 max-w-sm text-sm leading-relaxed text-ink-2">
+                Instructions and sources from {project.name} apply to this chat.
+              </p>
+            )}
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-6 sm:px-6">
