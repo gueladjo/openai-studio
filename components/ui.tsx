@@ -273,7 +273,7 @@ export function LevelScale<T extends string>({
             />
             <span
               className={cx(
-                'truncate text-center text-[10px] capitalize leading-none',
+                'truncate text-center text-[10px] capitalize leading-4',
                 selected ? 'font-semibold text-accent' : 'text-ink-3'
               )}
             >
