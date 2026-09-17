@@ -492,7 +492,9 @@ The streamed lifecycle is:
    stream closes early after the response ID is known, wait with exponential
    backoff from one second until the page is visible and online, then resume
    with `responses.retrieve(id, { stream: true, starting_after })` and keep
-   accumulating. Each connection has its own abort controller that follows
+   accumulating. The resume request must not repeat `include`: the API
+   rejects it for background responses and reuses the creating request's
+   value. Each connection has its own abort controller that follows
    the request signal. When the page becomes visible or the browser comes
    online while no event has arrived for five seconds, the current connection
    is dropped deliberately and resumed the same way after the base delay,

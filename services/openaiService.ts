@@ -1664,13 +1664,11 @@ export const generateResponse = async (
       const connection = linkConnection(options.signal);
       activeConnection = connection.controller;
       try {
+        // The API rejects `include` here for background responses and reuses
+        // the value from the creating request.
         await consumeStream(await openai.responses.retrieve(
           responseId,
-          {
-            stream: true,
-            starting_after: lastSequenceNumber,
-            include: payload.include ?? undefined
-          },
+          { stream: true, starting_after: lastSequenceNumber },
           { signal: connection.controller.signal }
         ));
       } catch (error) {

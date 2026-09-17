@@ -1527,10 +1527,6 @@ describe('background stream resumption', () => {
       throw failure;
     }
   });
-  const streamIncludes = [
-    'code_interpreter_call.outputs',
-    'web_search_call.action.sources'
-  ];
   /**
    * Yields the given events, then idles like a silently dead connection until
    * the connection signal aborts (ending quietly like the SDK) or `more`
@@ -1606,9 +1602,11 @@ describe('background stream resumption', () => {
       stream: true
     });
     expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+    // The API rejects `include` on a background resume and reuses the
+    // creating request's value, so the resume carries only the cursor.
     expect(retrieveResponseMock).toHaveBeenCalledWith(
       'resp-background',
-      { stream: true, starting_after: 1, include: streamIncludes },
+      { stream: true, starting_after: 1 },
       { signal: expect.any(AbortSignal) }
     );
     expect(onTextDelta.mock.calls.map(call => call[0])).toEqual(['The ', 'answer is 42.']);
