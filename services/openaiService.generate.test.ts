@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   Response as OpenAIResponse,
   ResponseOutputText
@@ -13,23 +13,34 @@ import {
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 
 const {
+  cancelResponseMock,
   createResponseMock,
   openAIConstructorMock,
-  retrieveContainerFileMock
+  retrieveContainerFileMock,
+  retrieveResponseMock
 } = vi.hoisted(() => ({
+  cancelResponseMock: vi.fn(),
   createResponseMock: vi.fn(),
   openAIConstructorMock: vi.fn(),
-  retrieveContainerFileMock: vi.fn()
+  retrieveContainerFileMock: vi.fn(),
+  retrieveResponseMock: vi.fn()
 }));
 
 vi.mock('openai', () => ({
+  APIConnectionError: class APIConnectionError extends Error {
+    constructor({ message }: { message?: string } = {}) {
+      super(message);
+    }
+  },
   default: class MockOpenAI {
     constructor(options: unknown) {
       openAIConstructorMock(options);
     }
 
     responses = {
-      create: createResponseMock
+      cancel: cancelResponseMock,
+      create: createResponseMock,
+      retrieve: retrieveResponseMock
     };
 
     containers = {
@@ -42,6 +53,7 @@ vi.mock('openai', () => ({
   }
 }));
 
+import { APIConnectionError } from 'openai';
 import {
   fetchGeneratedFileContent,
   generateChatTitle,
@@ -114,9 +126,11 @@ const createPhasedMessageOutput = (
 
 describe('OpenAI request contracts', () => {
   beforeEach(() => {
+    cancelResponseMock.mockReset();
     createResponseMock.mockReset();
     openAIConstructorMock.mockReset();
     retrieveContainerFileMock.mockReset();
+    retrieveResponseMock.mockReset();
   });
 
   it('resolves a bundled environment key when Settings has no key', () => {
@@ -192,6 +206,7 @@ describe('OpenAI request contracts', () => {
       ],
       tool_choice: 'auto',
       store: true,
+      background: true,
       stream: true,
       include: [
         'code_interpreter_call.outputs',
@@ -1476,5 +1491,195 @@ describe('generateResponse conversation history', () => {
     )).rejects.toBe(fallbackError);
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     consoleError.mockRestore();
+  });
+});
+
+describe('background stream resumption', () => {
+  const createdEvent: OpenAIResponsesStreamEvent = {
+    type: 'response.created',
+    sequence_number: 0,
+    response: { ...createCompletedResponse([]), id: 'resp-background' }
+  };
+  const textDelta = (
+    sequenceNumber: number,
+    delta: string
+  ): OpenAIResponsesStreamEvent => ({
+    type: 'response.output_text.delta',
+    sequence_number: sequenceNumber,
+    delta,
+    item_id: 'msg-1',
+    output_index: 0,
+    content_index: 0,
+    logprobs: []
+  });
+  const completedEvent = (sequenceNumber: number): OpenAIResponsesStreamEvent => ({
+    type: 'response.completed',
+    sequence_number: sequenceNumber,
+    response: createCompletedResponse([messageOutput])
+  });
+  /** Yields the given events, then fails like a dropped connection. */
+  const createInterruptedStream = (
+    events: OpenAIResponsesStreamEvent[],
+    failure: unknown
+  ) => ({
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+      throw failure;
+    }
+  });
+  const streamIncludes = [
+    'code_interpreter_call.outputs',
+    'web_search_call.action.sources'
+  ];
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    cancelResponseMock.mockReset();
+    createResponseMock.mockReset();
+    retrieveResponseMock.mockReset();
+    consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    consoleError.mockRestore();
+  });
+
+  it('resumes a dropped stream after the last received event', async () => {
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent, textDelta(1, 'The ')],
+      new TypeError('network error')
+    ));
+    retrieveResponseMock.mockResolvedValue(createStream([
+      textDelta(2, 'answer is 42.'),
+      completedEvent(3)
+    ]));
+    const onTextDelta = vi.fn();
+    const controller = new AbortController();
+
+    const pending = generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'resume-key',
+      undefined,
+      { signal: controller.signal, onTextDelta }
+    );
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      background: true,
+      store: true,
+      stream: true
+    });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+    expect(retrieveResponseMock).toHaveBeenCalledWith(
+      'resp-background',
+      { stream: true, starting_after: 1, include: streamIncludes },
+      { signal: controller.signal }
+    );
+    expect(onTextDelta.mock.calls.map(call => call[0])).toEqual(['The ', 'answer is 42.']);
+    expect(result).toMatchObject({
+      content: 'The answer is 42.',
+      status: 'complete'
+    });
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('waits for a hidden page to become visible before resuming', async () => {
+    const fakeDocument = Object.assign(new EventTarget(), {
+      visibilityState: 'hidden'
+    });
+    vi.stubGlobal('document', fakeDocument);
+    vi.stubGlobal('window', new EventTarget());
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent],
+      new TypeError('network error')
+    ));
+    retrieveResponseMock.mockResolvedValue(createStream([completedEvent(1)]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.runAllTimersAsync();
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+
+    fakeDocument.visibilityState = 'visible';
+    fakeDocument.dispatchEvent(new Event('visibilitychange'));
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledWith(
+      'resp-background',
+      expect.objectContaining({ stream: true, starting_after: 0 }),
+      expect.anything()
+    );
+  });
+
+  it('gives up after the reconnect budget is exhausted', async () => {
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent],
+      new TypeError('network error')
+    ));
+    retrieveResponseMock.mockRejectedValue(
+      new APIConnectionError({ message: 'Connection error.' })
+    );
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    const outcome = expect(pending).rejects.toThrow('Connection error.');
+    await vi.runAllTimersAsync();
+    await outcome;
+
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(5);
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('fails without resuming when the connection drops before a response ID', async () => {
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [],
+      new TypeError('network error')
+    ));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    const outcome = expect(pending).rejects.toThrow('network error');
+    await vi.runAllTimersAsync();
+    await outcome;
+
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('does not resume after an API failure', async () => {
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent],
+      Object.assign(new Error('Bad request.'), { status: 400 })
+    ));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    const outcome = expect(pending).rejects.toThrow('Bad request.');
+    await vi.runAllTimersAsync();
+    await outcome;
+
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels the background response when the request is stopped', async () => {
+    const controller = new AbortController();
+    createResponseMock.mockResolvedValue({
+      async *[Symbol.asyncIterator]() {
+        yield createdEvent;
+        // The SDK ends the iteration quietly once the request signal is aborted.
+        controller.abort();
+      }
+    });
+    cancelResponseMock.mockResolvedValue({});
+
+    await expect(generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'stop-key',
+      undefined,
+      { signal: controller.signal }
+    )).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(cancelResponseMock).toHaveBeenCalledWith('resp-background');
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
   });
 });

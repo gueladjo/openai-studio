@@ -11,7 +11,7 @@ rules, task routing, and verification commands.
 
 ## Features
 
-- Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls.
+- Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls. A stream dropped by a suspended mobile page or a network change resumes when the page returns.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
 - Local projects with names, icons, live project instructions, grouped chats, and reusable source libraries.
 - Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.
@@ -35,7 +35,7 @@ OpenAI Studio is a direct client, not a local-only inference application:
 
 - Prompts, attachments, and instructions are sent to OpenAI. Generated responses are returned by OpenAI and retained server-side when response storage is enabled.
 - Adding a searchable or analysis project source uploads it to OpenAI immediately after its canonical local bytes are saved. OpenAI Files and vector stores persist until deleted; deleting a local source or project starts remote deletion and records failed cleanup for retry.
-- Responses API requests use `store: true` so conversations can continue with `previous_response_id`. New-chat title generation also creates a stored API response.
+- Responses API requests use `store: true` so conversations can continue with `previous_response_id`, and run in OpenAI background mode so a dropped connection can resume; stopping a response also asks OpenAI to cancel it. New-chat title generation also creates a stored API response.
 - The API key entered in Settings is stored in the local workspace settings object and is not encrypted by this project.
 - A portable ZIP includes conversations, projects, project instructions, original project-source bytes, system instructions, attachments, and locally cached generated files, but never the API key, OpenAI File/vector-store IDs, key fingerprints, cleanup records, or device-local backup preferences. Restoring keeps the current device's key. Archives are not encrypted and can contain sensitive content.
 - OpenAI documents Files and vector stores as retained until deleted, with abuse-monitoring and post-deletion behavior governed by its current [API data-retention policy](https://developers.openai.com/api/docs/guides/your-data#storage-requirements-and-retention-controls-per-endpoint).

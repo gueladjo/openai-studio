@@ -60,8 +60,11 @@ One request may run per session. Requests in different sessions may run at the
 same time, and completion is routed back to the originating session even if the
 user selects another chat. A response can be stopped, a failed turn can be
 retried, and the latest answer can be regenerated. Stop retains the available
-partial output with `stopped` status. Stream failure retains useful partial
-output with an error state instead of deleting the turn. Partial aggregate
+partial output with `stopped` status. A dropped connection, including a mobile
+page suspended by the OS while a response streams, resumes the same response
+once the page is visible and online again instead of failing the turn. Stream
+failure retains useful partial output with an error state instead of deleting
+the turn. Partial aggregate
 text, output-index/phase messages, and reasoning are accumulated by one
 per-request stream state and checkpointed atomically for frame flushes, page
 suspension, explicit stop, failure, and Electron close.
@@ -430,7 +433,12 @@ retry behavior. Optional reasoning-summary capability is retried only when the
 API explicitly rejects that option; unrelated or ambiguous failures are not
 retried.
 
-Conversation requests intentionally use `store: true`. When the immediately
+Conversation requests intentionally use `store: true` and `background: true`.
+Background execution keeps the response running server-side after the client
+connection drops, so a suspended mobile page can resume it; OpenAI documents a
+higher time to first token for background responses. Zero Data Retention
+projects force `store: false` on background requests, which disables
+`previous_response_id` continuation there. When the immediately
 preceding assistant turn has an OpenAI response ID, the next request sends
 `previous_response_id` plus only the newest user turn. Otherwise it sends the
 eligible local transcript. If the API definitively reports that the previous
@@ -477,18 +485,29 @@ The streamed lifecycle is:
 1. Create the assistant placeholder, record request ownership in workspace
    state, and mark the session for immediate persistence.
 2. Accumulate reasoning-summary and `response.output_text.delta` events while
-   routing visible deltas to the originating session.
-3. Treat `response.completed` or `response.incomplete` as the authoritative
+   routing visible deltas to the originating session, and record the response
+   ID and the latest event `sequence_number`.
+3. When the connection drops (a `TypeError` or SDK connection error) or the
+   stream closes early after the response ID is known, wait with exponential
+   backoff from one second until the page is visible and online, then resume
+   with `responses.retrieve(id, { stream: true, starting_after })` and keep
+   accumulating. At most five resumptions per request. Failures before the
+   response ID is known, HTTP API errors, and stream `error` or
+   `response.failed` events are never retried.
+4. Treat `response.completed` or `response.incomplete` as the authoritative
    terminal response, including content, citations, generated files, refusal,
    usage, model metadata, and incomplete reason.
-4. Reject a stream that ends without a terminal response.
+5. Reject a stream that ends without a terminal response once the resumption
+   budget is spent.
 
 `thinkingDuration` is the time to the first streamed primary text token. A
 `commentary`-phase Progress update does not stop this timer; `final_answer` and
 legacy unphased output do. This is not total request time or chain-of-thought
-duration. Stopping aborts the foreground stream's request signal and retains
-partial content. It does not call `responses.cancel`; that remote endpoint is
-reserved for responses created with `background: true`.
+duration. Stopping aborts the request signal and retains partial content.
+Because the response runs in the background, the service also sends a
+best-effort `responses.cancel` for the known response ID so the abandoned
+response stops generating; a stop before the first stream event has no ID to
+cancel, and cancel failures are only logged.
 
 Citation post-processing is pure. It recognizes supported markers and
 annotations, assigns stable source numbers, deduplicates sources, and removes
@@ -845,7 +864,7 @@ must change whenever these behaviors change.
 | Workspace load or complete-generation validation fails | Do not enable writes or replace data with defaults; report the load error. |
 | Save fails | Keep the newest queued version, retry on the bounded schedule, and expose persistent failure state. |
 | Writer revision becomes stale | Reject the write and reload/coordinate instead of overwriting. |
-| Response is stopped or stream fails | Retain useful partial output, clear request ownership at the correct boundary, and ignore late events. |
+| Response is stopped or stream fails | Resume a dropped background stream from its last event while the request is still owned; otherwise retain useful partial output, clear request ownership at the correct boundary, and ignore late events. |
 | Persisted request is interrupted by restart | Mark it failed and retryable in the writer tab while preserving its historical model name. |
 | Optional API capability is rejected | Retry only the explicitly supported safe fallback; do not retry ambiguous failures. |
 | Expected project source context is unavailable | Block the request unless the user explicitly overrides one request; keep project instructions. |
@@ -866,7 +885,7 @@ The following tests are the executable contracts for this specification:
 | Area | Primary contracts |
 | --- | --- |
 | App startup and PWA theme metadata, request routing, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
-| Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
+| Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, dropped-stream resumption, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
 | Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and retired-store refusal | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
@@ -894,6 +913,8 @@ browser/PWA, native Electron, or real file-picker behavior.
   development/Electron environment keys can be compiled into renderer code.
 - Portable archives are unencrypted and can expose conversation and file data.
 - The installed PWA shell does not make model requests work offline.
+- A dropped response stream resumes only within the running page; a reload or
+  a discarded PWA process still marks the request failed.
 - Browser workspaces are origin-scoped, and automatic folder backup depends on
   File System Access support and renewed permission.
 - Remote generated files can expire before local caching succeeds.

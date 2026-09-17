@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { APIConnectionError } from 'openai';
 import type {
   Response as OpenAIResponse,
   ResponseCodeInterpreterToolCall,
@@ -1045,6 +1045,100 @@ const createAbortError = (): Error => {
   return error;
 };
 
+/** Reconnect attempts after a dropped stream once the response ID is known. */
+const MAX_STREAM_RECONNECTS = 5;
+const STREAM_RECONNECT_BASE_DELAY_MS = 1000;
+
+/**
+ * A dropped or refused connection rather than an API decision. Browsers surface
+ * fetch and body-read failures as `TypeError`; the SDK wraps request failures
+ * in `APIConnectionError`.
+ */
+const isConnectionFailure = (error: unknown): error is Error => (
+  error instanceof TypeError || error instanceof APIConnectionError
+);
+
+const delay = (ms: number, signal?: AbortSignal): Promise<void> => (
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
+    const onAbort = () => {
+      clearTimeout(handle);
+      reject(createAbortError());
+    };
+    const handle = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  })
+);
+
+/** Hidden mobile pages and offline browsers cannot hold a network connection. */
+const isPageSuspended = (): boolean => (
+  (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
+  (typeof navigator !== 'undefined' && navigator.onLine === false)
+);
+
+const waitUntilPageActive = (signal?: AbortSignal): Promise<void> => (
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+    if (!isPageSuspended()) {
+      resolve();
+      return;
+    }
+
+    const cleanup = () => {
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', check);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', check);
+      }
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const check = () => {
+      if (isPageSuspended()) return;
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(createAbortError());
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', check);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', check);
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  })
+);
+
+const getEventResponseId = (
+  event: OpenAIResponsesStreamEvent
+): string | undefined => (
+  'response' in event && typeof event.response?.id === 'string'
+    ? event.response.id
+    : undefined
+);
+
+const getEventSequenceNumber = (
+  event: OpenAIResponsesStreamEvent
+): number | undefined => (
+  'sequence_number' in event && typeof event.sequence_number === 'number'
+    ? event.sequence_number
+    : undefined
+);
+
 export const getOpenAIErrorDetails = (error: unknown): OpenAIErrorDetails => {
   const root = isRecord(error) ? error : undefined;
   const nestedError = root && isRecord(root.error) ? root.error : undefined;
@@ -1307,6 +1401,9 @@ export const generateResponse = async (
     tools: tools,
     ...(tools.length > 0 ? { tool_choice: 'auto' } : {}),
     store: true,
+    // A background response keeps running server-side when the client
+    // disconnects, so a dropped stream can be resumed instead of failed.
+    background: true,
     stream: true,
     include: [
       'code_interpreter_call.outputs',
@@ -1339,6 +1436,8 @@ export const generateResponse = async (
       effort: 'none'
     };
   }
+
+  let responseId: string | undefined;
 
   try {
     const startTime = getMonotonicTime();
@@ -1393,6 +1492,7 @@ export const generateResponse = async (
     let streamedContent = '';
     let terminalStatus: GenerateResponseStreamState['terminalStatus'] | undefined;
     let activeReasoningSummaryPart: string | undefined;
+    let lastSequenceNumber: number | undefined;
     const outputPhases = new Map<number, AssistantPhase | undefined>();
     let timeToFirstPrimaryToken: number | undefined;
 
@@ -1409,50 +1509,100 @@ export const generateResponse = async (
       }
     };
 
-    for await (const event of stream) {
-      if (options.signal?.aborted) {
-        throw createAbortError();
+    const consumeStream = async (
+      eventStream: AsyncIterable<OpenAIResponsesStreamEvent>
+    ): Promise<void> => {
+      for await (const event of eventStream) {
+        if (options.signal?.aborted) {
+          throw createAbortError();
+        }
+
+        if (!responseId) responseId = getEventResponseId(event);
+        lastSequenceNumber = getEventSequenceNumber(event) ?? lastSequenceNumber;
+
+        if (
+          event.type === 'response.output_item.added' &&
+          event.item.type === 'message'
+        ) {
+          outputPhases.set(event.output_index, event.item.phase || undefined);
+        } else if (event.type === 'response.reasoning_summary_text.delta') {
+          const summaryPart = `${event.output_index}:${event.summary_index}`;
+          const separator = streamedThinking && activeReasoningSummaryPart !== summaryPart
+            ? '\n\n'
+            : '';
+          const delta = separator + event.delta;
+
+          activeReasoningSummaryPart = summaryPart;
+          streamedThinking += delta;
+          options.onReasoningSummaryDelta?.(delta);
+        } else if (event.type === 'response.output_text.delta') {
+          captureTimeToFirstPrimaryToken(event.delta, event.output_index);
+          streamedContent += event.delta;
+          options.onTextDelta?.(
+            event.delta,
+            event.output_index,
+            outputPhases.get(event.output_index)
+          );
+        } else if (event.type === 'response.refusal.delta') {
+          captureTimeToFirstPrimaryToken(event.delta, event.output_index);
+          streamedContent += event.delta;
+          options.onTextDelta?.(
+            event.delta,
+            event.output_index,
+            outputPhases.get(event.output_index)
+          );
+        } else if (event.type === 'response.completed') {
+          completedResponse = event.response;
+          terminalStatus = 'complete';
+        } else if (event.type === 'response.incomplete') {
+          completedResponse = event.response;
+          terminalStatus = 'incomplete';
+        } else if (event.type === 'response.failed' || event.type === 'error') {
+          throw getStreamEventError(event);
+        }
+      }
+    };
+
+    let reconnectAttempts = 0;
+    let lastFailure: Error | undefined;
+
+    try {
+      await consumeStream(stream);
+    } catch (error) {
+      if (!isConnectionFailure(error)) throw error;
+      lastFailure = error;
+    }
+
+    // A suspended mobile page or a network change drops the connection while
+    // the background response keeps running. Resume it after the last event
+    // once the page can reach the network again.
+    while (!terminalStatus) {
+      if (options.signal?.aborted) throw createAbortError();
+      if (!responseId || reconnectAttempts >= MAX_STREAM_RECONNECTS) {
+        throw lastFailure ?? new Error('Response stream ended before completion.');
       }
 
-      if (
-        event.type === 'response.output_item.added' &&
-        event.item.type === 'message'
-      ) {
-        outputPhases.set(event.output_index, event.item.phase || undefined);
-      } else if (event.type === 'response.reasoning_summary_text.delta') {
-        const summaryPart = `${event.output_index}:${event.summary_index}`;
-        const separator = streamedThinking && activeReasoningSummaryPart !== summaryPart
-          ? '\n\n'
-          : '';
-        const delta = separator + event.delta;
+      reconnectAttempts += 1;
+      lastFailure = undefined;
+      await delay(
+        STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+        options.signal
+      );
+      await waitUntilPageActive(options.signal);
 
-        activeReasoningSummaryPart = summaryPart;
-        streamedThinking += delta;
-        options.onReasoningSummaryDelta?.(delta);
-      } else if (event.type === 'response.output_text.delta') {
-        captureTimeToFirstPrimaryToken(event.delta, event.output_index);
-        streamedContent += event.delta;
-        options.onTextDelta?.(
-          event.delta,
-          event.output_index,
-          outputPhases.get(event.output_index)
-        );
-      } else if (event.type === 'response.refusal.delta') {
-        captureTimeToFirstPrimaryToken(event.delta, event.output_index);
-        streamedContent += event.delta;
-        options.onTextDelta?.(
-          event.delta,
-          event.output_index,
-          outputPhases.get(event.output_index)
-        );
-      } else if (event.type === 'response.completed') {
-        completedResponse = event.response;
-        terminalStatus = 'complete';
-      } else if (event.type === 'response.incomplete') {
-        completedResponse = event.response;
-        terminalStatus = 'incomplete';
-      } else if (event.type === 'response.failed' || event.type === 'error') {
-        throw getStreamEventError(event);
+      try {
+        await consumeStream(await openai.responses.retrieve(
+          responseId,
+          {
+            stream: true,
+            starting_after: lastSequenceNumber,
+            include: payload.include ?? undefined
+          },
+          { signal: options.signal }
+        ));
+      } catch (error) {
+        if (!isConnectionFailure(error)) throw error;
+        lastFailure = error;
       }
     }
 
@@ -1477,6 +1627,13 @@ export const generateResponse = async (
     );
   } catch (error: unknown) {
     if (error instanceof Error && error.name === 'AbortError') {
+      // Stopping only closes the local stream; the background response keeps
+      // running and billing until it is cancelled remotely.
+      if (responseId) {
+        void openai.responses.cancel(responseId).catch(cancelError => {
+          console.warn('Failed to cancel the stopped OpenAI response.', cancelError);
+        });
+      }
       throw error;
     }
 
