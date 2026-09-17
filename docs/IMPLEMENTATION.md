@@ -62,7 +62,8 @@ user selects another chat. A response can be stopped, a failed turn can be
 retried, and the latest answer can be regenerated. Stop retains the available
 partial output with `stopped` status. A dropped connection, including a mobile
 page suspended by the OS while a response streams, resumes the same response
-once the page is visible and online again instead of failing the turn. Stream
+once the page is visible and online again instead of failing the turn, whether
+or not the browser reports the drop. Stream
 failure retains useful partial output with an error state instead of deleting
 the turn. Partial aggregate
 text, output-index/phase messages, and reasoning are accumulated by one
@@ -491,9 +492,15 @@ The streamed lifecycle is:
    stream closes early after the response ID is known, wait with exponential
    backoff from one second until the page is visible and online, then resume
    with `responses.retrieve(id, { stream: true, starting_after })` and keep
-   accumulating. At most five resumptions per request. Failures before the
-   response ID is known, HTTP API errors, and stream `error` or
-   `response.failed` events are never retried.
+   accumulating. Each connection has its own abort controller that follows
+   the request signal. When the page becomes visible or the browser comes
+   online while no event has arrived for five seconds, the current connection
+   is dropped deliberately and resumed the same way after the base delay,
+   because a suspended mobile page can lose its connection without an error.
+   Consecutive reconnects without any received event are limited to five; a
+   received event resets that count and deliberate drops do not consume it.
+   Failures before the response ID is known, HTTP API errors, and stream
+   `error` or `response.failed` events are never retried.
 4. Treat `response.completed` or `response.incomplete` as the authoritative
    terminal response, including content, citations, generated files, refusal,
    usage, model metadata, and incomplete reason.

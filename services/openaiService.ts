@@ -1045,9 +1045,17 @@ const createAbortError = (): Error => {
   return error;
 };
 
-/** Reconnect attempts after a dropped stream once the response ID is known. */
+/**
+ * Consecutive reconnects without any received event once the response ID is
+ * known. Received events reset the count.
+ */
 const MAX_STREAM_RECONNECTS = 5;
 const STREAM_RECONNECT_BASE_DELAY_MS = 1000;
+/**
+ * A page returning to the foreground whose stream has been silent this long
+ * most likely lost its connection without the browser raising an error.
+ */
+const STREAM_STALL_THRESHOLD_MS = 5000;
 
 /**
  * A dropped or refused connection rather than an API decision. Browsers surface
@@ -1083,6 +1091,25 @@ const isPageSuspended = (): boolean => (
   (typeof navigator !== 'undefined' && navigator.onLine === false)
 );
 
+/** Runs the handler when page visibility changes or the browser comes online. */
+const subscribeToPageReturn = (handler: () => void): (() => void) => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handler);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', handler);
+  }
+
+  return () => {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handler);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('online', handler);
+    }
+  };
+};
+
 const waitUntilPageActive = (signal?: AbortSignal): Promise<void> => (
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -1095,12 +1122,7 @@ const waitUntilPageActive = (signal?: AbortSignal): Promise<void> => (
     }
 
     const cleanup = () => {
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', check);
-      }
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('online', check);
-      }
+      unsubscribe();
       signal?.removeEventListener('abort', onAbort);
     };
     const check = () => {
@@ -1112,16 +1134,29 @@ const waitUntilPageActive = (signal?: AbortSignal): Promise<void> => (
       cleanup();
       reject(createAbortError());
     };
-
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', check);
-    }
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', check);
-    }
+    const unsubscribe = subscribeToPageReturn(check);
     signal?.addEventListener('abort', onAbort, { once: true });
   })
 );
+
+/**
+ * A controller for one network connection that also follows the request
+ * signal, so a single connection can be dropped without stopping the request.
+ */
+const linkConnection = (
+  requestSignal?: AbortSignal
+): { controller: AbortController; unlink: () => void } => {
+  const controller = new AbortController();
+  const follow = () => controller.abort();
+
+  if (requestSignal?.aborted) controller.abort();
+  else requestSignal?.addEventListener('abort', follow, { once: true });
+
+  return {
+    controller,
+    unlink: () => requestSignal?.removeEventListener('abort', follow)
+  };
+};
 
 const getEventResponseId = (
   event: OpenAIResponsesStreamEvent
@@ -1438,13 +1473,36 @@ export const generateResponse = async (
   }
 
   let responseId: string | undefined;
+  let activeConnection: AbortController | undefined;
+  let lastEventAt = 0;
+  let droppedDeliberately = false;
+
+  // A page returning to the foreground with a silent stream has most likely
+  // lost its connection without an error. Drop that connection so the loop
+  // below resumes the response; the request itself keeps running.
+  const dropStalledConnection = () => {
+    if (
+      isPageSuspended() ||
+      !responseId ||
+      !activeConnection ||
+      Date.now() - lastEventAt < STREAM_STALL_THRESHOLD_MS
+    ) {
+      return;
+    }
+
+    droppedDeliberately = true;
+    activeConnection.abort();
+  };
+  const unsubscribeFromPageReturn = subscribeToPageReturn(dropStalledConnection);
 
   try {
     const startTime = getMonotonicTime();
+    const initialConnection = linkConnection(options.signal);
+    activeConnection = initialConnection.controller;
     const createStream = (streamPayload: OpenAIResponsesStreamingConfig) => (
       openai.responses.create(
         streamPayload,
-        options.signal ? { signal: options.signal } : undefined
+        { signal: initialConnection.controller.signal }
       )
     );
     const createStreamWithCapabilityFallback = async (
@@ -1509,6 +1567,9 @@ export const generateResponse = async (
       }
     };
 
+    let reconnectAttempts = 0;
+    let lastFailure: Error | undefined;
+
     const consumeStream = async (
       eventStream: AsyncIterable<OpenAIResponsesStreamEvent>
     ): Promise<void> => {
@@ -1519,6 +1580,8 @@ export const generateResponse = async (
 
         if (!responseId) responseId = getEventResponseId(event);
         lastSequenceNumber = getEventSequenceNumber(event) ?? lastSequenceNumber;
+        lastEventAt = Date.now();
+        reconnectAttempts = 0;
 
         if (
           event.type === 'response.output_item.added' &&
@@ -1563,33 +1626,43 @@ export const generateResponse = async (
       }
     };
 
-    let reconnectAttempts = 0;
-    let lastFailure: Error | undefined;
-
     try {
       await consumeStream(stream);
     } catch (error) {
       if (!isConnectionFailure(error)) throw error;
       lastFailure = error;
+    } finally {
+      activeConnection = undefined;
+      initialConnection.unlink();
     }
 
     // A suspended mobile page or a network change drops the connection while
     // the background response keeps running. Resume it after the last event
-    // once the page can reach the network again.
+    // once the page can reach the network again. Deliberate drops reconnect
+    // after the base delay without consuming the failure budget.
     while (!terminalStatus) {
       if (options.signal?.aborted) throw createAbortError();
-      if (!responseId || reconnectAttempts >= MAX_STREAM_RECONNECTS) {
+      if (!responseId) {
         throw lastFailure ?? new Error('Response stream ended before completion.');
       }
 
-      reconnectAttempts += 1;
+      let reconnectDelay = STREAM_RECONNECT_BASE_DELAY_MS;
+      if (droppedDeliberately) {
+        droppedDeliberately = false;
+      } else {
+        if (reconnectAttempts >= MAX_STREAM_RECONNECTS) {
+          throw lastFailure ?? new Error('Response stream ended before completion.');
+        }
+        reconnectAttempts += 1;
+        reconnectDelay *= 2 ** (reconnectAttempts - 1);
+      }
       lastFailure = undefined;
-      await delay(
-        STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
-        options.signal
-      );
+
+      await delay(reconnectDelay, options.signal);
       await waitUntilPageActive(options.signal);
 
+      const connection = linkConnection(options.signal);
+      activeConnection = connection.controller;
       try {
         await consumeStream(await openai.responses.retrieve(
           responseId,
@@ -1598,11 +1671,14 @@ export const generateResponse = async (
             starting_after: lastSequenceNumber,
             include: payload.include ?? undefined
           },
-          { signal: options.signal }
+          { signal: connection.controller.signal }
         ));
       } catch (error) {
         if (!isConnectionFailure(error)) throw error;
         lastFailure = error;
+      } finally {
+        activeConnection = undefined;
+        connection.unlink();
       }
     }
 
@@ -1640,6 +1716,8 @@ export const generateResponse = async (
     console.error('OpenAI API Error:', error);
     if (error instanceof Error) throw error;
     throw new OpenAIServiceError(getOpenAIErrorDetails(error));
+  } finally {
+    unsubscribeFromPageReturn();
   }
 };
 

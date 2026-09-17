@@ -1531,6 +1531,37 @@ describe('background stream resumption', () => {
     'code_interpreter_call.outputs',
     'web_search_call.action.sources'
   ];
+  /**
+   * Yields the given events, then idles like a silently dead connection until
+   * the connection signal aborts (ending quietly like the SDK) or `more`
+   * resolves with further events.
+   */
+  const createIdleStream = (
+    events: OpenAIResponsesStreamEvent[],
+    signal: AbortSignal | undefined,
+    more?: Promise<OpenAIResponsesStreamEvent[]>
+  ) => ({
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+      const aborted = new Promise<undefined>(resolve => {
+        signal?.addEventListener('abort', () => resolve(undefined), { once: true });
+      });
+      const remaining = await Promise.race([
+        aborted,
+        more ?? new Promise<never>(() => undefined)
+      ]);
+      if (!remaining) return;
+      for (const event of remaining) yield event;
+    }
+  });
+  const stubVisiblePage = () => {
+    const fakeDocument = Object.assign(new EventTarget(), {
+      visibilityState: 'visible'
+    });
+    vi.stubGlobal('document', fakeDocument);
+    vi.stubGlobal('window', new EventTarget());
+    return fakeDocument;
+  };
   let consoleError: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -1578,7 +1609,7 @@ describe('background stream resumption', () => {
     expect(retrieveResponseMock).toHaveBeenCalledWith(
       'resp-background',
       { stream: true, starting_after: 1, include: streamIncludes },
-      { signal: controller.signal }
+      { signal: expect.any(AbortSignal) }
     );
     expect(onTextDelta.mock.calls.map(call => call[0])).toEqual(['The ', 'answer is 42.']);
     expect(result).toMatchObject({
@@ -1610,6 +1641,78 @@ describe('background stream resumption', () => {
     expect(retrieveResponseMock).toHaveBeenCalledWith(
       'resp-background',
       expect.objectContaining({ stream: true, starting_after: 0 }),
+      expect.anything()
+    );
+  });
+
+  it('drops a stalled connection when the page returns and resumes it', async () => {
+    const fakeDocument = stubVisiblePage();
+    createResponseMock.mockImplementation((
+      _payload: unknown,
+      requestOptions: { signal?: AbortSignal }
+    ) => createIdleStream([createdEvent, textDelta(1, 'The ')], requestOptions.signal));
+    retrieveResponseMock.mockResolvedValue(createStream([
+      textDelta(2, 'answer is 42.'),
+      completedEvent(3)
+    ]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+
+    fakeDocument.dispatchEvent(new Event('visibilitychange'));
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+    expect(retrieveResponseMock).toHaveBeenCalledWith(
+      'resp-background',
+      expect.objectContaining({ stream: true, starting_after: 1 }),
+      expect.anything()
+    );
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a recently active connection when the page returns', async () => {
+    const fakeDocument = stubVisiblePage();
+    let releaseMore: (events: OpenAIResponsesStreamEvent[]) => void = () => undefined;
+    const more = new Promise<OpenAIResponsesStreamEvent[]>(resolve => {
+      releaseMore = resolve;
+    });
+    createResponseMock.mockImplementation((
+      _payload: unknown,
+      requestOptions: { signal?: AbortSignal }
+    ) => createIdleStream([createdEvent, textDelta(1, 'The ')], requestOptions.signal, more));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.advanceTimersByTimeAsync(1000);
+    fakeDocument.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    releaseMore([textDelta(2, 'answer is 42.'), completedEvent(3)]);
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('resets the reconnect budget whenever a resumed stream delivers events', async () => {
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent],
+      new TypeError('network error')
+    ));
+    const chunks = ['The ', 'answer ', 'is ', '4', '2', '.', ''];
+    chunks.forEach((chunk, index) => {
+      retrieveResponseMock.mockResolvedValueOnce(createStream([textDelta(index + 1, chunk)]));
+    });
+    retrieveResponseMock.mockResolvedValueOnce(createStream([completedEvent(chunks.length + 1)]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(chunks.length + 1);
+    expect(retrieveResponseMock).toHaveBeenLastCalledWith(
+      'resp-background',
+      expect.objectContaining({ starting_after: chunks.length }),
       expect.anything()
     );
   });
