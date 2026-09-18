@@ -474,9 +474,17 @@ describe('portable workspace archive', () => {
   });
 
   it('rejects traversal, case collisions, and undeclared ZIP entries', async () => {
+    // Strict ZIP reading rejects traversal segments before the archive guard
+    // sees them, so assert the rejection rather than which layer reports it.
     await expect(inspectWorkspaceArchive(await createZip([
       { path: '../manifest.json', text: '{}' }
-    ]))).rejects.toThrow('unsafe');
+    ]))).rejects.toThrow(/unsafe/i);
+
+    // A backslash separator survives strict ZIP reading, so this still covers
+    // the archive's own canonical-path guard.
+    await expect(inspectWorkspaceArchive(await createZip([
+      { path: 'workspace\\settings.json', text: '{}' }
+    ]))).rejects.toThrow(BackupArchiveError);
 
     await expect(inspectWorkspaceArchive(await createZip([
       { path: 'manifest.json', text: JSON.stringify(emptyManifest([])) },
