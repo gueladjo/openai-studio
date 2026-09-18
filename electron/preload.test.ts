@@ -68,6 +68,21 @@ describe('Electron preload bridge contract', () => {
     expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('backup-delete', filename);
   });
 
+  it('tells the main process when the close listener is ready', () => {
+    const callback = vi.fn();
+    const unsubscribe = bridge.onCloseRequested(callback);
+
+    expect(ipcRenderer.on).toHaveBeenCalledWith('window-close-requested', expect.any(Function));
+    expect(ipcRenderer.send).toHaveBeenCalledWith('window-close-listener-ready');
+    ipcRenderer.on.mock.calls[0][1]();
+    expect(callback).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(
+      'window-close-requested',
+      ipcRenderer.on.mock.calls[0][1]
+    );
+  });
+
   it('aborts a failed bridge write and leaves web mode without an Electron destination', async () => {
     const error = new Error('Chunk write failed.');
     ipcRenderer.invoke.mockResolvedValueOnce('write-2')

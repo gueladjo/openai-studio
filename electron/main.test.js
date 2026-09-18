@@ -247,6 +247,48 @@ describe('Electron main-process policy', () => {
     expect(confirmedCloseEvent.preventDefault).not.toHaveBeenCalled();
   });
 
+  it('completes a pending close when the renderer crashes or hangs', async () => {
+    const crashed = await loadMain();
+    crashed.windowHandlers.get('close')({ preventDefault: vi.fn() });
+    expect(crashed.close).not.toHaveBeenCalled();
+    crashed.webContentsHandlers.get('render-process-gone')();
+    expect(crashed.close).toHaveBeenCalledTimes(1);
+    // Nothing can answer any more, so later close attempts finish at once.
+    crashed.windowHandlers.get('close')({ preventDefault: vi.fn() });
+    expect(crashed.webContents.send).toHaveBeenCalledTimes(1);
+
+    vi.resetModules();
+    harness.windows.length = 0;
+    harness.appHandlers.clear();
+    harness.ipcOnHandlers.clear();
+    const hung = await loadMain();
+    hung.windowHandlers.get('unresponsive')();
+    expect(hung.close).not.toHaveBeenCalled();
+    hung.windowHandlers.get('close')({ preventDefault: vi.fn() });
+    hung.windowHandlers.get('unresponsive')();
+    expect(hung.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a pending close on reload and re-sends it once the listener is ready', async () => {
+    const window = await loadMain();
+    const close = window.windowHandlers.get('close');
+    const listenerReady = harness.ipcOnHandlers.get('window-close-listener-ready');
+
+    listenerReady({ sender: window.webContents });
+    expect(window.webContents.send).not.toHaveBeenCalled();
+
+    close({ preventDefault: vi.fn() });
+    listenerReady({ sender: window.webContents });
+    expect(window.webContents.send).toHaveBeenCalledTimes(2);
+
+    window.webContentsHandlers.get('did-start-loading')();
+    listenerReady({ sender: window.webContents });
+    expect(window.webContents.send).toHaveBeenCalledTimes(2);
+    close({ preventDefault: vi.fn() });
+    expect(window.webContents.send).toHaveBeenCalledTimes(3);
+    expect(window.close).not.toHaveBeenCalled();
+  });
+
   it('waits for renderer confirmation before completing an application quit', async () => {
     const window = await loadMain();
     const beforeQuit = harness.appHandlers.get('before-quit');

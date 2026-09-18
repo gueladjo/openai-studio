@@ -402,7 +402,13 @@ their remote-ID persistence, before entering the destructive-operation queue.
 Pending React state and save effects are committed before the final save flush
 and due backup. Only then may the renderer confirm close. Keep working cancels
 the close attempt and resumes project work; a cancelled attempt cannot confirm
-close when delayed work finishes. A project-task failure or remote-state save
+close when delayed work finishes. The main process keeps the window closable
+when the renderer cannot answer: a crashed or unresponsive renderer completes
+a pending close immediately, a renderer reload discards the pending request so
+the next attempt sends a fresh one, and a close requested before the renderer
+registered its listener is re-sent when the listener reports ready. There is
+no close timeout; a live renderer owns draining, so a long close-time backup
+is never cut short. A project-task failure or remote-state save
 failure during draining remains a close error until cancellation, even when a
 batch operation handles the error internally. Retry can retry saves/backups;
 failed project work must be resolved after choosing Keep working.

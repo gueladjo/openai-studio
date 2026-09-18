@@ -24,6 +24,9 @@ let mainWindow = null;
 let closeRequestPending = false;
 let closeConfirmed = false;
 let appQuitPending = false;
+// A crashed renderer cannot drain work or answer a close request, so closes
+// complete immediately until a fresh document loads.
+let rendererGone = false;
 const backupFileManager = new BackupFileManager();
 
 const assertMainWindowSender = (event) => {
@@ -49,7 +52,7 @@ const finishWindowClose = (win) => {
 
 const requestWindowClose = (win) => {
   if (!win || win.isDestroyed() || closeConfirmed) return;
-  if (win.webContents.isDestroyed()) {
+  if (win.webContents.isDestroyed() || rendererGone) {
     finishWindowClose(win);
     return;
   }
@@ -58,6 +61,12 @@ const requestWindowClose = (win) => {
     closeRequestPending = true;
     win.webContents.send('window-close-requested');
   }
+};
+
+// The renderer can no longer run its close drain; a pending close completes
+// now instead of leaving a frameless window that only a process kill closes.
+const abandonRendererClose = (win) => {
+  if (closeRequestPending || appQuitPending) finishWindowClose(win);
 };
 
 const focusWindow = (win) => {
@@ -103,6 +112,14 @@ ipcMain.on('window-close-cancelled', (event) => {
 
   closeRequestPending = false;
   appQuitPending = false;
+});
+
+// A close requested before the renderer registered its listener (an early
+// Alt+F4 while the pre-loader showed) would otherwise be lost.
+ipcMain.on('window-close-listener-ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== mainWindow || closeConfirmed || !closeRequestPending) return;
+  win.webContents.send('window-close-requested');
 });
 
 ipcMain.handle('window-is-maximized', (event) => {
@@ -220,9 +237,26 @@ function createWindow() {
     closeRequestPending = false;
     closeConfirmed = false;
     appQuitPending = false;
+    rendererGone = false;
     if (mainWindow === win) {
       mainWindow = null;
     }
+  });
+
+  win.on('unresponsive', () => {
+    abandonRendererClose(win);
+  });
+  win.webContents.on('render-process-gone', () => {
+    rendererGone = true;
+    abandonRendererClose(win);
+  });
+  // A reload discards the in-flight request; the next close attempt sends a
+  // new one to the fresh document.
+  win.webContents.on('did-start-loading', () => {
+    rendererGone = false;
+    if (closeConfirmed) return;
+    closeRequestPending = false;
+    appQuitPending = false;
   });
 
   // Send maximize state changes to renderer

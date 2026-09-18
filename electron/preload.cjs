@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onCloseRequested: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('window-close-requested', listener);
+    // Lets the main process re-send a close it requested before this listener existed.
+    ipcRenderer.send('window-close-listener-ready');
     return () => ipcRenderer.removeListener('window-close-requested', listener);
   },
   chooseBackupDirectory: () => ipcRenderer.invoke('backup-choose-directory'),
