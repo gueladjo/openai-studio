@@ -297,7 +297,10 @@ function App() {
 
   // Replaced single boolean with a Set to track multiple active sessions
   const [processingSessionIds, setProcessingSessionIds] = useState<Set<string>>(new Set());
-  const processingSessionIdsRef = useRef<Set<string>>(new Set());
+  // Session ID -> ID of the response operation that owns its busy state, so a
+  // superseded send (for example one stopped while its attachments were still
+  // staging) cannot clear the flag of the send that replaced it.
+  const processingSessionIdsRef = useRef<Map<string, string>>(new Map());
   const activeRequestsRef = useRef<Map<string, ActiveChatRequest>>(new Map());
 
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -677,14 +680,19 @@ function App() {
     destructiveOperationQueueRef.current!.enqueue(operation, options)
   ), []);
 
-  const addProcessingSession = (sessionId: string) => {
-    processingSessionIdsRef.current.add(sessionId);
-    setProcessingSessionIds(new Set(processingSessionIdsRef.current));
+  const addProcessingSession = (sessionId: string, operationId: string) => {
+    processingSessionIdsRef.current.set(sessionId, operationId);
+    setProcessingSessionIds(new Set(processingSessionIdsRef.current.keys()));
   };
 
-  const removeProcessingSession = (sessionId: string) => {
+  // Without an operation ID the removal is unconditional (stop, invalidation).
+  const removeProcessingSession = (sessionId: string, operationId?: string) => {
+    const owner = processingSessionIdsRef.current.get(sessionId);
+    if (owner === undefined || (operationId !== undefined && owner !== operationId)) {
+      return;
+    }
     processingSessionIdsRef.current.delete(sessionId);
-    setProcessingSessionIds(new Set(processingSessionIdsRef.current));
+    setProcessingSessionIds(new Set(processingSessionIdsRef.current.keys()));
   };
 
   const isOperationCurrent = (
@@ -1837,7 +1845,7 @@ function App() {
       !currentSession?.messages.some(message => message.id === assistantMessageId)
     ) {
       operationRegistryRef.current.complete(operation);
-      removeProcessingSession(targetSessionId);
+      removeProcessingSession(targetSessionId, operation.id);
       return;
     }
 
@@ -2059,14 +2067,10 @@ function App() {
         );
       }
     } finally {
-      const activeRequest = activeRequestsRef.current.get(targetSessionId);
-
-      if (matchesActiveRequest(activeRequest)) {
+      if (matchesActiveRequest(activeRequestsRef.current.get(targetSessionId))) {
         activeRequestsRef.current.delete(targetSessionId);
-        removeProcessingSession(targetSessionId);
-      } else if (!activeRequest) {
-        removeProcessingSession(targetSessionId);
       }
+      removeProcessingSession(targetSessionId, operation.id);
       operationRegistryRef.current.complete(operation);
       if (
         !operationRegistryRef.current.getOperations()
@@ -2228,7 +2232,7 @@ function App() {
       kind: 'response',
       sessionId: targetSessionId
     });
-    addProcessingSession(targetSessionId);
+    addProcessingSession(targetSessionId, operation.id);
     let didStartResponse = false;
 
     try {
@@ -2310,7 +2314,7 @@ function App() {
     } finally {
       if (!didStartResponse) {
         operationRegistryRef.current.complete(operation);
-        removeProcessingSession(targetSessionId);
+        removeProcessingSession(targetSessionId, operation.id);
       }
     }
   };
@@ -2353,7 +2357,7 @@ function App() {
       sessionId: targetSessionId
     });
 
-    addProcessingSession(targetSessionId);
+    addProcessingSession(targetSessionId, operation.id);
     await launchAssistantTurn({
       operation,
       session,

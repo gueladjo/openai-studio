@@ -1,4 +1,4 @@
-import OpenAI, { APIConnectionError } from 'openai';
+import OpenAI, { APIConnectionError, APIUserAbortError } from 'openai';
 import type {
   Response as OpenAIResponse,
   ResponseCodeInterpreterToolCall,
@@ -1056,6 +1056,10 @@ const STREAM_RECONNECT_BASE_DELAY_MS = 1000;
  * most likely lost its connection without the browser raising an error.
  */
 const STREAM_STALL_THRESHOLD_MS = 5000;
+// A connection can also die without any error or page event (a NAT or proxy
+// timeout on a desktop). After this long without an event it is dropped
+// deliberately so the resume loop reconnects.
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 /**
  * A dropped or refused connection rather than an API decision. Browsers surface
@@ -1064,6 +1068,15 @@ const STREAM_STALL_THRESHOLD_MS = 5000;
  */
 const isConnectionFailure = (error: unknown): error is Error => (
   error instanceof TypeError || error instanceof APIConnectionError
+);
+
+/**
+ * The SDK rejects with `APIUserAbortError` (not a DOM `AbortError`) when a
+ * request's signal aborts before response headers arrive.
+ */
+const isAbortRejection = (error: unknown): boolean => (
+  (error instanceof Error && error.name === 'AbortError') ||
+  error instanceof APIUserAbortError
 );
 
 const delay = (ms: number, signal?: AbortSignal): Promise<void> => (
@@ -1476,6 +1489,13 @@ export const generateResponse = async (
   let activeConnection: AbortController | undefined;
   let lastEventAt = 0;
   let droppedDeliberately = false;
+  // A deliberate drop that lands before the resume request's headers arrive
+  // rejects with the SDK's abort error rather than ending the stream quietly;
+  // it must resume like any other connection loss. A user stop must not.
+  const isRetryableConnectionLoss = (error: unknown): error is Error => (
+    isConnectionFailure(error) ||
+    (droppedDeliberately && !options.signal?.aborted && isAbortRejection(error))
+  );
 
   // A page returning to the foreground with a silent stream has most likely
   // lost its connection without an error. Drop that connection so the loop
@@ -1494,6 +1514,26 @@ export const generateResponse = async (
     activeConnection.abort();
   };
   const unsubscribeFromPageReturn = subscribeToPageReturn(dropStalledConnection);
+  // One timeout re-armed by every event; a suspended page is left to the
+  // page-return handler above, and no timer is pending between connections.
+  let idleWatchdog: ReturnType<typeof setTimeout> | undefined;
+  const dropIdleConnection = () => {
+    if (
+      isPageSuspended() ||
+      !responseId ||
+      !activeConnection ||
+      Date.now() - lastEventAt < STREAM_IDLE_TIMEOUT_MS
+    ) {
+      return;
+    }
+
+    droppedDeliberately = true;
+    activeConnection.abort();
+  };
+  const armIdleWatchdog = () => {
+    clearTimeout(idleWatchdog);
+    idleWatchdog = setTimeout(dropIdleConnection, STREAM_IDLE_TIMEOUT_MS);
+  };
 
   try {
     const startTime = getMonotonicTime();
@@ -1573,6 +1613,7 @@ export const generateResponse = async (
     const consumeStream = async (
       eventStream: AsyncIterable<OpenAIResponsesStreamEvent>
     ): Promise<void> => {
+      armIdleWatchdog();
       for await (const event of eventStream) {
         if (options.signal?.aborted) {
           throw createAbortError();
@@ -1581,6 +1622,7 @@ export const generateResponse = async (
         if (!responseId) responseId = getEventResponseId(event);
         lastSequenceNumber = getEventSequenceNumber(event) ?? lastSequenceNumber;
         lastEventAt = Date.now();
+        armIdleWatchdog();
         reconnectAttempts = 0;
 
         if (
@@ -1629,9 +1671,10 @@ export const generateResponse = async (
     try {
       await consumeStream(stream);
     } catch (error) {
-      if (!isConnectionFailure(error)) throw error;
+      if (!isRetryableConnectionLoss(error)) throw error;
       lastFailure = error;
     } finally {
+      clearTimeout(idleWatchdog);
       activeConnection = undefined;
       initialConnection.unlink();
     }
@@ -1672,9 +1715,10 @@ export const generateResponse = async (
           { signal: connection.controller.signal }
         ));
       } catch (error) {
-        if (!isConnectionFailure(error)) throw error;
+        if (!isRetryableConnectionLoss(error)) throw error;
         lastFailure = error;
       } finally {
+        clearTimeout(idleWatchdog);
         activeConnection = undefined;
         connection.unlink();
       }
@@ -1700,7 +1744,7 @@ export const generateResponse = async (
       options.projectContext
     );
   } catch (error: unknown) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (isAbortRejection(error) || options.signal?.aborted) {
       // Stopping only closes the local stream; the background response keeps
       // running and billing until it is cancelled remotely.
       if (responseId) {
@@ -1708,13 +1752,16 @@ export const generateResponse = async (
           console.warn('Failed to cancel the stopped OpenAI response.', cancelError);
         });
       }
-      throw error;
+      throw error instanceof Error && error.name === 'AbortError'
+        ? error
+        : createAbortError();
     }
 
     console.error('OpenAI API Error:', error);
     if (error instanceof Error) throw error;
     throw new OpenAIServiceError(getOpenAIErrorDetails(error));
   } finally {
+    clearTimeout(idleWatchdog);
     unsubscribeFromPageReturn();
   }
 };

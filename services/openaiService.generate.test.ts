@@ -32,6 +32,11 @@ vi.mock('openai', () => ({
       super(message);
     }
   },
+  APIUserAbortError: class APIUserAbortError extends Error {
+    constructor({ message }: { message?: string } = {}) {
+      super(message || 'Request was aborted.');
+    }
+  },
   default: class MockOpenAI {
     constructor(options: unknown) {
       openAIConstructorMock(options);
@@ -53,7 +58,7 @@ vi.mock('openai', () => ({
   }
 }));
 
-import { APIConnectionError } from 'openai';
+import { APIConnectionError, APIUserAbortError } from 'openai';
 import {
   fetchGeneratedFileContent,
   generateChatTitle,
@@ -1668,6 +1673,90 @@ describe('background stream resumption', () => {
       expect.objectContaining({ stream: true, starting_after: 1 }),
       expect.anything()
     );
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
+  /** Rejects like the SDK when the request signal aborts before headers arrive. */
+  const rejectOnAbort = (
+    _id: string,
+    _params: unknown,
+    requestOptions: { signal: AbortSignal }
+  ) => new Promise<never>((_resolve, reject) => {
+    requestOptions.signal.addEventListener('abort', () => {
+      reject(new APIUserAbortError());
+    }, { once: true });
+  });
+
+  it('resumes again when a stall drop aborts the resume request before its headers', async () => {
+    const fakeDocument = stubVisiblePage();
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent, textDelta(1, 'The ')],
+      new TypeError('network error')
+    ));
+    retrieveResponseMock
+      .mockImplementationOnce(rejectOnAbort)
+      .mockResolvedValueOnce(createStream([
+        textDelta(2, 'answer is 42.'),
+        completedEvent(3)
+      ]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+
+    fakeDocument.dispatchEvent(new Event('visibilitychange'));
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(2);
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels the background response when a stop aborts the resume request', async () => {
+    const controller = new AbortController();
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent],
+      new TypeError('network error')
+    ));
+    retrieveResponseMock.mockImplementation(rejectOnAbort);
+    cancelResponseMock.mockResolvedValue({});
+
+    const pending = generateResponse(
+      [userMessage],
+      DEFAULT_CONFIG,
+      'stop-key',
+      undefined,
+      { signal: controller.signal }
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancelResponseMock).toHaveBeenCalledWith('resp-background');
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a connection that stays silent past the idle timeout and resumes it', async () => {
+    stubVisiblePage();
+    createResponseMock.mockImplementation((
+      _payload: unknown,
+      requestOptions: { signal?: AbortSignal }
+    ) => createIdleStream([createdEvent, textDelta(1, 'The ')], requestOptions.signal));
+    retrieveResponseMock.mockResolvedValue(createStream([
+      textDelta(2, 'answer is 42.'),
+      completedEvent(3)
+    ]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(retrieveResponseMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
     expect(cancelResponseMock).not.toHaveBeenCalled();
   });
 

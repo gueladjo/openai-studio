@@ -52,6 +52,27 @@ const remoteFile = (
   ...(fields.lastError === undefined ? {} : { lastError: fields.lastError.slice(0, 4096) })
 });
 
+// A vector store deleted server-side leaves its project disconnected with no
+// usage; the listed files must be re-added before they are searchable again.
+const disconnectMissingVectorStore = (
+  index: ProjectRemoteIndex,
+  sourceIds: string[]
+): void => {
+  index.status = 'disconnected';
+  delete index.vectorStoreId;
+  index.usageBytes = 0;
+  index.lastVerifiedAt = Date.now();
+  sourceIds.forEach(sourceId => {
+    const file = index.files[sourceId];
+    if (!file) return;
+    index.files[sourceId] = remoteFile(sourceId, 'failed', {
+      openaiFileId: file.openaiFileId,
+      indexedUsageBytes: file.indexedUsageBytes,
+      lastError: 'The project search index is unavailable; retry this source.'
+    });
+  });
+};
+
 export const classifyProjectSourceError = (
   error: unknown
 ): ProjectSourceServiceError => {
@@ -240,10 +261,17 @@ export class ProjectSourceService {
     const next = cloneState(state);
     for (const index of Object.values(next.indexes)) {
       if (index.apiKeyFingerprint !== apiKeyFingerprint || !index.vectorStoreId) continue;
-      const vectorStore = await this.client.vectorStores.retrieve(index.vectorStoreId);
-      index.usageBytes = vectorStore.usage_bytes;
-      index.lastVerifiedAt = Date.now();
-      index.status = vectorStore.status === 'completed' ? 'ready' : 'creating';
+      try {
+        const vectorStore = await this.client.vectorStores.retrieve(index.vectorStoreId);
+        index.usageBytes = vectorStore.usage_bytes;
+        index.lastVerifiedAt = Date.now();
+        index.status = vectorStore.status === 'completed' ? 'ready' : 'creating';
+      } catch (error) {
+        // A store that no longer exists (typically another project's) must not
+        // fail this ingestion; it counts no usage until its sources are re-added.
+        if (classifyProjectSourceError(error).status !== 404) throw error;
+        disconnectMissingVectorStore(index, Object.keys(index.files));
+      }
     }
     return this.publish(next, persist);
   }
@@ -490,22 +518,15 @@ export class ProjectSourceService {
           index.status = vectorStore.status === 'completed' ? 'ready' : 'creating';
           index.lastVerifiedAt = Date.now();
         } catch (error) {
-          const classified = classifyProjectSourceError(error);
-          index.status = classified.status === 404 ? 'disconnected' : 'failed';
-          if (classified.status === 404) {
-            delete index.vectorStoreId;
-            index.usageBytes = 0;
-            project.sources
-              .filter(source => source.capability === 'file_search')
-              .forEach(source => {
-                const file = index.files[source.id];
-                if (!file) return;
-                index.files[source.id] = remoteFile(source.id, 'failed', {
-                  openaiFileId: file.openaiFileId,
-                  indexedUsageBytes: file.indexedUsageBytes,
-                  lastError: 'The project search index is unavailable; retry this source.'
-                });
-              });
+          if (classifyProjectSourceError(error).status === 404) {
+            disconnectMissingVectorStore(
+              index,
+              project.sources
+                .filter(source => source.capability === 'file_search')
+                .map(source => source.id)
+            );
+          } else {
+            index.status = 'failed';
           }
         }
       }

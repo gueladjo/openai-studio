@@ -203,6 +203,30 @@ describe('project source service', () => {
     });
   });
 
+  it('ingests when another project\'s vector store no longer exists', async () => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockImplementation(async id => {
+      if (id === 'vector-other') {
+        throw { status: 404, message: 'No vector store found with id vector-other.' };
+      }
+      return { id, status: 'completed', usage_bytes: 100 };
+    });
+    const state = createInterruptedState();
+    state.indexes[project.id].files = {};
+    const service = new ProjectSourceService('key', client as never);
+
+    const next = await service.ingestSource({
+      project, source, blob: new Blob(['notes']), state,
+      apiKeyFingerprint: fingerprint, persist: async () => undefined
+    });
+
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({
+      status: 'ready', openaiFileId: 'file-new'
+    });
+    expect(next.indexes['other-project']).toMatchObject({ status: 'disconnected', usageBytes: 0 });
+    expect(next.indexes['other-project'].vectorStoreId).toBeUndefined();
+  });
+
   it('creates one lazy vector store and durably advances a searchable source to ready', async () => {
     const client = createClient();
     const persist = vi.fn(async () => undefined);

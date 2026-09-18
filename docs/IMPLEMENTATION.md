@@ -60,7 +60,10 @@ One request may run per session. Requests in different sessions may run at the
 same time, and completion is routed back to the originating session even if the
 user selects another chat. A response can be stopped, a failed turn can be
 retried, and the latest answer can be regenerated. Stop retains the available
-partial output with `stopped` status. A dropped connection, including a mobile
+partial output with `stopped` status. A chat's busy state belongs to the
+response operation that set it, so a send stopped while its attachments were
+still staging can neither start a response nor clear the busy state of the
+send that replaced it. A dropped connection, including a mobile
 page suspended by the OS while a response streams, resumes the same response
 once the page is visible and online again instead of failing the turn, whether
 or not the browser reports the drop. Stream
@@ -508,6 +511,13 @@ The streamed lifecycle is:
    online while no event has arrived for five seconds, the current connection
    is dropped deliberately and resumed the same way after the base delay,
    because a suspended mobile page can lose its connection without an error.
+   An open connection that delivers no event for two minutes is likewise
+   dropped deliberately so a silently dead connection resumes without waiting
+   for a page event. Aborting the resume
+   request before its headers arrive rejects with the SDK's
+   `APIUserAbortError`; after a deliberate drop that rejection resumes like a
+   connection loss, while after a stop it is treated as the abort and cancels
+   the background response.
    Consecutive reconnects without any received event are limited to five; a
    received event resets that count and deliberate drops do not consume it.
    Failures before the response ID is known, HTTP API errors, and stream
@@ -902,7 +912,7 @@ must change whenever these behaviors change.
 | Workspace load or complete-generation validation fails | Do not enable writes or replace data with defaults; report the load error. |
 | Save fails | Keep the newest queued version, retry on the bounded schedule, and expose persistent failure state. |
 | Writer revision becomes stale | Reject the write and reload/coordinate instead of overwriting. |
-| Response is stopped or stream fails | Resume a dropped background stream from its last event while the request is still owned; otherwise retain useful partial output, clear request ownership at the correct boundary, and ignore late events. |
+| Response is stopped or stream fails | Resume a dropped or silent background stream from its last event while the request is still owned; otherwise retain useful partial output, cancel the background response on stop, clear request ownership at the correct boundary, and ignore late events. |
 | Persisted request is interrupted by restart | Mark it failed and retryable in the writer tab while preserving its historical model name. |
 | Optional API capability is rejected | Retry only the explicitly supported safe fallback; do not retry ambiguous failures. |
 | Expected project source context is unavailable | Block the request unless the user explicitly overrides one request; keep project instructions. |
@@ -952,7 +962,9 @@ browser/PWA, native Electron, or real file-picker behavior.
 - Portable archives are unencrypted and can expose conversation and file data.
 - The installed PWA shell does not make model requests work offline.
 - A dropped response stream resumes only within the running page; a reload or
-  a discarded PWA process still marks the request failed.
+  a discarded PWA process still marks the request failed. The persisted pending
+  request stores no response ID, so that orphaned background response can be
+  neither cancelled nor resumed and runs to completion on OpenAI's side.
 - Browser workspaces are origin-scoped, and automatic folder backup depends on
   File System Access support and renewed permission.
 - Remote generated files can expire before local caching succeeds.

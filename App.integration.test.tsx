@@ -28,6 +28,7 @@ import {
 
 interface CapturedChatAreaProps {
   session: Session | null;
+  isLoading: boolean;
   onSendMessage: (
     sessionId: string,
     content: string,
@@ -1252,6 +1253,57 @@ describe('App workspace and request lifecycle', () => {
       status: 'error',
       modelName: 'GPT-6 Astra'
     });
+  });
+
+  it('keeps a newer send owned when a stopped send finishes staging its attachments', async () => {
+    const staging = createDeferred<{ sha256: string; byteSize: number; mimeType: string }>();
+    mocks.storeAttachment.mockReturnValueOnce(staging.promise);
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    let firstSend: Promise<boolean> = Promise.resolve(true);
+    await act(async () => {
+      firstSend = getChatAreaProps().onSendMessage(
+        'session-a',
+        'With an attachment.',
+        [new File(['notes'], 'notes.txt', { type: 'text/plain' })]
+      );
+    });
+    expect(getChatAreaProps().isLoading).toBe(true);
+    await act(async () => {
+      getChatAreaProps().onStopGenerating();
+    });
+    expect(getChatAreaProps().isLoading).toBe(false);
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Second send.', []);
+    });
+    expect(mocks.generateResponse).toHaveBeenCalledTimes(1);
+    const options = getGenerateOptions();
+
+    await act(async () => {
+      staging.resolve({ sha256: 'a'.repeat(64), byteSize: 5, mimeType: 'text/plain' });
+    });
+    await flushMicrotasks();
+
+    await expect(firstSend).resolves.toBe(false);
+    expect(getChatAreaProps().isLoading).toBe(true);
+    expect(options.signal?.aborted).toBe(false);
+    await expect(getChatAreaProps().onSendMessage('session-a', 'Third send.', []))
+      .resolves.toBe(false);
+    expect(mocks.generateResponse).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      response.resolve(completedResult('Second answer.'));
+    });
+    await flushMicrotasks();
+    expect(getChatAreaProps().isLoading).toBe(false);
+    expect(getSidebarProps().sessions.find(session => session.id === 'session-a')?.messages)
+      .toHaveLength(2);
   });
 
   it('stops a response with its unflushed partial output and ignores late completion', async () => {
