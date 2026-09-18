@@ -21,6 +21,7 @@ import {
   validateWorkspaceReferences
 } from './workspaceSchema';
 import {
+  clearValidatedWorkspaceGenerations,
   ValidWorkspaceGeneration,
   WorkspaceGenerationData,
   WorkspaceGenerationStore
@@ -118,6 +119,7 @@ const initializeOpfsStorage = async (
   workspaceStorageReadOnly = Boolean(options.readOnly);
   workspaceRevision = null;
   workspaceGenerationCache = null;
+  clearValidatedWorkspaceGenerations();
   opfsDataDir = dataDir;
   return dataDir;
 };
@@ -331,9 +333,12 @@ const readPersistedWorkspaceRevision = async (
   return generation.manifest.revision;
 };
 
+// Resynchronization is the load and cross-tab reconciliation path, so it
+// re-verifies every generation's content instead of trusting the cache.
 export const synchronizeWorkspaceRevision = async (
   dirHandle: FileSystemDirectoryHandle
 ): Promise<number> => {
+  clearValidatedWorkspaceGenerations();
   workspaceRevision = await readPersistedWorkspaceRevision(dirHandle);
   return workspaceRevision;
 };

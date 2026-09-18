@@ -397,6 +397,23 @@ describe('workspace merge planning', () => {
     expect(plan.importedBlobHashes.size).toBe(0);
   });
 
+  it('rejects a remapped project whose suffixed name exceeds the limit during planning', () => {
+    const localProject = createProject('project-shared', 'source-local', 'a'.repeat(64));
+    const importedProject = {
+      ...createProject('project-shared', 'source-imported', 'b'.repeat(64), 'Different context.'),
+      name: 'n'.repeat(4096)
+    };
+
+    expect(() => createWorkspaceMergePlan({
+      ...currentWorkspace([]),
+      projects: [localProject],
+      projectRemoteState: { indexes: {}, cleanupTombstones: [] }
+    }, {
+      ...importedWorkspace([]),
+      projects: [importedProject]
+    })).toThrow(/name/);
+  });
+
   it('rejects a merged workspace that exceeds the session limit', () => {
     const localSessions = Array.from(
       { length: 10_000 },

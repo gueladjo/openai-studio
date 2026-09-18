@@ -18,6 +18,17 @@ import {
 
 export type WorkspaceRecoveryAction = 'restore' | 'merge';
 
+// A File obtained from an OPFS handle becomes unreadable once that path is
+// overwritten (Chromium raises NotReadableError), so the previous recovery
+// archive is copied into memory before the new one replaces it. Larger
+// archives keep the live reference and best-effort rollback.
+const MAX_DETACHED_RECOVERY_BYTES = 512 * 1024 * 1024;
+
+const detachRecoveryArchive = async (archive: Blob | null): Promise<Blob | null> => {
+  if (!archive || archive.size > MAX_DETACHED_RECOVERY_BYTES) return archive;
+  return new Blob([await archive.arrayBuffer()], { type: archive.type });
+};
+
 export interface RestoreWorkspaceResult {
   restored: BackupArchivePreview;
   recovery: BackupArchivePreview;
@@ -55,7 +66,9 @@ export const runWithVerifiedWorkspaceRecovery = async <T>(
 ): Promise<{ result: T; recovery: BackupArchivePreview }> => {
   let previousArchive: Blob | null;
   try {
-    previousArchive = await readInternalRecoveryArchive(dirHandle);
+    previousArchive = await detachRecoveryArchive(
+      await readInternalRecoveryArchive(dirHandle)
+    );
   } catch (error) {
     current.release?.();
     throw error;

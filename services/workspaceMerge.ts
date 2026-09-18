@@ -12,6 +12,7 @@ import {
   WorkspaceSnapshot
 } from './storage';
 import {
+  parseProjects,
   parseStoredSessions,
   parseSystemInstructions,
   validateWorkspaceReferences
@@ -403,6 +404,8 @@ export const createWorkspaceMergePlan = (
 
   parseStoredSessions(sessions);
   parseSystemInstructions(instructions);
+  // Suffixed names and appended projects must fail here, not at commit.
+  parseProjects(projects);
   validateWorkspaceReferences({
     sessions,
     settings: current.settings,

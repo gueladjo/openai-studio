@@ -131,6 +131,14 @@ describe('workspace runtime schema', () => {
     );
   });
 
+  it('rejects IDs that would resolve to inherited object members', () => {
+    expect(() => parseProjects([projectFixture({ id: 'constructor' })]))
+      .toThrow('uses a reserved name');
+    const reservedSession = createBackup();
+    reservedSession.sessions[0].id = 'toString';
+    expect(() => parseWorkspace(reservedSession)).toThrow('uses a reserved name');
+  });
+
   it('rejects duplicate IDs and invalid pending-request references', () => {
     const duplicateSessions = createBackup();
     duplicateSessions.sessions.push(createSession());

@@ -379,6 +379,62 @@ describe('portable workspace archive', () => {
     )).toEqual([]);
   });
 
+  it('rejects an archive declaring too many entries before materializing them', async () => {
+    const declaredEntries = 100_001;
+    const localHeader = new Uint8Array(31);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(26, 1, true);
+    localHeader[30] = 0x61;
+
+    const centralHeader = new Uint8Array(47);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(28, 1, true);
+    centralHeader[46] = 0x61;
+    const directory = new Uint8Array(centralHeader.length * declaredEntries);
+    for (let index = 0; index < declaredEntries; index += 1) {
+      directory.set(centralHeader, index * centralHeader.length);
+    }
+
+    const directoryOffset = localHeader.length;
+    const zip64Record = new Uint8Array(56);
+    const zip64View = new DataView(zip64Record.buffer);
+    zip64View.setUint32(0, 0x06064b50, true);
+    zip64View.setBigUint64(4, 44n, true);
+    zip64View.setUint16(12, 45, true);
+    zip64View.setUint16(14, 45, true);
+    zip64View.setBigUint64(24, BigInt(declaredEntries), true);
+    zip64View.setBigUint64(32, BigInt(declaredEntries), true);
+    zip64View.setBigUint64(40, BigInt(directory.length), true);
+    zip64View.setBigUint64(48, BigInt(directoryOffset), true);
+
+    const zip64Locator = new Uint8Array(20);
+    const locatorView = new DataView(zip64Locator.buffer);
+    locatorView.setUint32(0, 0x07064b50, true);
+    locatorView.setBigUint64(8, BigInt(directoryOffset + directory.length), true);
+    locatorView.setUint32(16, 1, true);
+
+    const endRecord = new Uint8Array(22);
+    const endView = new DataView(endRecord.buffer);
+    endView.setUint32(0, 0x06054b50, true);
+    endView.setUint16(8, 0xffff, true);
+    endView.setUint16(10, 0xffff, true);
+    endView.setUint32(12, 0xffffffff, true);
+    endView.setUint32(16, 0xffffffff, true);
+
+    const archive = new Blob(
+      [localHeader, directory, zip64Record, zip64Locator, endRecord],
+      { type: 'application/zip' }
+    );
+
+    await expect(inspectWorkspaceArchive(archive))
+      .rejects.toThrow('The ZIP declares too many entries.');
+  });
+
   it('rejects a truncated archive before exposing a restore source', async () => {
     const archive = await createWorkspaceArchive(snapshot, { reason: 'manual' });
     const truncated = archive.slice(0, archive.size - 20, 'application/zip');

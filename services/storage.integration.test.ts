@@ -9,14 +9,26 @@ import type {
 } from '../types';
 import { sha256Blob } from './contentAddressing';
 
+vi.mock('./contentAddressing', async importOriginal => {
+  const actual = await importOriginal<typeof import('./contentAddressing')>();
+  return { ...actual, sha256Blob: vi.fn(actual.sha256Blob) };
+});
+
 const notFound = (name: string): DOMException => (
   new DOMException(`${name} was not found.`, 'NotFoundError')
+);
+
+// Mirrors Chromium: a File obtained from a handle can no longer be read once
+// the underlying file has been overwritten, and writing a Blob consumes it.
+const notReadable = (): DOMException => (
+  new DOMException('The file changed after its handle was read.', 'NotReadableError')
 );
 
 class MemoryFileHandle {
   readonly kind = 'file';
   private data = new Blob();
   private lastModified = Date.now();
+  private version = 0;
 
   constructor(
     readonly name: string,
@@ -25,10 +37,22 @@ class MemoryFileHandle {
   ) {}
 
   async getFile(): Promise<File> {
-    return new File([this.data], this.name, {
+    const file = new File([this.data], this.name, {
       type: this.data.type,
       lastModified: this.lastModified
     });
+    const version = this.version;
+    for (const method of ['arrayBuffer', 'bytes', 'text', 'stream', 'slice'] as const) {
+      const original = (file as unknown as Record<string, (...args: unknown[]) => unknown>)[method];
+      if (typeof original !== 'function') continue;
+      Object.defineProperty(file, method, {
+        value: (...args: unknown[]) => {
+          if (this.version !== version) throw notReadable();
+          return original.apply(file, args);
+        }
+      });
+    }
+    return file;
   }
 
   async createWritable() {
@@ -38,7 +62,7 @@ class MemoryFileHandle {
       write: async (value: unknown): Promise<void> => {
         this.fileSystem.assertWriteAllowed(this.path);
         if (value instanceof Blob) {
-          nextData = value;
+          nextData = new Blob([await value.arrayBuffer()], { type: value.type });
         } else if (
           typeof value === 'string' ||
           value instanceof ArrayBuffer ||
@@ -52,6 +76,7 @@ class MemoryFileHandle {
       close: async (): Promise<void> => {
         this.data = this.fileSystem.applyWrite(this.path, nextData);
         this.lastModified = Date.now();
+        this.version += 1;
       }
     };
   }
@@ -657,6 +682,29 @@ describe('storage public contracts', () => {
     expect(manifestA.sessions[0].sha256).toBe(manifestB.sessions[0].sha256);
     const objects = await fileSystem.getDirectory('data/objects');
     expect(objects.names().length).toBeLessThanOrEqual(6);
+  });
+
+  it('does not re-hash already verified blobs on unrelated saves', async () => {
+    const bytes = new Blob(['attachment bytes that must not be re-hashed'], {
+      type: 'text/plain'
+    });
+    const localBlob = await storage.storeLocalBlob(handle, bytes, 'text/plain');
+    await seedWorkspace([createSession('Attached', [{
+      localBlob,
+      name: 'notes.txt',
+      type: 'text/plain',
+      size: bytes.size
+    }])]);
+    const { sha256Blob: hashBlob } = await import('./contentAddressing');
+    vi.mocked(hashBlob).mockClear();
+
+    await writeField('settings', { theme: 'light', apiKey: 'unrelated-change' });
+    await writeField('settings', { theme: 'dark', apiKey: 'another-change' });
+
+    expect(hashBlob).not.toHaveBeenCalled();
+    await expect(readField('sessions')).resolves.toMatchObject([{
+      messages: [{ attachments: [{ localBlob }] }]
+    }]);
   });
 
   it.each(['truncated', 'empty', 'substituted'])(

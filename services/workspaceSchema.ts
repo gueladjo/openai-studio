@@ -37,6 +37,9 @@ const MAX_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_TIMESTAMP = 8_640_000_000_000_000;
 
 const LOCAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+// Registries key plain objects by ID; these names would resolve to inherited
+// prototype members instead of stored records.
+const RESERVED_LOCAL_IDS = new Set(Object.getOwnPropertyNames(Object.prototype));
 
 const MESSAGE_STATUSES = new Set(['streaming', 'complete', 'incomplete', 'error', 'stopped']);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
@@ -123,6 +126,7 @@ const assertOptionalString = (
 const assertLocalId = (value: unknown, path: string): string => {
   const id = assertString(value, path, MAX_IDENTIFIER_LENGTH, false);
   if (!LOCAL_ID_PATTERN.test(id)) fail(path, 'contains unsupported characters');
+  if (RESERVED_LOCAL_IDS.has(id)) fail(path, 'uses a reserved name');
   return id;
 };
 

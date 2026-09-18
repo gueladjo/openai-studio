@@ -67,6 +67,19 @@ const pinnedBlobHashes = new Map<string, number>();
 const stagedBlobHashes = new Map<string, number>();
 const STAGED_BLOB_RETENTION_MS = 60 * 60 * 1000;
 
+// Generations are content-addressed, so a manifest whose bytes have not changed
+// since it was last fully validated still describes verified content. Caching
+// by manifest text keeps startup and cross-tab updates fully verified while a
+// routine save no longer re-hashes every blob in the workspace several times.
+const validatedGenerations = new Map<
+  WorkspaceManifestSlot,
+  { text: string; generation: ValidWorkspaceGeneration }
+>();
+
+export const clearValidatedWorkspaceGenerations = (): void => {
+  validatedGenerations.clear();
+};
+
 const addPins = (target: Map<string, number>, hashes: Iterable<string>): void => {
   for (const hash of hashes) target.set(hash, (target.get(hash) || 0) + 1);
 };
@@ -126,51 +139,40 @@ export class WorkspaceGenerationStore {
     return records.some(text => text !== null);
   }
 
-  async readValidGenerations(): Promise<ValidWorkspaceGeneration[]> {
-    const results = await Promise.all(WORKSPACE_MANIFEST_SLOTS.map(async slot => {
-      const text = await this.adapter.readText(slot);
-      if (text === null) return null;
-
-      try {
-        const manifest = parseWorkspaceGenerationManifest(text, slot);
-        return await this.validateGeneration(slot, manifest);
-      } catch (error) {
-        console.warn(`Ignored incomplete workspace generation ${slot}.`, error);
-        return null;
-      }
-    }));
-
-    return results
-      .filter((result): result is ValidWorkspaceGeneration => result !== null)
-      .sort((left, right) => right.manifest.revision - left.manifest.revision);
-  }
-
-  async readCurrent(): Promise<ValidWorkspaceGeneration | null> {
+  // Parses every manifest slot that is syntactically usable without verifying
+  // its referenced content; garbage collection retains from all of them.
+  private async readManifests(): Promise<Array<{
+    slot: WorkspaceManifestSlot;
+    text: string;
+    manifest: WorkspaceGenerationManifest;
+  }>> {
     const records = await Promise.all(
       WORKSPACE_MANIFEST_SLOTS.map(async slot => ({
         slot,
         text: await this.adapter.readText(slot)
       }))
     );
-
-    const candidates: Array<{
+    const manifests: Array<{
       slot: WorkspaceManifestSlot;
+      text: string;
       manifest: WorkspaceGenerationManifest;
     }> = [];
     for (const { slot, text } of records) {
       if (text === null) continue;
       try {
-        candidates.push({ slot, manifest: parseWorkspaceGenerationManifest(text, slot) });
+        manifests.push({ slot, text, manifest: parseWorkspaceGenerationManifest(text, slot) });
       } catch (error) {
         console.warn(`Ignored incomplete workspace generation ${slot}.`, error);
       }
     }
-    candidates.sort((left, right) => right.manifest.revision - left.manifest.revision);
+    return manifests.sort((left, right) => right.manifest.revision - left.manifest.revision);
+  }
 
+  async readCurrent(): Promise<ValidWorkspaceGeneration | null> {
     // Validate the newest generation first and stop at the first complete one.
-    for (const { slot, manifest } of candidates) {
+    for (const { slot, text, manifest } of await this.readManifests()) {
       try {
-        return await this.validateGeneration(slot, manifest);
+        return await this.validateGeneration(slot, manifest, text);
       } catch (error) {
         console.warn(`Ignored incomplete workspace generation ${slot}.`, error);
       }
@@ -248,7 +250,13 @@ export class WorkspaceGenerationStore {
       this.writeObject(projectRemoteState, projectRemoteStateText)
     ]);
 
+    // Blobs the validated current generation already references were verified
+    // with it; only newly referenced blobs need their bytes hashed now.
+    const verifiedBlobs = new Set(
+      current?.manifest.blobs.map(reference => `${reference.sha256}:${reference.byteLength}`)
+    );
     for (const reference of blobReferences) {
+      if (verifiedBlobs.has(`${reference.sha256}:${reference.byteLength}`)) continue;
       const path = getBlobPath(reference);
       const blob = await this.adapter.readBlob(path);
       if (!blob) {
@@ -293,7 +301,9 @@ export class WorkspaceGenerationStore {
 
     const verified = await this.validateGeneration(
       nextSlot,
-      parseWorkspaceGenerationManifest(storedManifestText, nextSlot)
+      parseWorkspaceGenerationManifest(storedManifestText, nextSlot),
+      storedManifestText,
+      new Set(blobReferences.map(reference => reference.sha256))
     );
     manifest.blobs.forEach(reference => {
       stagedBlobHashes.delete(reference.sha256);
@@ -317,6 +327,9 @@ export class WorkspaceGenerationStore {
       ...(mimeType ? { mimeType } : {})
     };
     const path = getBlobPath(reference);
+    // Registered before any bytes land so a concurrent save's garbage
+    // collection cannot delete the blob between its write and its read-back.
+    stagedBlobHashes.set(reference.sha256, Date.now());
     const existing = await this.adapter.readBlob(path);
 
     if (existing) {
@@ -328,7 +341,6 @@ export class WorkspaceGenerationStore {
           `Content-addressed blob ${reference.sha256} is corrupt.`
         );
       }
-      stagedBlobHashes.set(reference.sha256, Date.now());
       return reference;
     }
 
@@ -343,7 +355,6 @@ export class WorkspaceGenerationStore {
         `Content-addressed blob ${reference.sha256} could not be verified.`
       );
     }
-    stagedBlobHashes.set(reference.sha256, Date.now());
     return reference;
   }
 
@@ -394,7 +405,26 @@ export class WorkspaceGenerationStore {
 
   private async validateGeneration(
     slot: WorkspaceManifestSlot,
-    manifest: WorkspaceGenerationManifest
+    manifest: WorkspaceGenerationManifest,
+    manifestText: string,
+    verifiedBlobHashes: ReadonlySet<string> = new Set()
+  ): Promise<ValidWorkspaceGeneration> {
+    const cached = validatedGenerations.get(slot);
+    if (cached && cached.text === manifestText) return cached.generation;
+    validatedGenerations.delete(slot);
+    const generation = await this.validateGenerationContent(
+      slot,
+      manifest,
+      verifiedBlobHashes
+    );
+    validatedGenerations.set(slot, { text: manifestText, generation });
+    return generation;
+  }
+
+  private async validateGenerationContent(
+    slot: WorkspaceManifestSlot,
+    manifest: WorkspaceGenerationManifest,
+    verifiedBlobHashes: ReadonlySet<string>
   ): Promise<ValidWorkspaceGeneration> {
     const settingsPath = getObjectPath(manifest.settings);
     const instructionsPath = getObjectPath(manifest.instructions);
@@ -488,7 +518,11 @@ export class WorkspaceGenerationStore {
       if (!blob) {
         throw new WorkspaceGenerationError(`Referenced blob ${hash} is missing.`);
       }
-      if (blob.size !== declared.byteLength || await sha256Blob(blob) !== hash) {
+      if (blob.size !== declared.byteLength) {
+        throw new WorkspaceGenerationError(`Referenced blob ${hash} is corrupt.`);
+      }
+      if (verifiedBlobHashes.has(hash)) return;
+      if (await sha256Blob(blob) !== hash) {
         throw new WorkspaceGenerationError(`Referenced blob ${hash} is corrupt.`);
       }
     }));
@@ -505,14 +539,16 @@ export class WorkspaceGenerationStore {
   }
 
   private async garbageCollect(): Promise<void> {
-    const valid = await this.readValidGenerations();
+    // Every parseable manifest keeps its content, verified or not, so cleanup
+    // never needs to re-read objects or re-hash blobs.
+    const manifests = await this.readManifests();
     const retainedObjects = new Set<string>();
     const retainedBlobs = new Set<string>();
-    valid.slice(0, 2).forEach(generation => {
-      collectManifestObjectHashes(generation.manifest).forEach(hash => {
+    manifests.forEach(({ manifest }) => {
+      collectManifestObjectHashes(manifest).forEach(hash => {
         retainedObjects.add(`${WORKSPACE_OBJECT_PREFIX}${hash}.json`);
       });
-      collectManifestBlobHashes(generation.manifest).forEach(hash => {
+      collectManifestBlobHashes(manifest).forEach(hash => {
         retainedBlobs.add(`${WORKSPACE_BLOB_PREFIX}${hash}`);
       });
     });

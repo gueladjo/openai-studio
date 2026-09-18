@@ -590,8 +590,27 @@ export const inspectWorkspaceArchive = async (
     strictness: 'strict'
   });
   try {
-    const entries = await reader.getEntries({ strictness: 'strict' });
-    if (entries.length === 0 || entries.length > MAX_BACKUP_ARCHIVE_ENTRIES) {
+    // Entries are materialized one at a time so a crafted central directory
+    // with millions of records is rejected from its declared count instead of
+    // exhausting memory first.
+    let declaredEntryCount = 0;
+    const entries: Entry[] = [];
+    const entryGenerator = reader.getEntriesGenerator({
+      strictness: 'strict',
+      onprogress: (_index, total) => {
+        declaredEntryCount = Number(total);
+      }
+    });
+    for await (const entry of entryGenerator) {
+      if (
+        declaredEntryCount > MAX_BACKUP_ARCHIVE_ENTRIES ||
+        entries.length >= MAX_BACKUP_ARCHIVE_ENTRIES
+      ) {
+        throw new BackupArchiveError('The ZIP declares too many entries.');
+      }
+      entries.push(entry);
+    }
+    if (entries.length === 0) {
       throw new BackupArchiveError('The ZIP entry count is invalid.');
     }
     const byPath = new Map<string, Entry>();

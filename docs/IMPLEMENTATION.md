@@ -586,7 +586,8 @@ attachments remain valid. Transient API-input data URLs and runtime object URLs
 are never persisted and are rejected if found in stored sessions or archives.
 
 `services/workspaceSchema.ts` rejects unknown keys, unsupported enum values,
-invalid or duplicate IDs, oversized collections or text, malformed local-blob
+invalid or duplicate IDs (including `Object.prototype` member names such as
+`constructor`, which plain-object registries could not key), oversized collections or text, malformed local-blob
 metadata, invalid pending-request links, and dangling session, instruction,
 project, source, or live remote-registry references. TypeScript types alone are
 not a persistence boundary.
@@ -628,12 +629,20 @@ manifests are unusable, loading fails instead of publishing defaults.
 A save verifies new objects and blobs before publishing the alternate manifest
 slot, reads that slot back and requires its exact serialized bytes to match,
 parses and validates the persisted generation, and only then garbage-collects.
+A generation whose manifest bytes are unchanged since it was last fully
+validated in this tab is trusted without re-hashing its blobs; full content
+verification runs at load and on every revision resynchronization, whenever a
+manifest's bytes change (including cross-tab updates), and for every blob a
+save newly references. Garbage
+collection parses both manifests without re-reading their contents.
 A missing, truncated, or substituted manifest rejects the save without advancing
 the facade revision or collecting objects; the preceding complete generation
 remains available for recovery and retry.
-Unchanged content-addressed objects are reused. Garbage collection retains both
-valid manifests, staged bytes awaiting publication, and content pinned by an
-active `readWorkspaceSnapshot()` until its release callback runs.
+Unchanged content-addressed objects are reused. Garbage collection retains
+every parseable manifest, staged bytes awaiting publication, and content pinned
+by an active `readWorkspaceSnapshot()` until its release callback runs. A blob
+is registered as staged before its bytes are written so a concurrent save's
+cleanup cannot remove it before its read-back completes.
 Once publication is verified, garbage-collection failures are logged without
 rejecting the save or withholding its committed revision. A later save retries
 cleanup, so a transient maintenance failure cannot strand the writer on a stale
@@ -658,11 +667,14 @@ SHA-256 digest.
 Creation and inspection enforce:
 
 - a 2 GiB ceiling for compressed and uncompressed archive data;
-- at most 100,000 ZIP entries and the application attachment-size limit;
+- at most 100,000 ZIP entries, rejected from the declared central-directory
+  count before entries are materialized, and the application attachment-size
+  limit;
 - canonical non-traversing paths and case-insensitive path uniqueness;
 - an exact match between declared and actual entries;
 - supported, unencrypted, non-directory ZIP records;
-- strict ZIP/CRC read completion;
+- strict ZIP structure parsing (ZIP CRC values are not checked; the SHA-256
+  validation below replaces them);
 - exact byte-length and SHA-256 validation for every entry;
 - strict runtime schema and workspace cross-reference validation.
 
@@ -719,7 +731,10 @@ verify a pre-action recovery archive, stage required blobs, and publish exactly
 one replacement generation. Validation, cancellation, recovery persistence,
 blob staging, stale-revision detection, or commit failure aborts without
 publishing a partial replacement. If a later attempted mutation fails, the
-previous valid undo point remains available.
+previous valid undo point remains available: it is copied into memory before
+the new recovery archive overwrites its path, because a file handle's `File`
+becomes unreadable after that overwrite. Recovery archives above 512 MiB keep
+the live reference and only best-effort rollback.
 
 Undo validates and restores the recovery archive as a new generation, then
 removes the recovery point. Consequently only the latest successful mutation
