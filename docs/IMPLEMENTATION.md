@@ -749,16 +749,21 @@ storage as a transfer folder.
 Electron keeps absolute destination paths in the main process. Renderer IPC
 accepts only validated managed filenames. Writes use a unique managed partial,
 sequential backpressured chunks, expected SHA-256 and size verification,
-`fsync`, atomic rename, and final read-back. A failed write removes its partial
-without touching unrelated files. Destination configuration is restored before
+`fsync`, atomic rename, and final read-back. A failed write removes its partial,
+or the renamed file when read-back fails, without touching unrelated files.
+File-system errors cross IPC as fixed messages carrying only the error code. Destination configuration is restored before
 window creation, but the potentially slow selected-folder scan for stale
 partials runs after the window is created.
 
 Archive contents are semantically validated once before publication. The
 destination then verifies that its stored size and SHA-256 match those validated
 bytes; that proof is reused during rotation instead of rereading the new archive.
-Rotation retains the three newest valid managed backups. Corrupt managed files
-are not counted and are removed only after a replacement verifies. Rotation
+Rotation always retains the backup it just wrote plus the two newest other
+valid managed backups, so a clock regression cannot delete the newest state.
+Only a file whose contents fail archive validation is corrupt; corrupt files
+are not counted and are removed only after a replacement verifies. A file that
+cannot be read (locked, unhydrated, or vanished) or that uses a newer archive
+format is listed as unverified and is never deleted by rotation. Rotation
 results directly populate scheduler state instead of triggering another full
 refresh. Startup lists managed-file metadata without reading archive contents;
 full validation occurs when backup details open, during explicit refreshes, and

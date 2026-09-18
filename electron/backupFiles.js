@@ -24,6 +24,19 @@ const serializeError = (error) => (
   error instanceof Error ? error.message : String(error)
 );
 
+// Node's fs errors embed absolute paths in their messages. Only the code
+// crosses IPC so the renderer never sees the destination path.
+const withSafeFsErrors = async (subject, operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error && typeof error === 'object' && typeof error.syscall === 'string') {
+      throw new Error(`${subject} is unavailable (${error.code || 'unknown error'}).`);
+    }
+    throw error;
+  }
+};
+
 const hashFile = async (filename) => {
   const hash = createHash('sha256');
   let size = 0;
@@ -77,16 +90,18 @@ export class BackupFileManager {
     ) {
       throw new Error('Backup destination path is invalid.');
     }
-    const stat = await fs.stat(destinationPath);
+    const stat = await withSafeFsErrors('The backup folder', () => fs.stat(destinationPath));
     if (!stat.isDirectory()) throw new Error('Backup destination is not a directory.');
     this.destinationPath = destinationPath;
     const temporaryConfiguration = `${this.configurationPath}.tmp`;
-    await fs.writeFile(
-      temporaryConfiguration,
-      JSON.stringify({ path: destinationPath }),
-      { encoding: 'utf8', mode: 0o600 }
-    );
-    await fs.rename(temporaryConfiguration, this.configurationPath);
+    await withSafeFsErrors('The backup configuration', async () => {
+      await fs.writeFile(
+        temporaryConfiguration,
+        JSON.stringify({ path: destinationPath }),
+        { encoding: 'utf8', mode: 0o600 }
+      );
+      await fs.rename(temporaryConfiguration, this.configurationPath);
+    });
     await this.cleanupStalePartials();
   }
 
@@ -95,7 +110,10 @@ export class BackupFileManager {
     const destination = this.requireDestination();
     const id = randomUUID();
     const partialPath = path.join(destination, `${PARTIAL_PREFIX}${id}`);
-    const handle = await fs.open(partialPath, 'wx', 0o600);
+    const handle = await withSafeFsErrors(
+      'The backup folder',
+      () => fs.open(partialPath, 'wx', 0o600)
+    );
     this.writes.set(id, {
       filename,
       partialPath,
@@ -115,7 +133,7 @@ export class BackupFileManager {
       await this.abortWrite(id);
       throw new Error('Backup exceeds the archive size limit.');
     }
-    await write.handle.write(chunk);
+    await withSafeFsErrors('The backup file', () => write.handle.write(chunk));
     write.hash.update(chunk);
     write.size += chunk.byteLength;
   }
@@ -133,19 +151,22 @@ export class BackupFileManager {
       throw new Error('Expected backup size is invalid.');
     }
     this.writes.delete(id);
+    const finalPath = path.join(this.requireDestination(), write.filename);
+    let published = false;
     try {
-      await write.handle.sync();
-      await write.handle.close();
+      await withSafeFsErrors('The backup file', async () => {
+        await write.handle.sync();
+        await write.handle.close();
+      });
       if (
         write.size !== expectedSize ||
         write.hash.digest('hex') !== expectedSha256
       ) {
         throw new Error('Streamed backup failed size or SHA-256 verification.');
       }
-      const destination = this.requireDestination();
-      const finalPath = path.join(destination, write.filename);
-      await fs.rename(write.partialPath, finalPath);
-      const stored = await hashFile(finalPath);
+      await withSafeFsErrors('The backup file', () => fs.rename(write.partialPath, finalPath));
+      published = true;
+      const stored = await withSafeFsErrors('The backup file', () => hashFile(finalPath));
       if (
         stored.size !== expectedSize ||
         stored.sha256 !== expectedSha256
@@ -158,10 +179,11 @@ export class BackupFileManager {
       } catch {
         // It may already be closed.
       }
+      // Nothing unverified may stay under a managed name.
       try {
-        await fs.unlink(write.partialPath);
+        await fs.unlink(published ? finalPath : write.partialPath);
       } catch {
-        // A renamed partial no longer exists.
+        // Already gone.
       }
       throw error;
     }
@@ -184,11 +206,17 @@ export class BackupFileManager {
 
   async list() {
     const destination = this.requireDestination();
-    const entries = await fs.readdir(destination, { withFileTypes: true });
+    const entries = await withSafeFsErrors(
+      'The backup folder',
+      () => fs.readdir(destination, { withFileTypes: true })
+    );
     const files = [];
     for (const entry of entries) {
       if (!entry.isFile() || !MANAGED_BACKUP_PATTERN.test(entry.name)) continue;
-      const stat = await fs.stat(path.join(destination, entry.name));
+      const stat = await withSafeFsErrors(
+        'The backup file',
+        () => fs.stat(path.join(destination, entry.name))
+      );
       files.push({
         filename: entry.name,
         size: stat.size,
@@ -200,7 +228,10 @@ export class BackupFileManager {
 
   async read(filename) {
     assertManagedFilename(filename);
-    const data = await fs.readFile(path.join(this.requireDestination(), filename));
+    const data = await withSafeFsErrors(
+      'The backup file',
+      () => fs.readFile(path.join(this.requireDestination(), filename))
+    );
     if (data.byteLength > MAX_ARCHIVE_BYTES) {
       throw new Error('Backup exceeds the archive size limit.');
     }
@@ -209,12 +240,18 @@ export class BackupFileManager {
 
   async delete(filename) {
     assertManagedFilename(filename);
-    await fs.unlink(path.join(this.requireDestination(), filename));
+    await withSafeFsErrors(
+      'The backup file',
+      () => fs.unlink(path.join(this.requireDestination(), filename))
+    );
   }
 
   async cleanupStalePartials() {
     if (!this.destinationPath) return;
-    const entries = await fs.readdir(this.destinationPath, { withFileTypes: true });
+    const entries = await withSafeFsErrors(
+      'The backup folder',
+      () => fs.readdir(this.destinationPath, { withFileTypes: true })
+    );
     await Promise.all(entries
       .filter(entry => entry.isFile() && entry.name.startsWith(PARTIAL_PREFIX))
       .map(async entry => {

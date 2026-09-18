@@ -8,7 +8,8 @@ import { getWorkspaceRevision, readWorkspaceSnapshot } from './storage';
 import {
   BackupArchivePreview,
   createWorkspaceArchive,
-  inspectWorkspaceArchive
+  inspectWorkspaceArchive,
+  UnsupportedArchiveVersionError
 } from './workspaceArchive';
 
 const BACKUP_PREFERENCES_KEY = 'openai-studio-backup-scheduler-v1';
@@ -39,6 +40,10 @@ export interface BackupSchedulerState {
   warning?: string;
   backups: ManagedBackupStatus[];
 }
+
+const describeError = (error: unknown): string => (
+  error instanceof Error ? error.message : String(error)
+);
 
 const getLocalDay = (timestamp: number): string => {
   const date = new Date(timestamp);
@@ -169,24 +174,7 @@ export class BackupScheduler {
 
     const backups: ManagedBackupStatus[] = [];
     for (const file of files) {
-      try {
-        const archive = await this.destination.read(file.filename);
-        const inspected = await inspectWorkspaceArchive(archive, {
-          filename: file.filename,
-          retainBlobs: false
-        });
-        backups.push({
-          ...file,
-          integrity: 'valid',
-          preview: inspected.preview
-        });
-      } catch (error) {
-        backups.push({
-          ...file,
-          integrity: 'corrupt',
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      backups.push(await this.inspectManagedFile(file));
     }
     backups.sort((left, right) => (
       (right.preview?.createdAt || right.lastModified) -
@@ -321,8 +309,7 @@ export class BackupScheduler {
       });
       return validated.preview;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.updateState({ running: false, error: message });
+      this.updateState({ running: false, error: describeError(error) });
       if (reason === 'scheduled' && !closeTime) this.scheduleRetry();
       throw error;
     }
@@ -334,54 +321,30 @@ export class BackupScheduler {
   ): Promise<{ backups: ManagedBackupStatus[]; warning?: string }> {
     if (!this.destination) return { backups: [] };
     const files = await this.destination.list();
-    const valid: Array<{
-      status: ManagedBackupStatus;
-      createdAt: number;
-    }> = [];
+    let written: ManagedBackupStatus | null = null;
+    const otherValid: ManagedBackupStatus[] = [];
     const corrupt: ManagedBackupStatus[] = [];
-    let foundWrittenFile = false;
+    const unverified: ManagedBackupStatus[] = [];
     for (const file of files) {
       if (file.filename === writtenFilename) {
-        foundWrittenFile = true;
-        valid.push({
-          status: {
-            ...file,
-            integrity: 'valid',
-            preview: writtenPreview
-          },
-          createdAt: writtenPreview.createdAt
-        });
+        written = { ...file, integrity: 'valid', preview: writtenPreview };
         continue;
       }
-      try {
-        const inspected = await inspectWorkspaceArchive(
-          await this.destination.read(file.filename),
-          { filename: file.filename, retainBlobs: false }
-        );
-        valid.push({
-          status: {
-            ...file,
-            integrity: 'valid',
-            preview: inspected.preview
-          },
-          createdAt: inspected.preview.createdAt
-        });
-      } catch (error) {
-        corrupt.push({
-          ...file,
-          integrity: 'corrupt',
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      const status = await this.inspectManagedFile(file);
+      if (status.integrity === 'valid') otherValid.push(status);
+      else if (status.integrity === 'corrupt') corrupt.push(status);
+      else unverified.push(status);
     }
-    if (!foundWrittenFile) {
+    if (!written) {
       throw new Error('The newly written backup is missing from its destination.');
     }
-    valid.sort((left, right) => right.createdAt - left.createdAt);
-    const removals = [
-      ...valid.slice(3).map(item => item.status),
-      ...corrupt
-    ];
+    // The file just written is always retained, even when a clock regression
+    // gives it an older manifest timestamp than existing backups.
+    otherValid.sort((left, right) => (
+      right.preview!.createdAt - left.preview!.createdAt
+    ));
+    const valid = [written, ...otherValid.slice(0, 2)];
+    const removals = [...otherValid.slice(2), ...corrupt];
     const failures: string[] = [];
     const removed = new Set<string>();
     for (const file of removals) {
@@ -392,10 +355,7 @@ export class BackupScheduler {
         failures.push(file.filename);
       }
     }
-    const backups = [
-      ...valid.map(item => item.status),
-      ...corrupt
-    ]
+    const backups = [...valid, ...unverified, ...corrupt]
       .filter(file => !removed.has(file.filename))
       .sort((left, right) => (
         (right.preview?.createdAt || right.lastModified) -
@@ -409,6 +369,35 @@ export class BackupScheduler {
           }
         : {})
     };
+  }
+
+  // Only an archive that fails validation is corrupt. A failed read (lock,
+  // placeholder, vanished file) or a newer archive format proves nothing about
+  // the bytes, so those files stay listed as unverified and are never deleted.
+  private async inspectManagedFile(
+    file: ManagedBackupFile
+  ): Promise<ManagedBackupStatus> {
+    let archive: Blob;
+    try {
+      archive = await this.destination!.read(file.filename);
+    } catch (error) {
+      return { ...file, integrity: 'unverified', error: describeError(error) };
+    }
+    try {
+      const inspected = await inspectWorkspaceArchive(archive, {
+        filename: file.filename,
+        retainBlobs: false
+      });
+      return { ...file, integrity: 'valid', preview: inspected.preview };
+    } catch (error) {
+      return {
+        ...file,
+        integrity: error instanceof UnsupportedArchiveVersionError
+          ? 'unverified'
+          : 'corrupt',
+        error: describeError(error)
+      };
+    }
   }
 
   private scheduleStartupEvaluation(): void {

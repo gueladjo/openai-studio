@@ -103,6 +103,13 @@ export class BackupArchiveError extends Error {
   }
 }
 
+export class UnsupportedArchiveVersionError extends BackupArchiveError {
+  constructor(version: unknown) {
+    super(`Backup format version ${String(version)} is unsupported.`);
+    this.name = 'UnsupportedArchiveVersionError';
+  }
+}
+
 export class UnsupportedLegacyBackupError extends BackupArchiveError {
   constructor() {
     super(
@@ -206,9 +213,7 @@ export const parseBackupArchiveManifest = (
     throw new BackupArchiveError('This ZIP is not an OpenAI Studio backup.');
   }
   if (value.version !== BACKUP_ARCHIVE_VERSION) {
-    throw new BackupArchiveError(
-      `Backup format version ${String(value.version)} is unsupported.`
-    );
+    throw new UnsupportedArchiveVersionError(value.version);
   }
   if (
     typeof value.backupId !== 'string' ||

@@ -1,3 +1,4 @@
+import { BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, type Session } from '../types';
 import type {
@@ -59,6 +60,7 @@ class MemoryBackupDestination implements BackupDestination {
   private modified = 1;
   failWrites = false;
   reads = 0;
+  readErrors = new Map<string, string>();
 
   async getStatus() {
     return 'connected' as const;
@@ -80,6 +82,8 @@ class MemoryBackupDestination implements BackupDestination {
 
   async read(filename: string): Promise<Blob> {
     this.reads += 1;
+    const readError = this.readErrors.get(filename);
+    if (readError) throw new Error(readError);
     const file = this.files.get(filename);
     if (!file) throw new Error('Missing backup.');
     return file;
@@ -89,6 +93,23 @@ class MemoryBackupDestination implements BackupDestination {
     this.files.delete(filename);
   }
 }
+
+const createScheduler = (destination: MemoryBackupDestination) => new BackupScheduler({
+  dirHandle: {} as FileSystemDirectoryHandle,
+  destination,
+  supported: true,
+  canRun: () => true,
+  onStateChange: () => undefined
+});
+
+const createNewerVersionArchive = async (): Promise<Blob> => {
+  const writer = new ZipWriter(new BlobWriter('application/zip'));
+  await writer.add('manifest.json', new TextReader(JSON.stringify({
+    format: 'openai-studio-backup',
+    version: 99
+  })));
+  return writer.close();
+};
 
 describe('backup scheduler', () => {
   beforeEach(() => {
@@ -186,6 +207,58 @@ describe('backup scheduler', () => {
     expect(scheduler.currentState.backups).toHaveLength(3);
     expect(scheduler.currentState.backups.every(item => item.integrity === 'valid'))
       .toBe(true);
+  });
+
+  it('keeps the backup it just wrote when the clock has moved backwards', async () => {
+    const destination = new MemoryBackupDestination();
+    const scheduler = createScheduler(destination);
+    for (let index = 0; index < 3; index += 1) {
+      harness.revision += 1;
+      vi.setSystemTime(new Date(`2026-08-0${index + 1}T09:00:00`));
+      await scheduler.backUpNow();
+    }
+    const before = new Set(destination.files.keys());
+
+    harness.revision += 1;
+    vi.setSystemTime(new Date('2026-07-01T09:00:00'));
+    await scheduler.backUpNow();
+
+    const written = [...destination.files.keys()].find(name => !before.has(name));
+    expect(written).toBeDefined();
+    expect(destination.files.size).toBe(3);
+    expect(scheduler.currentState.backups.map(item => item.filename)).toContain(written);
+  });
+
+  it('retains unreadable and newer-format files as unverified instead of deleting them', async () => {
+    const destination = new MemoryBackupDestination();
+    const lockedFilename =
+      'openai-studio-backup-2026-07-27T09-00-00-000Z-locked_id.zip';
+    const newerFilename =
+      'openai-studio-backup-2026-07-28T09-00-00-000Z-newer_id.zip';
+    destination.files.set(lockedFilename, new Blob(['locked'], { type: 'application/zip' }));
+    destination.readErrors.set(lockedFilename, 'The backup file is unavailable (EBUSY).');
+    destination.files.set(newerFilename, await createNewerVersionArchive());
+    const scheduler = createScheduler(destination);
+
+    await scheduler.refresh();
+    expect(scheduler.currentState.backups).toMatchObject([
+      { filename: newerFilename, integrity: 'unverified' },
+      { filename: lockedFilename, integrity: 'unverified' }
+    ]);
+
+    for (let index = 0; index < 4; index += 1) {
+      harness.revision += 1;
+      vi.setSystemTime(new Date(`2026-08-0${index + 1}T09:00:00`));
+      await scheduler.backUpNow();
+    }
+
+    expect(destination.files.has(lockedFilename)).toBe(true);
+    expect(destination.files.has(newerFilename)).toBe(true);
+    expect(destination.files.size).toBe(5);
+    expect(scheduler.currentState.backups.filter(item => item.integrity === 'valid'))
+      .toHaveLength(3);
+    expect(scheduler.currentState.backups.filter(item => item.integrity === 'unverified'))
+      .toHaveLength(2);
   });
 
   it('surfaces a due close-time backup failure to the close handshake', async () => {

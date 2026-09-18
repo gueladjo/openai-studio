@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackupFileManager } from './backupFiles.js';
 
 const filename =
@@ -26,6 +26,7 @@ describe('Electron managed backup files', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -68,6 +69,42 @@ describe('Electron managed backup files', () => {
       '0'.repeat(64)
     )).rejects.toThrow('failed size or SHA-256');
     expect(await fs.readdir(destination)).toEqual(['unrelated.txt']);
+  });
+
+  it('removes a renamed backup that fails read-back verification', async () => {
+    const bytes = Buffer.from('verified zip bytes');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, 'rename').mockImplementationOnce(async (from, to) => {
+      await originalRename(from, to);
+      await fs.appendFile(to, 'corruption');
+    });
+    const id = await manager.startWrite(filename);
+    await manager.writeChunk(id, bytes);
+
+    await expect(manager.finishWrite(id, bytes.byteLength, digest))
+      .rejects.toThrow('read-back verification');
+    expect(await fs.readdir(destination)).toEqual([]);
+  });
+
+  it('reports file-system failures without exposing destination paths', async () => {
+    const missingFolder = path.join(root, 'missing');
+    await expect(manager.setDestination(missingFolder))
+      .rejects.toThrow('The backup folder is unavailable (ENOENT).');
+    await expect(manager.read(filename))
+      .rejects.toThrow('The backup file is unavailable (ENOENT).');
+    await expect(manager.delete(filename))
+      .rejects.toThrow('The backup file is unavailable (ENOENT).');
+
+    await fs.rm(destination, { recursive: true, force: true });
+    await expect(manager.list()).rejects.toThrow('The backup folder is unavailable (ENOENT).');
+    await expect(manager.startWrite(filename))
+      .rejects.toThrow('The backup folder is unavailable (ENOENT).');
+    await expect(manager.cleanupStalePartials())
+      .rejects.toThrow('The backup folder is unavailable (ENOENT).');
+    for (const call of [manager.list(), manager.read(filename)]) {
+      await expect(call).rejects.not.toThrow(root);
+    }
   });
 
   it('can restore destination configuration without blocking on partial cleanup', async () => {
