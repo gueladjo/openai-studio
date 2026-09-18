@@ -6,6 +6,9 @@ import {
 } from './chatDrafts';
 
 const secretFile = (name: string): File => ({ name } as File);
+const attachmentFile = (name: string, type = 'application/pdf'): File => (
+  { name, type, size: 1024 } as File
+);
 
 describe('chatDraftsReducer', () => {
   it('keeps text, files, and validation errors isolated by session', () => {
@@ -46,6 +49,32 @@ describe('chatDraftsReducer', () => {
       attachments: [secondFile],
       attachmentError: null
     });
+  });
+
+  it('appends attachments against the current draft and keeps invalid ones out', () => {
+    const first = attachmentFile('first.pdf');
+    const second = attachmentFile('second.pdf');
+    const third = attachmentFile('third.pdf');
+    let drafts: ChatDraftsState = chatDraftsReducer({}, {
+      type: 'append-attachments',
+      sessionId: 'session-a',
+      attachments: [first]
+    });
+    // A slower attach flow started before `first` landed must not replace it.
+    drafts = chatDraftsReducer(drafts, {
+      type: 'append-attachments',
+      sessionId: 'session-a',
+      attachments: [second]
+    });
+    drafts = chatDraftsReducer(drafts, {
+      type: 'append-attachments',
+      sessionId: 'session-a',
+      attachments: [attachmentFile('payload.exe', 'application/octet-stream'), third]
+    });
+
+    expect(getChatDraft(drafts, 'session-a').attachments).toEqual([first, second, third]);
+    expect(getChatDraft(drafts, 'session-a').attachmentError).toContain('payload.exe');
+    expect(getChatDraft(drafts, 'session-b').attachments).toEqual([]);
   });
 
   it('restores a failed submission only into its captured target session', () => {

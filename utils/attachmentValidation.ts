@@ -36,6 +36,7 @@ const DELIMITED_DATA_MIME_TYPES = [
   'application/vnd.google-apps.spreadsheet',
   'application/x-iif',
   'text/csv',
+  'text/tab-separated-values',
   'text/tsv',
   'text/x-iif'
 ];
@@ -166,14 +167,25 @@ const TEXT_AND_CODE_MIME_TYPES = [
 interface FileFormatDefinition {
   mimeType: string;
   acceptedMimeTypes: string[];
+  /**
+   * Platform MIME tables disagree wildly for text and code extensions (`.ts`
+   * reports `video/mp2t`, `.c` reports `text/x-c` or nothing). For these the
+   * extension decides the format and an unrecognized reported type falls back
+   * to the canonical one instead of rejecting the file.
+   */
+  extensionAuthoritative?: boolean;
 }
 
 const createFormats = (
   extensions: string[],
   mimeType: string,
-  acceptedMimeTypes: string[]
+  acceptedMimeTypes: string[],
+  extensionAuthoritative = false
 ): Record<string, FileFormatDefinition> => Object.fromEntries(
-  extensions.map(extension => [extension, { mimeType, acceptedMimeTypes }])
+  extensions.map(extension => [
+    extension,
+    { mimeType, acceptedMimeTypes, extensionAuthoritative }
+  ])
 );
 
 const FILE_FORMATS: Record<string, FileFormatDefinition> = {
@@ -226,7 +238,8 @@ const FILE_FORMATS: Record<string, FileFormatDefinition> = {
       'txt', 'vcf', 'vtt', 'xml', 'yaml', 'yml', 'zsh'
     ],
     'text/plain',
-    TEXT_AND_CODE_MIME_TYPES
+    TEXT_AND_CODE_MIME_TYPES,
+    true
   )
 };
 
@@ -234,7 +247,8 @@ const SUPPORTED_BASENAMES: Record<string, FileFormatDefinition> = {
   dockerfile: FILE_FORMATS.dockerfile,
   makefile: {
     mimeType: 'text/plain',
-    acceptedMimeTypes: TEXT_AND_CODE_MIME_TYPES
+    acceptedMimeTypes: TEXT_AND_CODE_MIME_TYPES,
+    extensionAuthoritative: true
   }
 };
 
@@ -284,10 +298,13 @@ export const getAttachmentFormat = (
     normalizedType === '' ||
     normalizedType === 'application/octet-stream'
   );
-  if (
-    !isUninformativeType &&
-    !definition.acceptedMimeTypes.includes(normalizedType)
-  ) {
+  const isAcceptedType = definition.acceptedMimeTypes.includes(normalizedType) || (
+    definition.extensionAuthoritative === true && normalizedType.startsWith('text/')
+  );
+  if (!isUninformativeType && !isAcceptedType) {
+    if (definition.extensionAuthoritative) {
+      return { kind: definition.kind, mimeType: definition.mimeType };
+    }
     throw new AttachmentValidationError(
       `"${name}" has MIME type "${type}", which does not match its supported format.`
     );

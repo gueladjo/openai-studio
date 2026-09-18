@@ -19,6 +19,8 @@ describe('Sidebar workspace merge controls', () => {
     projects = [],
     onApiKeySave,
     onNewSession = vi.fn(),
+    onSelectSession = vi.fn(),
+    onDeleteSession = vi.fn(),
     onRefreshManagedBackups = vi.fn(),
     automaticBackupsSupported = false,
     onClose,
@@ -31,6 +33,8 @@ describe('Sidebar workspace merge controls', () => {
     projects?: Project[];
     onApiKeySave?: (key: string) => void | Promise<void>;
     onNewSession?: (projectId?: string) => void;
+    onSelectSession?: (id: string) => void;
+    onDeleteSession?: (event: React.MouseEvent, id: string) => void;
     onRefreshManagedBackups?: () => void;
     automaticBackupsSupported?: boolean;
     onClose?: () => void;
@@ -41,9 +45,9 @@ describe('Sidebar workspace merge controls', () => {
         sessions={sessions}
         projects={projects}
         currentSessionId={null}
-        onSelectSession={() => undefined}
+        onSelectSession={onSelectSession}
         onNewSession={onNewSession}
-        onDeleteSession={() => undefined}
+        onDeleteSession={onDeleteSession}
         onClose={onClose}
         onCollapse={onCollapse}
         isDarkMode={false}
@@ -178,6 +182,36 @@ describe('Sidebar workspace merge controls', () => {
     expect(onApiKeySave).not.toHaveBeenCalled();
     await act(async () => findButton(container, 'Save API key')?.click());
     expect(onApiKeySave).toHaveBeenCalledWith('sk-staged');
+  });
+
+  it('keeps the chat delete control keyboard-operable beside the row button', async () => {
+    const session = sessionFixture({ id: 'chat-1', title: 'Quarterly plan' });
+    const onSelectSession = vi.fn();
+    const onDeleteSession = vi.fn();
+    await renderSidebar({ sessions: [session], onSelectSession, onDeleteSession });
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete Quarterly plan"]'
+    )!;
+    const row = container.querySelector<HTMLElement>('[role="button"]')!;
+    expect(deleteButton.closest('[role="button"]')).toBeNull();
+    expect(row.textContent).toContain('Quarterly plan');
+
+    const pressEnter = async (target: Element) => act(async () => {
+      target.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true
+      }));
+    });
+
+    await pressEnter(deleteButton);
+    expect(onSelectSession).not.toHaveBeenCalled();
+    await act(async () => deleteButton.click());
+    expect(onDeleteSession).toHaveBeenCalledWith(expect.anything(), 'chat-1');
+
+    await pressEnter(row);
+    expect(onSelectSession).toHaveBeenCalledWith('chat-1');
   });
 
   it('starts chats from project rows and the standalone Chats section', async () => {

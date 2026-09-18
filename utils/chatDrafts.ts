@@ -1,3 +1,5 @@
+import { validateAttachments } from './attachmentValidation';
+
 export interface ChatDraft {
   content: string;
   attachments: File[];
@@ -17,6 +19,11 @@ export type ChatDraftsAction =
       sessionId: string;
       attachments: File[];
       attachmentError: string | null;
+    }
+  | {
+      type: 'append-attachments';
+      sessionId: string;
+      attachments: File[];
     }
   | {
       type: 'remove-attachment';
@@ -112,6 +119,28 @@ export const chatDraftsReducer = (
       ...currentDraft,
       attachments: action.attachments,
       attachmentError: action.attachmentError
+    });
+  }
+
+  if (action.type === 'append-attachments') {
+    // Validate against the draft as it is now, not as the caller last saw it,
+    // so overlapping asynchronous attach flows cannot drop each other's files.
+    const acceptedFiles: File[] = [];
+    const errors: string[] = [];
+    action.attachments.forEach(file => {
+      try {
+        validateAttachments([...currentDraft.attachments, ...acceptedFiles, file]);
+        acceptedFiles.push(file);
+      } catch (error) {
+        errors.push(
+          error instanceof Error ? error.message : `"${file.name}" could not be attached.`
+        );
+      }
+    });
+    return setDraft(drafts, action.sessionId, {
+      ...currentDraft,
+      attachments: [...currentDraft.attachments, ...acceptedFiles],
+      attachmentError: errors.length > 0 ? errors.join(' ') : null
     });
   }
 

@@ -23,6 +23,29 @@ describe('attachment validation', () => {
     });
   });
 
+  it('lets the extension decide text and code formats with platform MIME types', () => {
+    expect(getAttachmentFormat('module.ts', 'video/mp2t')).toEqual({
+      kind: 'file',
+      mimeType: 'text/plain'
+    });
+    expect(getAttachmentFormat('schema.xml', 'application/xml')).toEqual({
+      kind: 'file',
+      mimeType: 'text/plain'
+    });
+    expect(getAttachmentFormat('main.c', 'text/x-c')).toEqual({
+      kind: 'file',
+      mimeType: 'text/x-c'
+    });
+    expect(getAttachmentFormat('data.tsv', 'text/tab-separated-values')).toEqual({
+      kind: 'file',
+      mimeType: 'text/tab-separated-values'
+    });
+    expect(getAttachmentFormat('Makefile', 'application/x-makefile')).toEqual({
+      kind: 'file',
+      mimeType: 'text/plain'
+    });
+  });
+
   it('rejects unsupported extensions and mismatched MIME types', () => {
     expect(() => getAttachmentFormat('payload.exe', 'application/octet-stream'))
       .toThrow(AttachmentValidationError);

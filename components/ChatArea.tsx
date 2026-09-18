@@ -3,7 +3,6 @@ import React, {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useState
 } from 'react';
@@ -112,11 +111,18 @@ const resizePromptTextarea = (textarea: HTMLTextAreaElement): void => {
 };
 
 const DraftImagePreview: React.FC<{ file: File }> = ({ file }) => {
-  const imageUrl = useMemo(() => URL.createObjectURL(file), [file]);
+  // Created and revoked in the same effect so StrictMode's mount/unmount/mount
+  // cycle cannot leave the rendered image pointing at a revoked URL.
+  const [imageUrl, setImageUrl] = useState<string | undefined>(undefined);
 
-  useEffect(() => () => {
-    URL.revokeObjectURL(imageUrl);
-  }, [imageUrl]);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setImageUrl(url);
+    return () => {
+      setImageUrl(current => (current === url ? undefined : current));
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
 
   return (
     <img
@@ -891,15 +897,22 @@ export const markdownComponents = {
   ),
   a: ({node, href, children, ...props}: any) => {
     const isFootnote = /^\[\d+\]$/.test(String(children));
+    const className = isFootnote
+      ? 'ml-0.5 font-semibold text-accent no-underline hover:text-accent-hover'
+      : 'text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent';
+    // react-markdown blanks unsafe URLs; a bare anchor would reload the app.
+    if (!href) {
+      return <span className={className}>{children}</span>;
+    }
+    // Only absolute web links leave the app; fragments and footnotes stay in-page.
+    const opensNewTab = /^https?:\/\//i.test(href);
     return (
       <a
         href={href}
-        target="_blank"
-        rel="noopener noreferrer"
+        target={opensNewTab ? '_blank' : undefined}
+        rel={opensNewTab ? 'noopener noreferrer' : undefined}
         title={href}
-        className={isFootnote
-          ? 'ml-0.5 font-semibold text-accent no-underline hover:text-accent-hover'
-          : 'text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent'}
+        className={className}
         {...props}
       >
         {children}
@@ -1320,10 +1333,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // stable wrappers instead so streaming updates don't defeat React.memo.
   const onRetryFailedMessageRef = useRef(onRetryFailedMessage);
   const onRegenerateResponseRef = useRef(onRegenerateResponse);
+  const onRemoveFailedAttachmentRef = useRef(onRemoveFailedAttachment);
+  const onReplaceFailedAttachmentsRef = useRef(onReplaceFailedAttachments);
 
   useLayoutEffect(() => {
     onRetryFailedMessageRef.current = onRetryFailedMessage;
     onRegenerateResponseRef.current = onRegenerateResponse;
+    onRemoveFailedAttachmentRef.current = onRemoveFailedAttachment;
+    onReplaceFailedAttachmentsRef.current = onReplaceFailedAttachments;
   });
 
   const handleRetryFailedMessage = useCallback((assistantMessageId: string) => {
@@ -1333,6 +1350,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleRegenerateResponse = useCallback(() => {
     onRegenerateResponseRef.current();
   }, []);
+
+  const handleRemoveFailedAttachment = useCallback((
+    userMessageId: string,
+    attachmentIndex: number
+  ) => {
+    onRemoveFailedAttachmentRef.current(userMessageId, attachmentIndex);
+  }, []);
+
+  const handleReplaceFailedAttachments = useCallback((
+    userMessageId: string,
+    files: File[]
+  ) => onReplaceFailedAttachmentsRef.current(userMessageId, files), []);
 
   const isNearBottom = (element: HTMLDivElement): boolean => {
     return element.scrollHeight - element.scrollTop - element.clientHeight < AUTO_SCROLL_THRESHOLD_PX;
@@ -1455,30 +1484,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const addAttachments = (sessionId: string, files: File[]) => {
     if (!availableSessionIdsRef.current.has(sessionId)) return;
-    const targetDraft = getChatDraft(drafts, sessionId);
-    const acceptedFiles: File[] = [];
-    const errors: string[] = [];
-
-    files.forEach(file => {
-      try {
-        validateAttachments([...targetDraft.attachments, ...acceptedFiles, file]);
-        acceptedFiles.push(file);
-      } catch (error) {
-        errors.push(
-          error instanceof Error ? error.message : `"${file.name}" could not be attached.`
-        );
-      }
-    });
-
+    // The reducer validates against the draft as it is when the action lands,
+    // so asynchronous project-source loads cannot overwrite newer attachments.
     dispatchDraft({
-      type: 'set-attachments',
+      type: 'append-attachments',
       sessionId,
-      attachments: [...targetDraft.attachments, ...acceptedFiles],
-      attachmentError: errors.length > 0 ? errors.join(' ') : null
+      attachments: files
     });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Enter commits an IME candidate; only an uncomposed Enter sends.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -1658,8 +1675,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   apiKey={apiKey}
                   onDownloadGeneratedFile={onDownloadGeneratedFile}
                   onRetryFailedMessage={handleRetryFailedMessage}
-                  onRemoveFailedAttachment={onRemoveFailedAttachment}
-                  onReplaceFailedAttachments={onReplaceFailedAttachments}
+                  onRemoveFailedAttachment={handleRemoveFailedAttachment}
+                  onReplaceFailedAttachments={handleReplaceFailedAttachments}
                   onRegenerateResponse={handleRegenerateResponse}
                 />
               );

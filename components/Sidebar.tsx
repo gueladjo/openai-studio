@@ -144,34 +144,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const renderSession = (session: Session, projectName?: string) => {
     const title = session.title || 'Untitled Chat';
     const active = currentSessionId === session.id;
+    // The delete control is a sibling of the row button rather than a child so
+    // it keeps its own keyboard handling and accessible name.
     return (
       <div
         key={session.id}
-        role="button"
-        tabIndex={0}
-        onClick={() => onSelectSession(session.id)}
-        onKeyDown={event => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onSelectSession(session.id);
-          }
-        }}
         className={cx(
-          'group flex h-9 cursor-pointer items-center gap-2 rounded-lg pl-2 pr-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          'group flex h-9 items-center rounded-lg pr-1 text-sm transition-colors',
           active
             ? 'bg-surface-3 font-medium text-ink'
             : 'text-ink-2 hover:bg-surface-3/70 hover:text-ink'
         )}
       >
-        {processingSessionIds?.has(session.id)
-          ? <Spinner size={14} className="shrink-0" />
-          : <MessageSquare size={14} className="shrink-0 text-ink-3" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 truncate">
-          {title}
-          {normalizedSearch && projectName && (
-            <span className="ml-1 text-[10px] font-normal text-ink-3">/ {projectName}</span>
-          )}
-        </span>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onSelectSession(session.id)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onSelectSession(session.id);
+            }
+          }}
+          className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg pl-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {processingSessionIds?.has(session.id)
+            ? <Spinner size={14} className="shrink-0" />
+            : <MessageSquare size={14} className="shrink-0 text-ink-3" aria-hidden="true" />}
+          <span className="min-w-0 flex-1 truncate">
+            {title}
+            {normalizedSearch && projectName && (
+              <span className="ml-1 text-[10px] font-normal text-ink-3">/ {projectName}</span>
+            )}
+          </span>
+        </div>
         <button
           type="button"
           onClick={(event) => onDeleteSession(event, session.id)}

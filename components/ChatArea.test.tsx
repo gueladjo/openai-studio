@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-import { act } from 'react';
+import React, { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
-import { findButton, useReactView } from '../test/reactView';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { changeValue, findButton, useReactView } from '../test/reactView';
 import {
   AssistantMarkdown,
   ChatArea,
@@ -187,6 +187,35 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).not.toContain('class="katex"');
     expect(html).toContain('<strong>$20,769 of intrinsic value</strong>');
     expect(html).toContain('NFLX’s $78.25 quote.');
+  });
+
+  it('renders numeric-leading display math without escaping its delimiters', () => {
+    const html = renderMarkdown('The answer is $$5x$$ here, but $5 is money.');
+
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain('katex-error');
+    expect(html).toContain('$5 is money.');
+  });
+
+  it('opens only absolute web links in a new tab', () => {
+    const html = renderMarkdown(
+      'See [docs](https://example.com/docs) and a note[^1].\n\n[^1]: The note.'
+    );
+    const externalLink = html.match(/<a [^>]*href="https:\/\/example.com\/docs"[^>]*>/)?.[0];
+    const footnoteLink = html.match(/<a [^>]*href="#user-content-fn-1"[^>]*>/)?.[0];
+
+    expect(externalLink).toContain('target="_blank"');
+    expect(externalLink).toContain('rel="noopener noreferrer"');
+    expect(footnoteLink).toBeDefined();
+    expect(footnoteLink).not.toContain('target=');
+  });
+
+  it('renders links with unsafe protocols as plain text', () => {
+    const html = renderMarkdown('[run](javascript:alert(1))');
+
+    expect(html).not.toContain('<a ');
+    expect(html).toContain('<span class="text-accent underline');
+    expect(html).toContain('run</span>');
   });
 
   it('does not interpret TeX delimiters inside Markdown code', () => {
@@ -394,5 +423,87 @@ describe('ChatArea failed attachment controls', () => {
     expect(html).toContain('aria-label="Remove report.pdf"');
     expect(html).toContain('Replace attachments');
     expect(html).toContain('accept="');
+  });
+});
+
+describe('ChatArea composer', () => {
+  const view = useReactView();
+
+  const renderComposer = async ({
+    onSendMessage = vi.fn(async () => true),
+    strictMode = false
+  }: {
+    onSendMessage?: (sessionId: string, content: string, attachments: File[]) => Promise<boolean>;
+    strictMode?: boolean;
+  } = {}) => {
+    const element = (
+      <ChatArea
+        session={createSessionWithUsage(ModelId.GPT_5_NANO)}
+        availableSessionIds={['session-gpt-5-nano']}
+        onSendMessage={onSendMessage}
+        onStopGenerating={() => undefined}
+        onRetryFailedMessage={() => undefined}
+        onRemoveFailedAttachment={() => undefined}
+        onReplaceFailedAttachments={async () => undefined}
+        onRegenerateResponse={() => undefined}
+        onShareConversation={() => undefined}
+        apiKey=""
+        isLoading={false}
+      />
+    );
+    return view.render(strictMode ? <React.StrictMode>{element}</React.StrictMode> : element);
+  };
+
+  const pressEnter = async (target: Element, init: KeyboardEventInit = {}) => {
+    await act(async () => {
+      target.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+        ...init
+      }));
+    });
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores Enter while an IME composition is in progress', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const container = await renderComposer({ onSendMessage });
+    const textarea = container.querySelector('textarea')!;
+
+    await changeValue(textarea, 'こんにちは');
+    await pressEnter(textarea, { isComposing: true });
+    expect(onSendMessage).not.toHaveBeenCalled();
+
+    await pressEnter(textarea);
+    expect(onSendMessage).toHaveBeenCalledWith('session-gpt-5-nano', 'こんにちは', []);
+  });
+
+  it('shows a live preview URL for image drafts under StrictMode', async () => {
+    let nextUrl = 0;
+    const revoked = new Set<string>();
+    vi.stubGlobal('URL', Object.assign(Object.create(URL), {
+      createObjectURL: vi.fn(() => `blob:preview-${nextUrl += 1}`),
+      revokeObjectURL: vi.fn((url: string) => { revoked.add(url); })
+    }));
+    const container = await renderComposer({ strictMode: true });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const image = new File([new Uint8Array([137, 80, 78, 71])], 'photo.png', { type: 'image/png' });
+    Object.defineProperty(fileInput, 'files', { value: [image], configurable: true });
+
+    // The picker records the target session before the change event lands.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Attach files"]')!.click();
+    });
+    await act(async () => {
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const preview = container.querySelector<HTMLImageElement>('img[alt="photo.png"]')!;
+    expect(preview.getAttribute('src')).toMatch(/^blob:preview-/);
+    expect(revoked.has(preview.getAttribute('src')!)).toBe(false);
   });
 });

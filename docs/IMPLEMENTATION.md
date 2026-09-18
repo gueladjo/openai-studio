@@ -115,6 +115,12 @@ automatic container.
 
 Supported attachments are validated and normalized by
 `utils/attachmentValidation.ts`, including the 50 MiB per-attachment limit.
+The file extension selects the format. Image, PDF, and office formats reject a
+reported MIME type that does not match; text and code extensions accept any
+`text/*` type and fall back to `text/plain` for other reported types because
+platform MIME tables disagree for them. Draft attachments are appended through
+the drafts reducer so overlapping asynchronous attach flows cannot drop each
+other's files. Enter sends only when no IME composition is active.
 Images become `input_image` content parts. Other readable attachments become
 base64/data-URL `input_file` parts. Clipboard file paste follows the same
 validation path.
@@ -124,9 +130,12 @@ citations, refusal or incomplete output, reasoning summaries, usage details
 including cache-read and cache-write token counts when reported, and generated
 Code Interpreter files. Math accepts dollar delimiters as well as `\(...\)`
 and `\[...\]`; delimiter normalization must not alter Markdown code spans or
-fenced code blocks. Dollar signs immediately followed by a digit are treated as
-currency text rather than math delimiters; use `\(...\)` for numeric-leading
-inline math.
+fenced code blocks. A single dollar sign immediately followed by a digit is
+treated as currency text rather than a math delimiter; `$$` display delimiters
+are exempt. Use `\(...\)` for numeric-leading inline math. Only absolute
+`http(s)` links open in a new tab; footnote and other in-page links navigate
+within the document, and links whose URL was blanked by sanitization render as
+plain text.
 Generated files are cached into the shared local blob store when possible.
 Cached files remain downloadable without an API key. An uncached download
 requires the in-app key plus both remote container and file IDs. Cache failure
