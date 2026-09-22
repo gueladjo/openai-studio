@@ -209,6 +209,10 @@ export interface Project {
   updatedAt: number;
 }
 
+// Fields a project's home page edits in place; sources change through their
+// own operations.
+export type ProjectEdit = Partial<Pick<Project, 'name' | 'icon' | 'instructions'>>;
+
 export type ProjectRemoteStatus =
   | 'disconnected'
   | 'creating'

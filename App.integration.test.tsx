@@ -20,6 +20,7 @@ import {
   type GeneratedFile,
   type Message,
   type Project,
+  type ProjectEdit,
   type ProjectRemoteState,
   type ResolvedProjectContext,
   type Session,
@@ -62,7 +63,7 @@ interface CapturedProjectHomeProps {
   sessions: Session[];
   busySourceIds: ReadonlySet<string>;
   sourceWorkBusy: boolean;
-  onUpdate: (project: Project) => void;
+  onUpdate: (projectId: string, changes: ProjectEdit) => void;
   onNewChat: () => void;
   onAddSources: (files: File[]) => void;
   onRetrySource: (source: Project['sources'][number]) => void;
@@ -917,6 +918,41 @@ describe('App workspace and request lifecycle', () => {
     expect(mocks.projectSourceServiceKeys).toContain('bundled-electron-key');
   });
 
+  it('applies an instruction edit rendered before a source was added without dropping the source', async () => {
+    const project = createProject();
+    mocks.loadedProjects = [project];
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      getSidebarProps().onSelectProject(project.id);
+    });
+    await flushMicrotasks();
+    // The edit handler captured by a render that predates the source change.
+    const staleProps = getProjectHomeProps();
+    expect(staleProps.project.sources).toEqual([]);
+    await act(async () => {
+      staleProps.onAddSources([
+        new File(['project notes'], 'notes.txt', { type: 'text/plain' })
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await flushMicrotasks(24);
+    expect(getProjectHomeProps().project.sources).toHaveLength(1);
+
+    await act(async () => {
+      staleProps.onUpdate(project.id, { instructions: 'Edited during the upload.' });
+    });
+
+    expect(getProjectHomeProps().project).toMatchObject({
+      instructions: 'Edited during the upload.',
+      sources: [expect.objectContaining({ name: 'notes.txt' })]
+    });
+    expect(getProjectHomeProps().project.updatedAt).toBeGreaterThan(project.updatedAt);
+  });
+
   it.each(['restore', 'merge'] as const)('owns project reconciliation before %s can start', async action => {
     const project = createProject();
     const reconciliation = createDeferred<ProjectRemoteState>();
@@ -1038,10 +1074,8 @@ describe('App workspace and request lifecycle', () => {
       getSidebarProps().onSelectProject(project.id);
     });
     await act(async () => {
-      getProjectHomeProps().onUpdate({
-        ...getProjectHomeProps().project,
-        instructions: 'Use the newly edited project instructions.',
-        updatedAt: 2
+      getProjectHomeProps().onUpdate(project.id, {
+        instructions: 'Use the newly edited project instructions.'
       });
       getSidebarProps().onSelectSession('session-project');
     });

@@ -245,9 +245,7 @@ describe('ProjectHome', () => {
       name.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     });
 
-    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'Client work'
-    }));
+    expect(onUpdate).toHaveBeenCalledWith(expect.any(String), { name: 'Client work' });
     const buttons = Array.from(container.querySelectorAll('button'));
     await act(async () => {
       buttons.find(button => button.textContent?.trim() === 'New chat')?.click();

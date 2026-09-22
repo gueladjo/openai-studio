@@ -15,6 +15,7 @@ import {
   DEFAULT_CONFIG,
   SystemInstruction,
   Project,
+  ProjectEdit,
   ProjectRemoteState,
   ProjectSource,
   RemoteCleanupTombstone,
@@ -1136,10 +1137,13 @@ function App() {
     scheduleSave('projects', true);
   };
 
-  const updateProject = (updated: Project) => {
+  // Applies the edited fields to the current project so an edit rendered
+  // before a source change cannot drop or resurrect that source.
+  const updateProject = (projectId: string, changes: ProjectEdit) => {
     if (!canMutateWorkspace()) return;
+    const now = Date.now();
     updateProjectsState(projectsRef.current.map(project => (
-      project.id === updated.id ? updated : project
+      project.id === projectId ? { ...project, ...changes, updatedAt: now } : project
     )));
   };
 

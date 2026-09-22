@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   Project,
+  ProjectEdit,
   ProjectRemoteIndex,
   ProjectSource,
   Session
@@ -44,7 +45,7 @@ interface ProjectHomeProps {
   sourceWorkBusy?: boolean;
   error?: string | null;
   readOnly?: boolean;
-  onUpdate: (project: Project) => void;
+  onUpdate: (projectId: string, changes: ProjectEdit) => void;
   onNewChat: () => void;
   onAddSources: (files: File[]) => void;
   onDeleteSource: (source: ProjectSource) => void;
@@ -125,11 +126,7 @@ export const ProjectHome: React.FC<ProjectHomeProps> = ({
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const [nameDraft, setNameDraft] = useState(project.name);
   useEffect(() => setNameDraft(project.name), [project.id, project.name]);
-  const update = (changes: Partial<Project>) => onUpdate({
-    ...project,
-    ...changes,
-    updatedAt: Date.now()
-  });
+  const update = (changes: ProjectEdit) => onUpdate(project.id, changes);
   const usagePercent = Math.min(
     100,
     totalIndexedUsageBytes / MAX_INDEXED_USAGE_BYTES * 100
