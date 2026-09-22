@@ -539,6 +539,14 @@ export class WorkspaceGenerationStore {
   }
 
   private async garbageCollect(): Promise<void> {
+    // Listed first: a blob is staged before its bytes are written, so any
+    // blob that can appear here is already staged, pinned, or published when
+    // the retained set is computed afterwards. Computing it first let a blob
+    // stored during the listing be deleted after its store had verified it.
+    const [objectPaths, blobPaths] = await Promise.all([
+      this.adapter.list(WORKSPACE_OBJECT_PREFIX),
+      this.adapter.list(WORKSPACE_BLOB_PREFIX)
+    ]);
     // Every parseable manifest keeps its content, verified or not, so cleanup
     // never needs to re-read objects or re-hash blobs.
     const manifests = await this.readManifests();
@@ -567,10 +575,6 @@ export class WorkspaceGenerationStore {
       }
     });
 
-    const [objectPaths, blobPaths] = await Promise.all([
-      this.adapter.list(WORKSPACE_OBJECT_PREFIX),
-      this.adapter.list(WORKSPACE_BLOB_PREFIX)
-    ]);
     await Promise.all([
       ...objectPaths
         .filter(path => !retainedObjects.has(path))

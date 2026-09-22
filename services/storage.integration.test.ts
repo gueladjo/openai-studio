@@ -1043,6 +1043,40 @@ describe('storage public contracts', () => {
       .toBe('staged bytes');
   });
 
+  it('retains a blob stored while a concurrent save is listing blobs for collection', async () => {
+    const first = new File(['first attachment bytes'], 'first.txt', { type: 'text/plain' });
+    const firstBlob = await storage.storeAttachmentBlob(handle, first);
+    const firstSession = createSession('First', [{
+      name: 'first.txt', type: 'text/plain', size: first.size, localBlob: firstBlob
+    }]);
+    await writeField('sessions', [firstSession]);
+
+    // A message send stores its attachment while an unrelated save's garbage
+    // collection has already computed what to keep and is listing blobs/.
+    const blobs = await fileSystem.getDirectory('data/blobs');
+    const second = new File(['second attachment bytes'], 'second.txt', { type: 'text/plain' });
+    let secondBlob: Awaited<ReturnType<typeof storage.storeAttachmentBlob>> | null = null;
+    const originalEntries = blobs.entries.bind(blobs);
+    let armed = true;
+    (blobs as { entries: () => AsyncGenerator<unknown> }).entries = async function* () {
+      if (armed) {
+        armed = false;
+        secondBlob = await storage.storeAttachmentBlob(handle, second);
+      }
+      yield* originalEntries();
+    };
+    await writeField('settings', { theme: 'dark', apiKey: '' });
+
+    expect(secondBlob).not.toBeNull();
+    expect(await fileSystem.readText(`data/blobs/${secondBlob!.sha256}`))
+      .toBe('second attachment bytes');
+    await writeField('sessions', [firstSession, createSession('Second', [{
+      name: 'second.txt', type: 'text/plain', size: second.size, localBlob: secondBlob!
+    }])]);
+    expect((await readField('sessions')).map(session => session.title))
+      .toEqual(['First', 'Second']);
+  });
+
   it('retains content needed by a pinned snapshot across later saves', async () => {
     const localBlob = await storage.storeAttachmentBlob(
       handle,
