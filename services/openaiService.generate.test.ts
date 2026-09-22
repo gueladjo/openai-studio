@@ -786,7 +786,7 @@ describe('generateResponse reasoning summaries', () => {
       [userMessage],
       {
         ...DEFAULT_CONFIG,
-        model: ModelId.GPT_5_6_SOL,
+        model: ModelId.GPT_6_SOL,
         reasoningEffort: 'none'
       },
       'reasoning-disabled-key'

@@ -39,10 +39,10 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_ASTRA,
     defaultReasoningEffort: 'max'
   },
-  [ModelId.GPT_5_6_SOL]: {
-    id: ModelId.GPT_5_6_SOL,
-    name: 'GPT-5.6 Sol',
-    knowledgeCutoff: 'February 16, 2026',
+  [ModelId.GPT_6_SOL]: {
+    id: ModelId.GPT_6_SOL,
+    name: 'GPT-6 Sol',
+    knowledgeCutoff: 'April 20, 2026',
     contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
@@ -57,10 +57,10 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
     defaultReasoningEffort: 'medium'
   },
-  [ModelId.GPT_5_6_LUNA]: {
-    id: ModelId.GPT_5_6_LUNA,
-    name: 'GPT-5.6 Luna',
-    knowledgeCutoff: 'February 16, 2026',
+  [ModelId.GPT_6_LUNA]: {
+    id: ModelId.GPT_6_LUNA,
+    name: 'GPT-6 Luna',
+    knowledgeCutoff: 'May 18, 2026',
     contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
@@ -166,7 +166,12 @@ export const normalizeWebSearchOptions = (value: unknown): WebSearchOptions => {
 };
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
-  return MODEL_CONFIGS[model as ModelId] || MODEL_CONFIGS[DEFAULT_CONFIG.model];
+  const migratedModel = model === 'gpt-5.6-sol'
+    ? ModelId.GPT_6_SOL
+    : model === 'gpt-5.6-luna'
+      ? ModelId.GPT_6_LUNA
+      : model;
+  return MODEL_CONFIGS[migratedModel as ModelId] || MODEL_CONFIGS[DEFAULT_CONFIG.model];
 };
 
 export const getModelInstructions = (

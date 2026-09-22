@@ -16,7 +16,7 @@ describe('normalizeChatConfig', () => {
 
   it('normalizes missing tool flags independently', () => {
     const normalized = normalizeChatConfig({
-      model: ModelId.GPT_5_6_LUNA,
+      model: ModelId.GPT_6_LUNA,
       tools: { webSearch: false }
     });
 
@@ -114,6 +114,17 @@ describe('normalizeChatConfig', () => {
       reasoningEffort: 'max'
     });
   });
+
+  it('migrates saved Sol and Luna configs to their GPT-6 equivalents', () => {
+    expect(normalizeChatConfig({
+      model: 'gpt-5.6-sol' as ModelId,
+      reasoningEffort: 'max'
+    })).toMatchObject({ model: ModelId.GPT_6_SOL, reasoningEffort: 'max' });
+    expect(normalizeChatConfig({
+      model: 'gpt-5.6-luna' as ModelId,
+      reasoningEffort: 'none'
+    })).toMatchObject({ model: ModelId.GPT_6_LUNA, reasoningEffort: 'none' });
+  });
 });
 
 describe('model catalog', () => {
@@ -136,9 +147,9 @@ describe('model catalog', () => {
 
   it('tracks the context window for each model', () => {
     expect(MODEL_CONFIGS[ModelId.GPT_6_ASTRA].contextWindowTokens).toBe(1_050_000);
-    expect(MODEL_CONFIGS[ModelId.GPT_5_6_SOL].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_6_SOL].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_6_TERRA].contextWindowTokens).toBe(1_050_000);
-    expect(MODEL_CONFIGS[ModelId.GPT_5_6_LUNA].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_6_LUNA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_5].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_NANO].contextWindowTokens).toBe(400_000);
     expect(MODEL_CONFIGS[ModelId.GPT_O3].contextWindowTokens).toBe(200_000);
@@ -147,9 +158,9 @@ describe('model catalog', () => {
   it('orders the picker with Astra first and Luna between Terra and GPT-5.5', () => {
     expect(MODELS.map(model => model.id)).toEqual([
       ModelId.GPT_6_ASTRA,
-      ModelId.GPT_5_6_SOL,
+      ModelId.GPT_6_SOL,
       ModelId.GPT_5_6_TERRA,
-      ModelId.GPT_5_6_LUNA,
+      ModelId.GPT_6_LUNA,
       ModelId.GPT_5_5,
       ModelId.GPT_5_NANO,
       ModelId.GPT_O3
@@ -158,13 +169,13 @@ describe('model catalog', () => {
 
   it('places automatic identity metadata before custom instructions', () => {
     const instructions = getModelInstructions(
-      ModelId.GPT_5_6_SOL,
+      ModelId.GPT_6_SOL,
       'Respond with concise examples.'
     );
 
     expect(instructions).toBe(
-      'You are GPT-5.6 Sol, an OpenAI model. '
-      + 'Your knowledge cutoff is February 16, 2026.\n\n'
+      'You are GPT-6 Sol, an OpenAI model. '
+      + 'Your knowledge cutoff is April 20, 2026.\n\n'
       + 'Respond with concise examples.'
     );
   });

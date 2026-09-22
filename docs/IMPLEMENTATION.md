@@ -3,7 +3,7 @@
 ## Status And Authority
 
 - Status: implemented current behavior and approved constraints.
-- Last meaningful update: 2026-09-05, making Max the GPT-6 Astra default reasoning.
+- Last meaningful update: 2026-09-22, replacing GPT-5.6 Sol and Luna with GPT-6 equivalents.
 - Last verified against code and tests: 2026-08-03.
 
 This document is authoritative for intended application behavior, architecture,
@@ -105,6 +105,8 @@ existing chats in supported workspace formats remain loadable. GPT-6 Astra is
 the new-chat default with Max reasoning. It is selectable with Low, Medium,
 High, Xhigh, and Max reasoning; Max is its fallback for unsupported saved
 efforts.
+Saved chats configured for GPT-5.6 Sol or Luna select the corresponding GPT-6
+model when loaded; historical answer labels remain as recorded.
 
 Web Search and Code Interpreter can be enabled per chat. The Web Search card is
 an accessible disclosure that starts collapsed; its local disclosure state is

@@ -218,7 +218,7 @@ describe('ConfigPanel', () => {
       <ConfigPanelHarness
         initialConfig={{
           ...DEFAULT_CONFIG,
-          model: ModelId.GPT_5_6_SOL,
+          model: ModelId.GPT_6_SOL,
           reasoningEffort: 'none'
         }}
         onConfigChange={onConfigChange}
@@ -248,7 +248,7 @@ describe('ConfigPanel', () => {
       <ConfigPanelHarness
         initialConfig={{
           ...DEFAULT_CONFIG,
-          model: ModelId.GPT_5_6_SOL,
+          model: ModelId.GPT_6_SOL,
           reasoningEffort: 'medium'
         }}
         onConfigChange={onConfigChange}
