@@ -1236,7 +1236,8 @@ function App() {
       blob,
       state: projectRemoteStateRef.current,
       apiKeyFingerprint: fingerprintApiKey(requestApiKey),
-      persist: state => persistRemoteState(operation, state)
+      persist: state => persistRemoteState(operation, state),
+      projects: projectsRef.current
     });
     setRemoteStateForOperation(operation, state);
   };

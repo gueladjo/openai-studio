@@ -227,6 +227,40 @@ describe('project source service', () => {
     expect(next.indexes['other-project'].vectorStoreId).toBeUndefined();
   });
 
+  it('keeps another project\'s analysis files ready when its vector store no longer exists', async () => {
+    const client = createClient();
+    client.vectorStores.retrieve.mockImplementation(async id => {
+      if (id === 'vector-other') {
+        throw { status: 404, message: 'No vector store found with id vector-other.' };
+      }
+      return { id, status: 'completed', usage_bytes: 100 };
+    });
+    const otherSearch: ProjectSource = { ...source, id: 'other-search' };
+    const otherAnalysis: ProjectSource = {
+      ...source, id: 'other-analysis', name: 'data.csv', capability: 'code_interpreter'
+    };
+    const other = projectFixture({ id: 'other-project', sources: [otherSearch, otherAnalysis] });
+    const state = createInterruptedState();
+    state.indexes[project.id].files = {};
+    state.indexes[other.id].files = {
+      [otherSearch.id]: { projectSourceId: otherSearch.id, openaiFileId: 'file-os', status: 'ready' },
+      [otherAnalysis.id]: { projectSourceId: otherAnalysis.id, openaiFileId: 'file-oa', status: 'ready' }
+    };
+    const service = new ProjectSourceService('key', client as never);
+
+    const next = await service.ingestSource({
+      project, source, blob: new Blob(['notes']), state,
+      apiKeyFingerprint: fingerprint, persist: async () => undefined,
+      projects: [project, other]
+    });
+
+    expect(next.indexes[other.id]).toMatchObject({ status: 'disconnected', usageBytes: 0 });
+    expect(next.indexes[other.id].files[otherSearch.id].status).toBe('failed');
+    expect(next.indexes[other.id].files[otherAnalysis.id]).toMatchObject({
+      status: 'ready', openaiFileId: 'file-oa'
+    });
+  });
+
   it('creates one lazy vector store and durably advances a searchable source to ready', async () => {
     const client = createClient();
     const persist = vi.fn(async () => undefined);

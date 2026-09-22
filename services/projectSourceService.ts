@@ -53,7 +53,20 @@ const remoteFile = (
 });
 
 // A vector store deleted server-side leaves its project disconnected with no
-// usage; the listed files must be re-added before they are searchable again.
+// usage; its search sources must be re-added before they are searchable again.
+// Analysis files live outside the store and stay usable. When the project is
+// unknown every file is failed, since capabilities are not part of the registry.
+const searchSourceIds = (
+  index: ProjectRemoteIndex,
+  projects: Project[]
+): string[] => {
+  const project = projects.find(item => item.id === index.projectId);
+  if (!project) return Object.keys(index.files);
+  return project.sources
+    .filter(source => source.capability === 'file_search')
+    .map(source => source.id);
+};
+
 const disconnectMissingVectorStore = (
   index: ProjectRemoteIndex,
   sourceIds: string[]
@@ -256,7 +269,8 @@ export class ProjectSourceService {
   async refreshUsage(
     state: ProjectRemoteState,
     apiKeyFingerprint: string,
-    persist: PersistRemoteState
+    persist: PersistRemoteState,
+    projects: Project[]
   ): Promise<ProjectRemoteState> {
     const next = cloneState(state);
     for (const index of Object.values(next.indexes)) {
@@ -270,7 +284,7 @@ export class ProjectSourceService {
         // A store that no longer exists (typically another project's) must not
         // fail this ingestion; it counts no usage until its sources are re-added.
         if (classifyProjectSourceError(error).status !== 404) throw error;
-        disconnectMissingVectorStore(index, Object.keys(index.files));
+        disconnectMissingVectorStore(index, searchSourceIds(index, projects));
       }
     }
     return this.publish(next, persist);
@@ -316,7 +330,8 @@ export class ProjectSourceService {
     blob,
     state,
     apiKeyFingerprint,
-    persist
+    persist,
+    projects = [project]
   }: {
     project: Project;
     source: ProjectSource;
@@ -324,6 +339,9 @@ export class ProjectSourceService {
     state: ProjectRemoteState;
     apiKeyFingerprint: string;
     persist: PersistRemoteState;
+    // Every workspace project, so a store missing from another project
+    // disconnects only that project's search sources.
+    projects?: Project[];
   }): Promise<ProjectRemoteState> {
     if (source.capability === 'direct_attachment') return state;
     let next = cloneState(state);
@@ -368,7 +386,7 @@ export class ProjectSourceService {
     let uploadedFileId: string | undefined;
     try {
       if (source.capability === 'file_search') {
-        next = await this.refreshUsage(next, apiKeyFingerprint, persist);
+        next = await this.refreshUsage(next, apiKeyFingerprint, persist, projects);
         index = next.indexes[project.id];
         if (!index.vectorStoreId) {
           index.status = 'creating';
@@ -424,7 +442,7 @@ export class ProjectSourceService {
               : 'terminal'
           );
         }
-        next = await this.refreshUsage(next, apiKeyFingerprint, persist);
+        next = await this.refreshUsage(next, apiKeyFingerprint, persist, projects);
         index = next.indexes[project.id];
         if (await this.rejectOverLimitSource(next, project.id, source.id, persist)) {
           uploadedFileId = undefined;
@@ -520,12 +538,7 @@ export class ProjectSourceService {
           index.lastVerifiedAt = Date.now();
         } catch (error) {
           if (classifyProjectSourceError(error).status === 404) {
-            disconnectMissingVectorStore(
-              index,
-              project.sources
-                .filter(source => source.capability === 'file_search')
-                .map(source => source.id)
-            );
+            disconnectMissingVectorStore(index, searchSourceIds(index, projects));
           } else {
             index.status = 'failed';
           }
@@ -547,7 +560,7 @@ export class ProjectSourceService {
               { vector_store_id: index.vectorStoreId }
             );
             if (remote.status === 'completed') {
-              next = await this.refreshUsage(next, apiKeyFingerprint, persist);
+              next = await this.refreshUsage(next, apiKeyFingerprint, persist, projects);
               index = next.indexes[project.id];
               if (await this.rejectOverLimitSource(next, project.id, source.id, persist)) {
                 continue;
