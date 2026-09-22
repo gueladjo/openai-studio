@@ -220,13 +220,7 @@ block.
 Deleting a source immediately removes it from future context, atomically writes
 a durable cleanup tombstone, and deletes the underlying OpenAI File. A `404`
 delete is success. The project vector store remains. Retried indexing first
-deletes any previous failed File so retries cannot orphan duplicates. A vector
-store whose creation was interrupted before its ID was saved is recovered by the
-next reconciliation or ingest: the newest empty store carrying this
-application's project metadata that no local index or tombstone references is
-adopted instead of creating another. An interrupted File upload has no such
-marker; it is reported as failed and its remote File, if any, remains until
-removed from the OpenAI dashboard.
+deletes any previous failed File so retries cannot orphan duplicates.
 Every File Search request filters the vector store by the retained, ready
 project source IDs using their `openai_studio_source_id` attributes. Pending
 remote deletion therefore cannot reintroduce a removed source into new search
