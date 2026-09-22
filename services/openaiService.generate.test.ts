@@ -1712,6 +1712,33 @@ describe('background stream resumption', () => {
     expect(cancelResponseMock).not.toHaveBeenCalled();
   });
 
+  it('drops a resume request whose headers never arrive and resumes again', async () => {
+    stubVisiblePage();
+    createResponseMock.mockResolvedValue(createInterruptedStream(
+      [createdEvent, textDelta(1, 'The ')],
+      new TypeError('network error')
+    ));
+    // The first resume hangs before any headers, like a fetch that never
+    // answers; only its connection signal can end it.
+    retrieveResponseMock
+      .mockImplementationOnce(rejectOnAbort)
+      .mockResolvedValueOnce(createStream([
+        textDelta(2, 'answer is 42.'),
+        completedEvent(3)
+      ]));
+
+    const pending = generateResponse([userMessage], DEFAULT_CONFIG, 'resume-key');
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(121_000);
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({ content: 'The answer is 42.' });
+    expect(retrieveResponseMock).toHaveBeenCalledTimes(2);
+    expect(cancelResponseMock).not.toHaveBeenCalled();
+  });
+
   it('cancels the background response when a stop aborts the resume request', async () => {
     const controller = new AbortController();
     createResponseMock.mockResolvedValue(createInterruptedStream(

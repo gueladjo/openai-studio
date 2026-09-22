@@ -1707,6 +1707,9 @@ export const generateResponse = async (
       const connection = linkConnection(options.signal);
       activeConnection = connection.controller;
       try {
+        // Armed before the request: a resume whose headers never arrive is
+        // dropped like a silent stream instead of waiting for the SDK timeout.
+        armIdleWatchdog();
         // The API rejects `include` here for background responses and reuses
         // the value from the creating request.
         await consumeStream(await openai.responses.retrieve(
