@@ -40,7 +40,26 @@ import {
   validateAttachments
 } from '../utils/attachmentValidation';
 
-const TITLE_GENERATION_INSTRUCTIONS = 'Summarize the following message into a short, concise title (max 5 words). Do not use quotes.';
+const MAX_CHAT_TITLE_LENGTH = 60;
+const TITLE_GENERATION_INSTRUCTIONS = (
+  'Write a specific chat title for the following message. Use only as many words as needed, '
+  + 'usually 2 to 8 words, and stay under 60 characters. Return only the title, without quotes or ending punctuation.'
+);
+
+const normalizeChatTitle = (value: string): string => {
+  const title = value.trim()
+    .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?]+$/g, '')
+    .trim();
+  if (title.length <= MAX_CHAT_TITLE_LENGTH) return title;
+
+  const clipped = title.slice(0, MAX_CHAT_TITLE_LENGTH + 1);
+  const lastSpace = clipped.lastIndexOf(' ');
+  return (lastSpace > 0 ? clipped.slice(0, lastSpace) : clipped.slice(0, MAX_CHAT_TITLE_LENGTH))
+    .replace(/[,:;–-]+$/g, '')
+    .trim();
+};
 
 type OpenAIResponseSource = ResponseFunctionWebSearch.Search.Source & {
   title?: string;
@@ -1856,7 +1875,7 @@ export const generateChatTitle = async (
       else title = getLegacyStringProperty(response, 'content') || '';
     }
 
-    return title?.replace(/^"|"$/g, '').trim() || 'New Chat';
+    return normalizeChatTitle(title) || 'New Chat';
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       throw error;
