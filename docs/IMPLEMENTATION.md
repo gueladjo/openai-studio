@@ -408,7 +408,10 @@ responses, and pauses admission to the project-operation owner. It waits for
 every already-owned task to settle, including uploads, indexing, cleanup, and
 their remote-ID persistence, before entering the destructive-operation queue.
 Pending React state and save effects are committed before the final save flush
-and due backup. Only then may the renderer confirm close. Keep working cancels
+and due backup. Only then may the renderer confirm close. Restore and undo stop
+and checkpoint active responses the same way before invalidating them, so a
+cancelled or failed mutation leaves final stopped turns rather than streaming
+ones. Keep working cancels
 the close attempt and resumes project work; a cancelled attempt cannot confirm
 close when delayed work finishes. The main process keeps the window closable
 when the renderer cannot answer: a crashed or unresponsive renderer completes

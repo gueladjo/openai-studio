@@ -1537,6 +1537,55 @@ describe('App workspace and request lifecycle', () => {
     expect(getSidebarProps().sessions).toEqual([replacement]);
   });
 
+  it('leaves a stopped turn, not a streaming one, when a restore fails after invalidation', async () => {
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+    mocks.restoreWorkspaceArchive.mockRejectedValueOnce(new Error('Archive rejected.'));
+
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Keep my partial answer.', []);
+    });
+    const options = getGenerateOptions();
+    await act(async () => {
+      options.onTextDelta?.('Partial answer.');
+      await getSidebarProps().onImportData(new File(
+        ['verified archive'],
+        'backup.zip',
+        { type: 'application/zip' }
+      ));
+    });
+    const restoreButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Create recovery point'));
+    await act(async () => {
+      restoreButton?.click();
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+
+    expect(options.signal?.aborted).toBe(true);
+    const session = getSidebarProps().sessions.find(item => item.id === 'session-a');
+    expect(session?.pendingRequest).toBeUndefined();
+    expect(session?.messages.at(-1)).toMatchObject({
+      status: 'stopped',
+      content: 'Partial answer.'
+    });
+    expect(getChatAreaProps().isLoading).toBe(false);
+
+    // The next send does not inherit the stale request.
+    mocks.generateResponse.mockResolvedValue(completedResult('Fresh answer.'));
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Again.', []);
+    });
+    await flushMicrotasks();
+    const after = getSidebarProps().sessions.find(item => item.id === 'session-a');
+    expect(after?.messages.filter(message => message.status === 'streaming')).toEqual([]);
+    expect(after?.messages.at(-1)).toMatchObject({ content: 'Fresh answer.' });
+  });
+
   it('merges a selected archive immediately, reloads its revision, and exposes action-aware undo', async () => {
     const originalSessions = structuredClone(mocks.loadedSessions);
     const imported = createSession('session-imported', 'Imported workspace');

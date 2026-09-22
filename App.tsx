@@ -2744,6 +2744,17 @@ function App() {
     }
   };
 
+  // Active responses become final stopped turns before their operations are
+  // invalidated, so a cancelled or failed mutation cannot leave a turn
+  // streaming forever (a later send would replace its pending marker).
+  const stopActiveResponsesForMutation = async (): Promise<void> => {
+    await flushPendingSaves();
+    const activeRequests = new Map(activeRequestsRef.current);
+    invalidateWorkspaceOperations();
+    checkpointActiveRequests(activeRequests, 'stopped');
+    await flushPendingSaves(['sessions']);
+  };
+
   const runWorkspaceArchiveMutation = (
     action: WorkspaceRecoveryAction,
     file: File
@@ -2760,8 +2771,7 @@ function App() {
     } else if (projectOperationOwnerRef.current!.isBusy) {
       throw new Error('Wait for project source work to finish before restoring a workspace.');
     }
-    await flushPendingSaves();
-    invalidateWorkspaceOperations();
+    await stopActiveResponsesForMutation();
     const operation = operationRegistryRef.current.begin({
       id: crypto.randomUUID(),
       kind: `workspace-${action}`
@@ -2851,8 +2861,7 @@ function App() {
         if (projectOperationOwnerRef.current!.isBusy) {
           throw new Error('Wait for project source work to finish before undoing a workspace change.');
         }
-        await flushPendingSaves();
-        invalidateWorkspaceOperations();
+        await stopActiveResponsesForMutation();
         await undoLastWorkspaceMutation(handle);
         workspaceCoordinatorRef.current?.publishUpdate(getWorkspaceRevision());
         await loadWorkspaceData(handle, 'writer');
