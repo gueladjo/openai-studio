@@ -48,6 +48,9 @@ const createClient = () => ({
       usage_bytes: 100
     }),
     delete: vi.fn().mockResolvedValue({ deleted: true }),
+    list: vi.fn(() => ({
+      async *[Symbol.asyncIterator](): AsyncGenerator<Record<string, unknown>> { /* no stores */ }
+    })),
     files: {
       createAndPoll: vi.fn().mockResolvedValue({
         status: 'completed',
@@ -258,6 +261,94 @@ describe('project source service', () => {
     expect(next.indexes[other.id].files[otherSearch.id].status).toBe('failed');
     expect(next.indexes[other.id].files[otherAnalysis.id]).toMatchObject({
       status: 'ready', openaiFileId: 'file-oa'
+    });
+  });
+
+  it('adopts an empty store created for the project whose ID was never saved instead of creating another', async () => {
+    const client = createClient();
+    const managed = (id: string, total: number, projectId = project.id) => ({
+      id, status: 'completed', usage_bytes: 0, created_at: 1,
+      file_counts: { total, completed: total, failed: 0, cancelled: 0, in_progress: 0 },
+      metadata: { application: 'openai-studio', project_id: projectId }
+    });
+    const stores = [
+      { ...managed('vector-foreign', 0), metadata: null },
+      managed('vector-other-project', 0, 'other-project'),
+      managed('vector-referenced', 0),
+      managed('vector-populated', 2),
+      managed('vector-orphan', 0),
+      managed('vector-older-orphan', 0)
+    ];
+    client.vectorStores.list.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() { yield* stores; }
+    }));
+    const state = createEmptyProjectRemoteState();
+    state.indexes[project.id] = {
+      projectId: project.id, apiKeyFingerprint: fingerprint, status: 'creating', usageBytes: 0, files: {}
+    };
+    state.cleanupTombstones = [{
+      id: 'tombstone-1', projectId: 'deleted-project', apiKeyFingerprint: fingerprint,
+      openaiFileIds: [], vectorStoreId: 'vector-referenced', createdAt: 1
+    }];
+    const service = new ProjectSourceService('key', client as never);
+
+    const next = await service.ingestSource({
+      project, source, blob: new Blob(['notes']), state,
+      apiKeyFingerprint: fingerprint, persist: async () => undefined
+    });
+
+    expect(client.vectorStores.create).not.toHaveBeenCalled();
+    expect(next.indexes[project.id]).toMatchObject({ vectorStoreId: 'vector-orphan', status: 'ready' });
+    expect(client.vectorStores.files.createAndPoll).toHaveBeenCalledWith(
+      'vector-orphan', expect.objectContaining({ file_id: 'file-new' })
+    );
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({ status: 'ready' });
+  });
+
+  it('creates a store for a fresh index without scanning for orphans', async () => {
+    const client = createClient();
+    const service = new ProjectSourceService('key', client as never);
+
+    await service.ingestSource({
+      project, source, blob: new Blob(['notes']), state: createEmptyProjectRemoteState(),
+      apiKeyFingerprint: fingerprint, persist: async () => undefined
+    });
+
+    expect(client.vectorStores.list).not.toHaveBeenCalled();
+    expect(client.vectorStores.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])('reconciles an interrupted store creation (orphan found: %s)', async found => {
+    const client = createClient();
+    client.vectorStores.list.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        if (found) {
+          yield {
+            id: 'vector-orphan', status: 'completed', usage_bytes: 0, created_at: 1,
+            file_counts: { total: 0, completed: 0, failed: 0, cancelled: 0, in_progress: 0 },
+            metadata: { application: 'openai-studio', project_id: project.id }
+          };
+        }
+      }
+    }));
+    const state = createEmptyProjectRemoteState();
+    state.indexes[project.id] = {
+      projectId: project.id, apiKeyFingerprint: fingerprint, status: 'creating', usageBytes: 0,
+      files: { [source.id]: { projectSourceId: source.id, status: 'uploading' } }
+    };
+    const service = new ProjectSourceService('key', client as never);
+
+    const next = await service.reconcile([project], state, fingerprint, async () => undefined);
+
+    expect(client.vectorStores.create).not.toHaveBeenCalled();
+    if (found) {
+      expect(next.indexes[project.id]).toMatchObject({ vectorStoreId: 'vector-orphan', status: 'ready' });
+    } else {
+      expect(next.indexes[project.id].status).toBe('disconnected');
+      expect(next.indexes[project.id].vectorStoreId).toBeUndefined();
+    }
+    expect(next.indexes[project.id].files[source.id]).toMatchObject({
+      status: 'failed', lastError: expect.stringContaining('interrupted')
     });
   });
 

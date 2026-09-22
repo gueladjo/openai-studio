@@ -33,6 +33,9 @@ export class ProjectSourceServiceError extends Error {
 type ProjectSourceClient = Pick<OpenAI, 'files' | 'vectorStores'>;
 type PersistRemoteState = (state: ProjectRemoteState) => Promise<void>;
 const INDEXED_USAGE_LIMIT_MESSAGE = 'Indexing would exceed the 900 MiB application limit.';
+const VECTOR_STORE_APPLICATION = 'openai-studio';
+// Newest stores are listed first; an interrupted creation is recent.
+const MAX_ORPHAN_SCAN = 200;
 
 const cloneState = (state: ProjectRemoteState): ProjectRemoteState => (
   JSON.parse(JSON.stringify(state)) as ProjectRemoteState
@@ -389,16 +392,19 @@ export class ProjectSourceService {
         next = await this.refreshUsage(next, apiKeyFingerprint, persist, projects);
         index = next.indexes[project.id];
         if (!index.vectorStoreId) {
+          // Checked before this attempt is journaled: a previous attempt may
+          // have created the store without saving its ID.
+          const orphan = await this.findOrphanVectorStore(next, project);
           index.status = 'creating';
           next = await this.publish(next, persist);
-          const vectorStore = await this.client.vectorStores.create({
-            name: `OpenAI Studio — ${project.name}`.slice(0, 256),
-            description: 'OpenAI Studio local project sources',
-            metadata: {
-              application: 'openai-studio',
-              project_id: project.id
-            }
-          });
+          const vectorStore = orphan || await this.client.vectorStores.create({
+              name: `OpenAI Studio — ${project.name}`.slice(0, 256),
+              description: 'OpenAI Studio local project sources',
+              metadata: {
+                application: VECTOR_STORE_APPLICATION,
+                project_id: project.id
+              }
+            });
           index.vectorStoreId = vectorStore.id;
           index.usageBytes = vectorStore.usage_bytes;
           index.status = vectorStore.status === 'completed' ? 'ready' : 'creating';
@@ -475,6 +481,35 @@ export class ProjectSourceService {
     }
   }
 
+  // Finds a store this application created for the project whose ID was
+  // never saved (creation interrupted or its response lost). Only an empty
+  // store unreferenced by every local index and tombstone qualifies, so a
+  // populated store of the same project restored on another device is never
+  // adopted; a fresh index (disconnected) never scans.
+  private async findOrphanVectorStore(
+    state: ProjectRemoteState,
+    project: Project
+  ): Promise<OpenAI.VectorStores.VectorStore | null> {
+    const index = state.indexes[project.id];
+    if (!index || index.vectorStoreId || index.status === 'disconnected') return null;
+    const referenced = new Set([
+      ...Object.values(state.indexes).flatMap(item => item.vectorStoreId ? [item.vectorStoreId] : []),
+      ...state.cleanupTombstones.flatMap(item => item.vectorStoreId ? [item.vectorStoreId] : [])
+    ]);
+    let scanned = 0;
+    for await (const store of this.client.vectorStores.list({ limit: 100 })) {
+      if (scanned >= MAX_ORPHAN_SCAN) break;
+      scanned += 1;
+      if (
+        store.metadata?.application === VECTOR_STORE_APPLICATION &&
+        store.metadata.project_id === project.id &&
+        !referenced.has(store.id) &&
+        store.file_counts.total === 0
+      ) return store;
+    }
+    return null;
+  }
+
   async deleteFile(fileId: string): Promise<void> {
     try {
       await this.client.files.delete(fileId);
@@ -530,6 +565,21 @@ export class ProjectSourceService {
     for (const project of projects) {
       let index = next.indexes[project.id];
       if (!index || index.apiKeyFingerprint !== apiKeyFingerprint) continue;
+      if (!index.vectorStoreId && index.status !== 'disconnected') {
+        try {
+          const orphan = await this.findOrphanVectorStore(next, project);
+          if (orphan) {
+            index.vectorStoreId = orphan.id;
+            index.usageBytes = orphan.usage_bytes;
+            index.status = orphan.status === 'completed' ? 'ready' : 'creating';
+            index.lastVerifiedAt = Date.now();
+          } else {
+            index.status = 'disconnected';
+          }
+        } catch {
+          // The scan retries with the next ingest, which also adopts orphans.
+        }
+      }
       if (index.vectorStoreId) {
         try {
           const vectorStore = await this.client.vectorStores.retrieve(index.vectorStoreId);
