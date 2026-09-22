@@ -572,6 +572,84 @@ describe('project source service', () => {
     });
   });
 
+  it('keeps the search index ready when one source is rejected', async () => {
+    const client = createClient();
+    const rejected: ProjectSource = { ...source, id: 'source-rejected', name: 'broken.pdf' };
+    const twoSources = projectFixture({ sources: [source, rejected] });
+    const apiKey = 'matching-key';
+    const service = new ProjectSourceService(apiKey, client as never);
+    let state = await service.ingestSource({
+      project: twoSources, source, blob: new Blob(['notes']),
+      state: createEmptyProjectRemoteState(),
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async () => undefined
+    });
+    client.vectorStores.files.createAndPoll.mockResolvedValueOnce({
+      status: 'failed', usage_bytes: 0,
+      last_error: { code: 'unsupported_file', message: 'Unsupported file.' }
+    });
+
+    await expect(service.ingestSource({
+      project: twoSources, source: rejected, blob: new Blob(['broken']), state,
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async next => { state = next; }
+    })).rejects.toMatchObject({ kind: 'unsupported_format' });
+
+    expect(state.indexes[twoSources.id]).toMatchObject({ status: 'ready', vectorStoreId: 'vector-1' });
+    expect(getProjectSourceAvailability(twoSources, state, apiKey).reason).toBe('broken.pdf: failed.');
+    // Deleting the rejected source leaves the remaining source searchable.
+    const remaining = projectFixture({ sources: [source] });
+    expect(getProjectSourceAvailability(remaining, state, apiKey)).toEqual({ expected: true, ready: true });
+    expect(resolveProjectContext(remaining, state, apiKey).vectorStoreId).toBe('vector-1');
+  });
+
+  it('keeps ready search sources available across a failed analysis upload and its retry', async () => {
+    const client = createClient();
+    const analysis: ProjectSource = {
+      ...source, id: 'source-analysis', name: 'data.csv', mimeType: 'text/csv', capability: 'code_interpreter'
+    };
+    const mixed = projectFixture({ sources: [source, analysis] });
+    const apiKey = 'matching-key';
+    const service = new ProjectSourceService(apiKey, client as never);
+    let state = await service.ingestSource({
+      project: mixed, source, blob: new Blob(['notes']),
+      state: createEmptyProjectRemoteState(),
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async () => undefined
+    });
+    client.files.create.mockRejectedValueOnce({ status: 503, message: 'Upload failed.' });
+
+    await expect(service.ingestSource({
+      project: mixed, source: analysis, blob: new Blob(['a,b']), state,
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async next => { state = next; }
+    })).rejects.toMatchObject({ kind: 'retryable' });
+    expect(state.indexes[mixed.id].status).toBe('ready');
+
+    state = await service.ingestSource({
+      project: mixed, source: analysis, blob: new Blob(['a,b']), state,
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async () => undefined
+    });
+    expect(getProjectSourceAvailability(mixed, state, apiKey)).toEqual({ expected: true, ready: true });
+    expect(resolveProjectContext(mixed, state, apiKey)).toMatchObject({
+      vectorStoreId: 'vector-1', analysisFileIds: ['file-new'], searchSourceIds: [source.id]
+    });
+  });
+
+  it('marks the index failed only when its vector store cannot be created', async () => {
+    const client = createClient();
+    client.vectorStores.create.mockRejectedValueOnce({ status: 500, message: 'Store unavailable.' });
+    const apiKey = 'matching-key';
+    const service = new ProjectSourceService(apiKey, client as never);
+    let state = createEmptyProjectRemoteState();
+
+    await expect(service.ingestSource({
+      project, source, blob: new Blob(['notes']), state,
+      apiKeyFingerprint: fingerprintApiKey(apiKey), persist: async next => { state = next; }
+    })).rejects.toMatchObject({ kind: 'retryable' });
+
+    expect(state.indexes[project.id].status).toBe('failed');
+    expect(state.indexes[project.id].vectorStoreId).toBeUndefined();
+    expect(state.indexes[project.id].files[source.id].status).toBe('failed');
+    expect(getProjectSourceAvailability(project, state, apiKey).reason).toBe('notes.txt: failed.');
+  });
+
   it.each([
     [{ status: 401, message: 'Bad key' }, 'authentication'],
     [{ status: 429, message: 'Quota exhausted' }, 'quota'],

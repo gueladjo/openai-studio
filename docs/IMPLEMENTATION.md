@@ -203,7 +203,9 @@ reconciliation, upload/index, deletion, remote cleanup, and API-key switching.
 Ownership begins when work is enqueued, before an asynchronous local blob read,
 and UI busy state is derived from unique operation tokens rather than source IDs.
 Opening a project reconciles interrupted remote state once per project/key pair;
-a failed reconciliation remains retryable. The UI exposes uploading, indexing,
+a failed reconciliation remains retryable. The index-level status describes only
+the project vector store: a rejected or failed source never makes the project's
+other ready sources unavailable. The UI exposes uploading, indexing,
 ready, failed, removing, and needs-indexing states, error/retry, canonical local
 download, capability, type, size, and workspace indexed usage.
 

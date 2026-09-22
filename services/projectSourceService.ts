@@ -291,7 +291,6 @@ export class ProjectSourceService {
     const file = index.files[sourceId];
     file.status = 'failed';
     file.lastError = INDEXED_USAGE_LIMIT_MESSAGE;
-    index.status = 'failed';
     // Persist rejection with its File ID before deletion, so interruption or a
     // failed rollback cannot make this source ready or lose its cleanup handle.
     await this.publish(state, persist);
@@ -359,7 +358,6 @@ export class ProjectSourceService {
           indexedUsageBytes: previousIndexedUsageBytes,
           lastError: classified.message
         });
-        index.status = 'failed';
         await this.publish(next, persist);
         throw classified;
       }
@@ -450,7 +448,10 @@ export class ProjectSourceService {
         indexedUsageBytes: index.files[source.id]?.indexedUsageBytes,
         lastError: classified.message
       });
-      index.status = 'failed';
+      // The index status describes the vector store alone: only a failed
+      // store creation leaves it failed, so one rejected source never blocks
+      // the project's other ready sources.
+      if (index.status === 'creating' && !index.vectorStoreId) index.status = 'failed';
       await this.publish(next, persist);
       throw classified;
     }
