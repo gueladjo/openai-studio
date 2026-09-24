@@ -818,6 +818,7 @@ describe('App workspace and request lifecycle', () => {
     mocks.loadedProjects = [project];
     mocks.loadedSessions[0].config = chatConfig({
       reasoningEffort: 'high',
+      promptCaching: false,
       systemInstructionId: 'instruction-1'
     });
     mocks.loadedSessions[1].projectId = project.id;
@@ -838,6 +839,7 @@ describe('App workspace and request lifecycle', () => {
     expect(projectChat?.config).toEqual(loadedConfig('session-a'));
     expect(projectChat?.config).not.toBe(loadedConfig('session-a'));
     expect(projectChat?.config.systemInstructionId).toBe('instruction-1');
+    expect(projectChat?.config.promptCaching).toBe(false);
 
     await act(async () => {
       getSidebarProps().onSelectSession('session-b');

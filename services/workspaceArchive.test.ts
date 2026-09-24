@@ -32,6 +32,7 @@ const sessions: Session[] = [{
   title: 'Archive test',
   config: {
     ...chatConfig(),
+    promptCaching: false,
     tools: {
       ...chatConfig().tools,
       webSearchOptions: {
@@ -200,6 +201,7 @@ describe('portable workspace archive', () => {
       theme: 'dark',
       lastActiveSessionId: 'session-1'
     });
+    expect(inspected.replacement.sessions[0].config.promptCaching).toBe(false);
     expect(inspected.replacement.sessions[0].config.tools.webSearchOptions)
       .toEqual({
         searchContextSize: 'high',

@@ -14,6 +14,12 @@ describe('normalizeChatConfig', () => {
     expect(normalized).toEqual(DEFAULT_CONFIG);
   });
 
+  it('defaults omitted prompt caching to on and preserves an explicit choice', () => {
+    expect(normalizeChatConfig({}).promptCaching).toBe(true);
+    expect(normalizeChatConfig({ promptCaching: false }).promptCaching).toBe(false);
+    expect(normalizeChatConfig({ promptCaching: true }).promptCaching).toBe(true);
+  });
+
   it('normalizes missing tool flags independently', () => {
     const normalized = normalizeChatConfig({
       model: ModelId.GPT_6_LUNA,

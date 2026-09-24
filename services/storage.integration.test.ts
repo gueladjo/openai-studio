@@ -961,6 +961,14 @@ describe('storage public contracts', () => {
     warn.mockRestore();
   });
 
+  it.each([true, false])('preserves prompt caching=%s after saving and reloading', async promptCaching => {
+    const session = createSession('Caching preference');
+    session.config.promptCaching = promptCaching;
+    await seedWorkspace([session]);
+    await storage.synchronizeWorkspaceRevision(handle);
+    expect((await readField('sessions'))[0].config.promptCaching).toBe(promptCaching);
+  });
+
   it('preserves cache diagnostics after saving and reloading a workspace', async () => {
     const session = createSession('Cache diagnostics');
     session.messages.push({

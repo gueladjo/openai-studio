@@ -246,6 +246,22 @@ describe('workspace runtime schema', () => {
     );
   });
 
+  it.each([true, false, undefined])('accepts promptCaching=%s including older records', promptCaching => {
+    const backup = createBackup();
+    if (promptCaching === undefined) {
+      delete (backup.sessions[0].config as Partial<typeof backup.sessions[0]['config']>).promptCaching;
+    } else {
+      backup.sessions[0].config.promptCaching = promptCaching;
+    }
+    expect(parseWorkspace(backup).sessions[0].config.promptCaching).toBe(promptCaching);
+  });
+
+  it.each([null, 'false', 0, {}])('rejects malformed promptCaching=%j', promptCaching => {
+    const backup = createBackup();
+    Object.assign(backup.sessions[0].config, { promptCaching });
+    expect(() => parseWorkspace(backup)).toThrow('promptCaching must be a boolean');
+  });
+
   it('accepts additive Web Search options and legacy configs without them', () => {
     const backup = createBackup();
     backup.sessions[0].config.tools.webSearchOptions = {

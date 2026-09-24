@@ -174,6 +174,32 @@ describe('OpenAI request contracts', () => {
     );
   });
 
+  it.each([
+    [ModelId.GPT_6_ASTRA, true],
+    [ModelId.GPT_6_SOL, true],
+    [ModelId.GPT_6_LUNA, true],
+    [ModelId.GPT_5_6_TERRA, true],
+    [ModelId.GPT_5_5, false],
+    [ModelId.GPT_5_NANO, false],
+    [ModelId.GPT_O3, false]
+  ])('disables caching only where supported on first and chained turns: %s', async (model, supported) => {
+    const config = { ...DEFAULT_CONFIG, model: model as ModelId, promptCaching: false };
+    const messages: Message[] = [userMessage];
+    for (const chained of [false, true]) {
+      if (chained) messages.push(
+        { role: 'assistant', content: 'Earlier answer', timestamp: 2,
+          status: 'complete', openaiResponseId: 'resp-previous' },
+        { role: 'user', content: 'Follow up', timestamp: 3 }
+      );
+      mockCompletedStream();
+      await generateResponse(messages, config, 'test-key');
+      const payload = createResponseMock.mock.calls.at(-1)![0];
+      expect(payload.prompt_cache_options).toEqual(supported ? { mode: 'explicit' } : undefined);
+      expect(payload.previous_response_id).toBe(chained ? 'resp-previous' : undefined);
+      expect(JSON.stringify(payload.input)).not.toContain('prompt_cache_breakpoint');
+    }
+  });
+
   it('omits cache comparisons for incomplete baselines', async () => {
     mockCompletedStream();
     await generateResponse([
@@ -849,7 +875,7 @@ describe('generateResponse reasoning summaries', () => {
     expect(result.content).toBe('The answer is 42.');
   });
 
-  it('retries without summaries when the API rejects that optional capability', async () => {
+  it.each([true, false])('retries without summaries while preserving caching=%s', async promptCaching => {
     const completedResponse = createCompletedResponse([messageOutput]);
     createResponseMock
       .mockRejectedValueOnce(Object.assign(
@@ -864,11 +890,14 @@ describe('generateResponse reasoning summaries', () => {
 
     const result = await generateResponse(
       [userMessage],
-      DEFAULT_CONFIG,
+      { ...DEFAULT_CONFIG, promptCaching },
       'summary-disabled-key'
     );
 
     expect(createResponseMock).toHaveBeenCalledTimes(2);
+    for (const [payload] of createResponseMock.mock.calls) {
+      expect(payload.prompt_cache_options).toEqual(promptCaching ? undefined : { mode: 'explicit' });
+    }
     expect(createResponseMock.mock.calls[0][0].reasoning.summary).toBe('auto');
     expect(createResponseMock.mock.calls[1][0].reasoning).toEqual({
       effort: 'max'
@@ -1412,7 +1441,7 @@ describe('generateResponse conversation history', () => {
     ]);
   });
 
-  it('retries an unresolvable previous response once with full local history', async () => {
+  it.each([true, false])('retries an unresolvable previous response with full history and caching=%s', async promptCaching => {
     const completedResponse = createCompletedResponse([messageOutput]);
     const staleResponseError = Object.assign(
       new Error("Previous response with id 'resp-expired' not found."),
@@ -1455,17 +1484,21 @@ describe('generateResponse conversation history', () => {
       }
     ];
 
-    const result = await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+    const result = await generateResponse(messages, { ...DEFAULT_CONFIG, promptCaching }, 'history-key');
 
     expect(result.content).toBe('The answer is 42.');
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     expect(createResponseMock.mock.calls[0][0]).toMatchObject({
       previous_response_id: 'resp-expired',
-      prompt_cache_options: { comparison_response_id: 'resp-expired' },
+      prompt_cache_options: promptCaching
+        ? { comparison_response_id: 'resp-expired' }
+        : { mode: 'explicit' },
       input: [{ role: 'user', content: 'Build on that answer.' }]
     });
     expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
-    expect(createResponseMock.mock.calls[1][0].prompt_cache_options).toBeUndefined();
+    expect(createResponseMock.mock.calls[1][0].prompt_cache_options).toEqual(
+      promptCaching ? undefined : { mode: 'explicit' }
+    );
     expect(createResponseMock.mock.calls[1][0].input).toEqual([
       { role: 'user', content: 'Solve this problem.' },
       { role: 'assistant', content: 'Working on it.', phase: 'commentary' },

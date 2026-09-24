@@ -109,6 +109,14 @@ efforts.
 Saved chats configured for GPT-5.6 Sol or Luna select the corresponding GPT-6
 model when loaded; historical answer labels remain as recorded.
 
+Chat settings includes a Prompt caching switch, enabled by default. On GPT-5.6
+and GPT-6 models, turning it off disables prompt cache reads and writes for
+future turns.
+Older models show a disabled, on switch with an automatic-caching explanation;
+the saved preference is retained when switching back to a supported model.
+The preference follows the existing last-used configuration inheritance for
+new standalone and project chats.
+
 Web Search and Code Interpreter can be enabled per chat. The Web Search card is
 an accessible disclosure that starts collapsed; its local disclosure state is
 not persisted and is independent from the persisted enable switch. Expanded
@@ -473,13 +481,22 @@ response is inaccessible, generation may retry once without that ID using full
 local history. This recovery is never repeated for the same request and is not
 used for ambiguous validation errors.
 
-GPT-5.6 and GPT-6 conversation requests with a preceding completed response ID
-also send `prompt_cache_options.comparison_response_id`. First turns, incomplete
+On GPT-5.6 and GPT-6, `promptCaching: false` sends
+`prompt_cache_options.mode: "explicit"` with no explicit breakpoints, disabling
+cache reads and writes as documented in the
+[OpenAI prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching).
+Enabled caching keeps the API's implicit default. Earlier models omit caching
+options because they do not support disabling automatic caching. Response
+storage and history chaining are independent of this setting. Both the
+reasoning-summary and manual-history retry paths preserve the caching mode.
+
+GPT-5.6 and GPT-6 conversation requests with caching enabled and a preceding
+completed response ID also send `prompt_cache_options.comparison_response_id`. First turns, incomplete
 baselines, and older models omit it; legacy assistant records without a status
 remain eligible. Manual-history recovery drops the comparison along with the
-inaccessible response ID. This requests diagnostics without changing caching
-mode, retention, or retry policy. Terminal response diagnostics are retained on
-the assistant message, including after stream resumption. Response details show
+inaccessible response ID while retaining any explicit caching mode. Diagnostics
+do not change caching mode, retention, or retry policy. Terminal response
+diagnostics are retained on the assistant message, including after stream resumption. Response details show
 only a compact cache-miss reason; hits, unavailable/expired comparisons, and raw
 diagnostic token estimates add no UI. Unknown/malformed API diagnostics are
 omitted and extra API fields are stripped so optional metadata cannot block
@@ -640,6 +657,12 @@ configuration normalization when relevant, every affected runtime parser, and
 the compatibility or schema-version policy. It must re-check IDs and
 cross-references and update schema, storage integration, and portable archive
 contracts as applicable.
+
+Persisted chat configurations may omit the boolean `promptCaching`; normalization
+then defaults it to `true`, while explicit `false` remains off. Nonboolean
+values are rejected. This additive field round-trips through local v5 and
+portable archive v3 without migration or a version change; older app versions
+may reject records containing it.
 
 Persisted chat configurations may omit `tools.webSearchOptions`. Missing options
 normalize to Medium with the approximate New York, NY, US location. An explicit

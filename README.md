@@ -17,6 +17,10 @@ rules, task routing, and verification commands.
 - Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.
 - Configured model picker for GPT-6 Astra, GPT-6 Sol, GPT-5.6 Terra, GPT-6 Luna, GPT-5.5, GPT-5 Nano, and o3. New chats default to GPT-6 Astra with Max reasoning. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
+- **Chat settings → Prompt caching** toggles caching on GPT-5.6 and GPT-6 models.
+  It starts on; turn it off to avoid cache-write costs for short chats. The choice
+  is saved per chat and inherited by new chats. Older models use automatic
+  caching and show the switch as unavailable.
 - Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
 - Optional Web Search and Code Interpreter tools, with per-chat Web Search
   context size and approximate location controls (default: Medium and New York,

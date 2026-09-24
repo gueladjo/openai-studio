@@ -33,6 +33,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_6_ASTRA]: {
     id: ModelId.GPT_6_ASTRA,
     supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
     name: 'GPT-6 Astra',
     knowledgeCutoff: 'April 30, 2026',
     contextWindowTokens: 1_050_000,
@@ -43,6 +44,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_6_SOL]: {
     id: ModelId.GPT_6_SOL,
     supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
     name: 'GPT-6 Sol',
     knowledgeCutoff: 'April 20, 2026',
     contextWindowTokens: 1_050_000,
@@ -53,6 +55,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_5_6_TERRA]: {
     id: ModelId.GPT_5_6_TERRA,
     supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
     name: 'GPT-5.6 Terra',
     knowledgeCutoff: 'February 16, 2026',
     contextWindowTokens: 1_050_000,
@@ -63,6 +66,7 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
   [ModelId.GPT_6_LUNA]: {
     id: ModelId.GPT_6_LUNA,
     supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
     name: 'GPT-6 Luna',
     knowledgeCutoff: 'May 18, 2026',
     contextWindowTokens: 1_050_000,
@@ -216,6 +220,9 @@ export const normalizeChatConfig = (
     model: getModelConfig(source.model || DEFAULT_CONFIG.model).id,
     reasoningEffort: getNormalizedReasoningEffort(source.model || DEFAULT_CONFIG.model, source.reasoningEffort),
     textVerbosity,
+    promptCaching: typeof source.promptCaching === 'boolean'
+      ? source.promptCaching
+      : DEFAULT_CONFIG.promptCaching,
     tools: {
       webSearch: typeof source.tools?.webSearch === 'boolean'
         ? source.tools.webSearch

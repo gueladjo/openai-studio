@@ -1488,10 +1488,16 @@ export const generateResponse = async (
     options.projectContext?.instructions ?? systemInstruction
   );
 
+  if (modelConfig.supportsPromptCacheControl && !normalizedConfig.promptCaching) {
+    // Explicit mode with no breakpoints disables both cache reads and writes.
+    payload.prompt_cache_options = { mode: 'explicit' };
+  }
+
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;
     const previousMessage = replayableMessages[replayableMessages.length - 2];
     if (
+      normalizedConfig.promptCaching &&
       modelConfig.supportsPromptCacheDiagnostics &&
       (previousMessage.status === undefined || previousMessage.status === 'complete')
     ) {
@@ -1612,7 +1618,15 @@ export const generateResponse = async (
         input: await buildApiInput(replayableMessages)
       };
       delete fallbackPayload.previous_response_id;
-      delete fallbackPayload.prompt_cache_options;
+      if (fallbackPayload.prompt_cache_options) {
+        const { comparison_response_id: _comparisonId, ...cacheOptions } =
+          fallbackPayload.prompt_cache_options;
+        if (Object.keys(cacheOptions).length > 0) {
+          fallbackPayload.prompt_cache_options = cacheOptions;
+        } else {
+          delete fallbackPayload.prompt_cache_options;
+        }
+      }
       stream = await createStreamWithCapabilityFallback(fallbackPayload);
     }
 

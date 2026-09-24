@@ -81,7 +81,7 @@ describe('ConfigPanel', () => {
   );
 
   const getSwitch = (): HTMLButtonElement => (
-    container.querySelector<HTMLButtonElement>('[role="switch"]')!
+    container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Enable Web Search"]')!
   );
 
   const getButton = (label: string): HTMLButtonElement => (
@@ -104,6 +104,43 @@ describe('ConfigPanel', () => {
       .find(element => element.textContent?.includes(label))!
       .querySelector('input')!
   );
+
+  const getCachingSwitch = (): HTMLButtonElement => (
+    container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Enable prompt caching"]')!
+  );
+
+  it('defaults prompt caching to on and toggles it both ways', async () => {
+    const onConfigChange = await renderPanel();
+    expect(getCachingSwitch().getAttribute('aria-checked')).toBe('true');
+    await act(async () => { getCachingSwitch().click(); });
+    expect(getCachingSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(onConfigChange).toHaveBeenLastCalledWith({ ...DEFAULT_CONFIG, promptCaching: false });
+    await act(async () => { getCachingSwitch().click(); });
+    expect(onConfigChange).toHaveBeenLastCalledWith(DEFAULT_CONFIG);
+  });
+
+  it('preserves the caching preference across models that cannot disable caching', async () => {
+    const onConfigChange = await renderPanel();
+    await act(async () => { getCachingSwitch().click(); });
+    const modelPicker = Array.from(container.querySelectorAll('select')).find(
+      select => select.querySelector(`option[value="${ModelId.GPT_6_ASTRA}"]`)
+    )!;
+    await changeValue(modelPicker, ModelId.GPT_5_5, 'change');
+    expect(getCachingSwitch().disabled).toBe(true);
+    expect(getCachingSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(container.textContent).toContain('does not support turning it off');
+    expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({ promptCaching: false }));
+    await changeValue(modelPicker, ModelId.GPT_6_ASTRA, 'change');
+    expect(getCachingSwitch().disabled).toBe(false);
+    expect(getCachingSwitch().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('prevents caching changes in a read-only workspace', async () => {
+    const onConfigChange = await renderPanel(undefined, true);
+    expect(getCachingSwitch().matches(':disabled')).toBe(true);
+    await act(async () => { getCachingSwitch().click(); });
+    expect(onConfigChange).not.toHaveBeenCalled();
+  });
 
   it('starts collapsed and keeps disclosure independent from enablement', async () => {
     const onConfigChange = await renderPanel();

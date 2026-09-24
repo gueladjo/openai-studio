@@ -460,12 +460,14 @@ const parseConfig = (value: unknown, path: string): void => {
     'model',
     'reasoningEffort',
     'textVerbosity',
+    'promptCaching',
     'tools',
     'systemInstructionId'
   ]);
   assertOptionalApiId(config.model, `${path}.model`);
   assertOptionalString(config.reasoningEffort, `${path}.reasoningEffort`, MAX_IDENTIFIER_LENGTH, false);
   assertOptionalEnum(config.textVerbosity, `${path}.textVerbosity`, TEXT_VERBOSITIES);
+  assertOptionalBoolean(config.promptCaching, `${path}.promptCaching`);
   if (config.tools !== undefined) {
     const toolsPath = `${path}.tools`;
     const tools = assertObject(config.tools, toolsPath, ['webSearch', 'webSearchOptions', 'codeInterpreter']);

@@ -41,6 +41,7 @@ export interface ModelConfig {
   contextWindowTokens: number;
   supportsVerbosity: boolean;
   supportsPromptCacheDiagnostics?: boolean;
+  supportsPromptCacheControl?: boolean;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;
 }
@@ -78,6 +79,7 @@ export interface ChatConfig {
   model: ModelId;
   reasoningEffort: string; // Union of all types, handled by logic
   textVerbosity: TextVerbosity;
+  promptCaching: boolean;
   tools: {
     webSearch: boolean;
     webSearchOptions: WebSearchOptions;
@@ -292,6 +294,7 @@ export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_6_ASTRA,
   reasoningEffort: 'max',
   textVerbosity: 'medium',
+  promptCaching: true,
   tools: {
     webSearch: true,
     webSearchOptions: {

@@ -96,6 +96,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
   const systemInstructionsOptionsId = useId();
   const modelSelectId = useId();
   const webSearchOptionsId = useId();
+  const promptCachingId = useId();
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newModel = e.target.value as ModelId;
@@ -291,6 +292,24 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
           />
         </section>
       )}
+
+      <section className="space-y-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <SectionLabel htmlFor={promptCachingId}>Prompt caching</SectionLabel>
+          <Switch
+            id={promptCachingId}
+            label="Enable prompt caching"
+            disabled={readOnly || !modelConfig.supportsPromptCacheControl}
+            checked={!modelConfig.supportsPromptCacheControl || config.promptCaching}
+            onChange={promptCaching => onChange({ ...config, promptCaching })}
+          />
+        </div>
+        <p className="text-xs leading-5 text-ink-3">
+          {modelConfig.supportsPromptCacheControl
+            ? 'Reuse prompt context across turns. Turn off to avoid cache-write costs for short chats.'
+            : 'This model uses automatic caching and does not support turning it off.'}
+        </p>
+      </section>
 
       <section className="space-y-2.5">
         <SectionLabel>Tools</SectionLabel>
