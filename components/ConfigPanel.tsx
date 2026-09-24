@@ -304,11 +304,11 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
             onChange={promptCaching => onChange({ ...config, promptCaching })}
           />
         </div>
-        <p className="text-xs leading-5 text-ink-3">
-          {modelConfig.supportsPromptCacheControl
-            ? 'Reuse prompt context across turns. Turn off to avoid cache-write costs for short chats.'
-            : 'This model uses automatic caching and does not support turning it off.'}
-        </p>
+        {!modelConfig.supportsPromptCacheControl && (
+          <p className="text-xs leading-5 text-ink-3">
+            This model uses automatic caching and does not support turning it off.
+          </p>
+        )}
       </section>
 
       <section className="space-y-2.5">
