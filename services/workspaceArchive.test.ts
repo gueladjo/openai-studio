@@ -76,6 +76,10 @@ const sessions: Session[] = [{
       }],
       timestamp: 11,
       modelName: 'GPT-5.6 Sol',
+      promptCacheDiagnostics: {
+        type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
+        comparison_reusable_tokens: 3000
+      },
       generatedFiles: [{
         filename: 'remote-only.txt',
         fileId: 'file-1',
@@ -206,6 +210,8 @@ describe('portable workspace archive', () => {
           country: 'GB'
         }
       });
+    expect(inspected.replacement.sessions[0].messages[1].promptCacheDiagnostics)
+      .toEqual(sessions[0].messages[1].promptCacheDiagnostics);
     expect(inspected.replacement.sessions[0].messages[1].outputMessages).toEqual([
       { content: 'Reading the notes.', phase: 'commentary' },
       { content: 'Done.', phase: 'final_answer' }

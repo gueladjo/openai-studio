@@ -14,6 +14,7 @@ import {
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
 import { MAX_PROJECT_SOURCES } from '../utils/projectSources';
 import { SHA256_PATTERN } from './contentAddressing';
+import { PROMPT_CACHE_MISS_LABELS } from '../utils/promptCacheDiagnostics';
 
 export const MAX_WORKSPACE_BACKUP_BYTES = 512 * 1024 * 1024;
 
@@ -44,6 +45,10 @@ const RESERVED_LOCAL_IDS = new Set(Object.getOwnPropertyNames(Object.prototype))
 const MESSAGE_STATUSES = new Set(['streaming', 'complete', 'incomplete', 'error', 'stopped']);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
+const PROMPT_CACHE_DIAGNOSTIC_TYPES = new Set([
+  'cache_miss', 'cache_hit', 'comparison_response_not_found', 'unavailable'
+]);
+const PROMPT_CACHE_MISS_REASONS = new Set(Object.keys(PROMPT_CACHE_MISS_LABELS));
 const TEXT_VERBOSITIES = new Set(['low', 'medium', 'high']);
 const WEB_SEARCH_CONTEXT_SIZES = new Set(['low', 'medium', 'high']);
 const GENERATED_FILE_SOURCES = new Set(['container_file_citation']);
@@ -322,6 +327,21 @@ const parseOutputMessage = (value: unknown, path: string): void => {
   assertOptionalEnum(output.phase, `${path}.phase`, ASSISTANT_PHASES);
 };
 
+const parsePromptCacheDiagnostics = (value: unknown, path: string): void => {
+  const diagnostic = assertRecord(value, path);
+  assertEnum(diagnostic.type, `${path}.type`, PROMPT_CACHE_DIAGNOSTIC_TYPES);
+  if (diagnostic.type === 'cache_miss') {
+    assertObject(value, path, ['type', 'reason', 'cache_missed_tokens', 'comparison_reusable_tokens']);
+    assertEnum(diagnostic.reason, `${path}.reason`, PROMPT_CACHE_MISS_REASONS);
+    assertSafeInteger(diagnostic.cache_missed_tokens, `${path}.cache_missed_tokens`, 0, MAX_TOKEN_COUNT);
+    assertOptionalSafeInteger(
+      diagnostic.comparison_reusable_tokens, `${path}.comparison_reusable_tokens`, 0, MAX_TOKEN_COUNT
+    );
+  } else {
+    assertObject(value, path, ['type']);
+  }
+};
+
 const parseMessage = (value: unknown, path: string, messageIds: Set<string>): Message => {
   const message = assertObject(value, path, [
     'id',
@@ -336,6 +356,7 @@ const parseMessage = (value: unknown, path: string, messageIds: Set<string>): Me
     'incompleteReason',
     'thinkingDuration',
     'usage',
+    'promptCacheDiagnostics',
     'sources',
     'generatedFiles',
     'timestamp',
@@ -372,6 +393,12 @@ const parseMessage = (value: unknown, path: string, messageIds: Set<string>): Me
     assertFiniteNumber(message.thinkingDuration, `${path}.thinkingDuration`, 0, MAX_DURATION_MS);
   }
   if (message.usage !== undefined) parseUsage(message.usage, `${path}.usage`);
+  if (message.promptCacheDiagnostics !== undefined) {
+    if (message.role !== 'assistant') {
+      fail(`${path}.promptCacheDiagnostics`, 'is only supported for assistant messages');
+    }
+    parsePromptCacheDiagnostics(message.promptCacheDiagnostics, `${path}.promptCacheDiagnostics`);
+  }
 
   if (message.sources !== undefined) {
     assertArray(message.sources, `${path}.sources`, MAX_SOURCES_PER_MESSAGE)

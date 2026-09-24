@@ -1939,6 +1939,7 @@ function App() {
         thinkingDuration,
         responseId,
         usage,
+        promptCacheDiagnostics,
         fileSearchCallCount
       } = await generateResponse(
         messagesForApi,
@@ -2011,6 +2012,7 @@ function App() {
         incompleteReason,
         thinkingDuration,
         usage,
+        promptCacheDiagnostics,
         fileSearchCallCount,
         sources,
         generatedFiles,

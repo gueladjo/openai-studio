@@ -101,6 +101,47 @@ describe('workspace runtime schema', () => {
       .toEqual({ cached_tokens: 2, cache_write_tokens: 1 });
   });
 
+  it.each([
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
+      comparison_reusable_tokens: 3000 },
+    { type: 'cache_miss', reason: 'input_changed', cache_missed_tokens: 0 },
+    { type: 'cache_hit' },
+    { type: 'comparison_response_not_found' },
+    { type: 'unavailable' },
+    undefined
+  ] as const)('round-trips optional diagnostics: %j', diagnostic => {
+    const workspace = createBackup();
+    workspace.sessions[0].messages[1].promptCacheDiagnostics = diagnostic;
+    expect(parseWorkspace(workspace).sessions[0].messages[1].promptCacheDiagnostics)
+      .toEqual(diagnostic);
+  });
+
+  it.each([
+    null,
+    { type: 'unknown' },
+    { type: 'cache_hit', reason: 'tools_changed' },
+    { type: 'cache_miss', reason: 'unknown', cache_missed_tokens: 0 },
+    { type: 'cache_miss', reason: 'tools_changed' },
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: -1 },
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 1.5 },
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 0,
+      comparison_reusable_tokens: Infinity },
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 0,
+      comparison_reusable_tokens: -1 },
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 0,
+      extra: 'unsupported' }
+  ])('rejects malformed persisted diagnostics: %j', diagnostic => {
+    const workspace = createBackup();
+    workspace.sessions[0].messages[1].promptCacheDiagnostics = diagnostic as any;
+    expect(() => parseWorkspace(workspace)).toThrow('promptCacheDiagnostics');
+  });
+
+  it('rejects diagnostics on user messages', () => {
+    const workspace = createBackup();
+    workspace.sessions[0].messages[0].promptCacheDiagnostics = { type: 'cache_hit' };
+    expect(() => parseWorkspace(workspace)).toThrow('only supported for assistant messages');
+  });
+
   it('rejects malformed nested sources, usage, generated files, and timestamps', () => {
     const invalidSource = createBackup();
     invalidSource.sessions[0].messages[1].sources = [{} as any];

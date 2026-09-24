@@ -36,6 +36,7 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { getModelConfig } from '../constants';
+import { PROMPT_CACHE_MISS_LABELS } from '../utils/promptCacheDiagnostics';
 import { getSourcePresentation } from '../utils/sourceUrls';
 import {
   ATTACHMENT_INPUT_ACCEPT,
@@ -487,6 +488,9 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
   const hasTokenUsage = Boolean(message.usage);
   const cacheWriteTokens = message.usage?.input_tokens_details.cache_write_tokens;
   const hasCacheWriteTokens = typeof cacheWriteTokens === 'number';
+  const cacheMissLabel = message.promptCacheDiagnostics?.type === 'cache_miss'
+    ? PROMPT_CACHE_MISS_LABELS[message.promptCacheDiagnostics.reason]
+    : undefined;
 
   const tokenRow = (label: string, value: number) => (
     <div className="flex items-center justify-between gap-3">
@@ -529,6 +533,12 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
                   </div>
                 </div>
               </div>
+            )}
+
+            {cacheMissLabel && (
+              <p className="text-xs text-ink-2">
+                Cache miss: {cacheMissLabel}
+              </p>
             )}
 
             {typeof message.fileSearchCallCount === 'number' && (

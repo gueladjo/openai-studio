@@ -28,12 +28,14 @@ import {
   OpenAIResponsesStreamEvent,
   OpenAIResponsesStreamingConfig,
   OpenAIResponsesUsage,
+  OpenAIPromptCacheDiagnostics,
   ResolvedProjectContext,
   ResponseIncompleteReason,
   Source,
   WebCitationSource
 } from '../types';
 import { createSourceRecord } from '../utils/sourceUrls';
+import { normalizePromptCacheDiagnostics } from '../utils/promptCacheDiagnostics';
 import {
   getAttachmentFormat,
   getDataUrlByteLength,
@@ -87,6 +89,7 @@ interface GenerateResponseResult {
   thinkingDuration: number;
   responseId?: string;
   usage?: OpenAIResponsesUsage;
+  promptCacheDiagnostics?: OpenAIPromptCacheDiagnostics;
   fileSearchCallCount?: number;
 }
 
@@ -1054,6 +1057,7 @@ const parseGenerateResponse = (
     thinkingDuration,
     responseId: response.id,
     usage: response.usage,
+    promptCacheDiagnostics: normalizePromptCacheDiagnostics(response.prompt_cache_diagnostics),
     ...(fileSearchCallCount > 0 ? { fileSearchCallCount } : {})
   };
 };
@@ -1486,6 +1490,13 @@ export const generateResponse = async (
 
   if (previousResponseId) {
     payload.previous_response_id = previousResponseId;
+    const previousMessage = replayableMessages[replayableMessages.length - 2];
+    if (
+      modelConfig.supportsPromptCacheDiagnostics &&
+      (previousMessage.status === undefined || previousMessage.status === 'complete')
+    ) {
+      payload.prompt_cache_options = { comparison_response_id: previousResponseId };
+    }
   }
 
   const reasoningEffort = getNormalizedReasoningEffort(
@@ -1601,6 +1612,7 @@ export const generateResponse = async (
         input: await buildApiInput(replayableMessages)
       };
       delete fallbackPayload.previous_response_id;
+      delete fallbackPayload.prompt_cache_options;
       stream = await createStreamWithCapabilityFallback(fallbackPayload);
     }
 

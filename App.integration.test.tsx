@@ -89,6 +89,7 @@ interface GenerateResult {
   sources: [];
   thinkingDuration: number;
   responseId: string;
+  promptCacheDiagnostics?: Message['promptCacheDiagnostics'];
   generatedFiles?: GeneratedFile[];
 }
 
@@ -1212,6 +1213,7 @@ describe('App workspace and request lifecycle', () => {
     await act(async () => {
       response.resolve({
         ...completedResult('Progress update.\n\nAnswer for A.'),
+        promptCacheDiagnostics: { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000 },
         outputMessages: [{
           content: 'Progress update.',
           phase: 'commentary'
@@ -1247,6 +1249,7 @@ describe('App workspace and request lifecycle', () => {
         }],
         status: 'complete',
         openaiResponseId: 'resp-complete',
+        promptCacheDiagnostics: { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000 },
         modelName: 'GPT-6 Astra'
       })
     ]);

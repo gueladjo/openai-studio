@@ -150,6 +150,85 @@ describe('OpenAI request contracts', () => {
     }
   });
 
+  it.each([
+    [ModelId.GPT_6_ASTRA, true],
+    [ModelId.GPT_6_SOL, true],
+    [ModelId.GPT_6_LUNA, true],
+    [ModelId.GPT_5_6_TERRA, true],
+    [ModelId.GPT_5_5, false],
+    [ModelId.GPT_5_NANO, false],
+    [ModelId.GPT_O3, false]
+  ])('requests cache comparisons only for supported models: %s', async (model, supported) => {
+    mockCompletedStream();
+    await generateResponse([
+      userMessage,
+      { role: 'assistant', content: 'Earlier answer', timestamp: 2,
+        status: 'complete', openaiResponseId: 'resp-previous' },
+      { role: 'user', content: 'Follow up', timestamp: 3 }
+    ], { ...DEFAULT_CONFIG, model: model as ModelId }, 'test-key');
+
+    const payload = createResponseMock.mock.calls[0][0];
+    expect(payload.previous_response_id).toBe('resp-previous');
+    expect(payload.prompt_cache_options).toEqual(
+      supported ? { comparison_response_id: 'resp-previous' } : undefined
+    );
+  });
+
+  it('omits cache comparisons for incomplete baselines', async () => {
+    mockCompletedStream();
+    await generateResponse([
+      userMessage,
+      { role: 'assistant', content: 'Partial answer', timestamp: 2,
+        status: 'incomplete', openaiResponseId: 'resp-partial' },
+      { role: 'user', content: 'Continue', timestamp: 3 }
+    ], DEFAULT_CONFIG, 'test-key');
+    expect(createResponseMock.mock.calls[0][0].prompt_cache_options).toBeUndefined();
+  });
+
+  it.each([
+    { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
+      comparison_reusable_tokens: 3000 },
+    { type: 'cache_hit' },
+    { type: 'unavailable' },
+    { type: 'comparison_response_not_found' },
+    undefined,
+    null
+  ] as const)('retains terminal cache diagnostics without altering the answer: %j', async diagnostic => {
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed', sequence_number: 1,
+      response: {
+        ...createCompletedResponse([messageOutput]),
+        prompt_cache_diagnostics: diagnostic
+      } as OpenAIResponse
+    }]));
+    const result = await generateResponse([userMessage], DEFAULT_CONFIG, 'test-key');
+    expect(result.content).toBe('The answer is 42.');
+    expect(result.promptCacheDiagnostics).toEqual(diagnostic ?? undefined);
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock.mock.calls[0][0].prompt_cache_options).toBeUndefined();
+  });
+
+  it.each([
+    [{ type: 'cache_miss', reason: 'future_reason', cache_missed_tokens: 2000 }, undefined],
+    [{ type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: -1 }, undefined],
+    [{ type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 0,
+      comparison_reusable_tokens: Infinity }, undefined],
+    [{ type: 'future_outcome' }, undefined],
+    [{ type: 'cache_hit', extra: 'future API field' }, { type: 'cache_hit' }],
+    [{ type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000, extra: true },
+      { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000 }]
+  ])('normalizes optional API diagnostics without jeopardizing answer persistence: %j', async (diagnostic, expected) => {
+    createResponseMock.mockResolvedValue(createStream([{
+      type: 'response.completed', sequence_number: 1,
+      response: { ...createCompletedResponse([messageOutput]),
+        prompt_cache_diagnostics: diagnostic } as OpenAIResponse
+    }]));
+    const result = await generateResponse([userMessage], DEFAULT_CONFIG, 'test-key');
+    expect(result.content).toBe('The answer is 42.');
+    expect(result.promptCacheDiagnostics).toEqual(expected);
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+  });
+
   it('builds the complete stored streaming payload for enabled tools', async () => {
     const completedResponse = createCompletedResponse([messageOutput]);
     createResponseMock.mockResolvedValue(createStream([
@@ -299,6 +378,7 @@ describe('OpenAI request contracts', () => {
     expect(createResponseMock.mock.calls[0][0]).toMatchObject({
       input: [{ role: 'user', content: 'Use the project evidence.' }],
       previous_response_id: 'resp-previous',
+      prompt_cache_options: { comparison_response_id: 'resp-previous' },
       instructions: expect.stringContaining('Use current project instructions.'),
       tool_choice: 'auto',
       tools: [{
@@ -1381,9 +1461,11 @@ describe('generateResponse conversation history', () => {
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     expect(createResponseMock.mock.calls[0][0]).toMatchObject({
       previous_response_id: 'resp-expired',
+      prompt_cache_options: { comparison_response_id: 'resp-expired' },
       input: [{ role: 'user', content: 'Build on that answer.' }]
     });
     expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
+    expect(createResponseMock.mock.calls[1][0].prompt_cache_options).toBeUndefined();
     expect(createResponseMock.mock.calls[1][0].input).toEqual([
       { role: 'user', content: 'Solve this problem.' },
       { role: 'assistant', content: 'Working on it.', phase: 'commentary' },
@@ -1431,6 +1513,7 @@ describe('generateResponse conversation history', () => {
 
     expect(createResponseMock).toHaveBeenCalledTimes(2);
     expect(createResponseMock.mock.calls[1][0].previous_response_id).toBeUndefined();
+    expect(createResponseMock.mock.calls[1][0].prompt_cache_options).toBeUndefined();
   });
 
   it('does not retry ambiguous previous_response_id validation failures', async () => {
@@ -1604,7 +1687,13 @@ describe('background stream resumption', () => {
     ));
     retrieveResponseMock.mockResolvedValue(createStream([
       textDelta(2, 'answer is 42.'),
-      completedEvent(3)
+      {
+        ...completedEvent(3),
+        response: {
+          ...createCompletedResponse([messageOutput]),
+          prompt_cache_diagnostics: { type: 'cache_miss', reason: 'input_changed', cache_missed_tokens: 2000 }
+        }
+      } as OpenAIResponsesStreamEvent
     ]));
     const onTextDelta = vi.fn();
     const controller = new AbortController();
@@ -1633,6 +1722,9 @@ describe('background stream resumption', () => {
       { signal: expect.any(AbortSignal) }
     );
     expect(onTextDelta.mock.calls.map(call => call[0])).toEqual(['The ', 'answer is 42.']);
+    expect(result.promptCacheDiagnostics).toEqual({
+      type: 'cache_miss', reason: 'input_changed', cache_missed_tokens: 2000
+    });
     expect(result).toMatchObject({
       content: 'The answer is 42.',
       status: 'complete'

@@ -98,6 +98,37 @@ describe('response model labels', () => {
 describe('response token usage details', () => {
   const view = useReactView();
 
+  it.each([
+    [{ type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 12345,
+      comparison_reusable_tokens: 54321 }, 'Cache miss: Tools changed'],
+    [{ type: 'cache_miss', reason: 'reasoning_effort_changed', cache_missed_tokens: 12345 },
+      'Cache miss: Reasoning effort changed'],
+    [{ type: 'cache_hit' }, undefined],
+    [{ type: 'unavailable' }, undefined],
+    [{ type: 'comparison_response_not_found' }, undefined],
+    [undefined, undefined]
+  ] as const)('shows only a short miss reason inside response details: %j', async (diagnostic, label) => {
+    const container = await view.render(
+      <MessageRow
+        message={{ role: 'assistant', content: 'Answer', timestamp: 1,
+          promptCacheDiagnostics: diagnostic }}
+        canRetry={false}
+        canRegenerate={false}
+        apiKey=""
+        onRetryFailedMessage={() => undefined}
+        onRegenerateResponse={() => undefined}
+      />
+    );
+    expect(container.textContent).not.toContain('Cache miss:');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Show response details"]')?.click();
+    });
+    const cacheNotes = Array.from(container.querySelectorAll('p'))
+      .filter(element => element.textContent?.startsWith('Cache miss:'));
+    expect(cacheNotes.map(element => element.textContent)).toEqual(label ? [label] : []);
+    expect(container.textContent).not.toMatch(/12345|54321|cache_miss|unavailable|comparison_response/);
+  });
+
   it('displays cache writes when reported by the API', async () => {
     const message: Message = {
       id: 'assistant-cache-write',

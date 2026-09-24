@@ -473,6 +473,18 @@ response is inaccessible, generation may retry once without that ID using full
 local history. This recovery is never repeated for the same request and is not
 used for ambiguous validation errors.
 
+GPT-5.6 and GPT-6 conversation requests with a preceding completed response ID
+also send `prompt_cache_options.comparison_response_id`. First turns, incomplete
+baselines, and older models omit it; legacy assistant records without a status
+remain eligible. Manual-history recovery drops the comparison along with the
+inaccessible response ID. This requests diagnostics without changing caching
+mode, retention, or retry policy. Terminal response diagnostics are retained on
+the assistant message, including after stream resumption. Response details show
+only a compact cache-miss reason; hits, unavailable/expired comparisons, and raw
+diagnostic token estimates add no UI. Unknown/malformed API diagnostics are
+omitted and extra API fields are stripped so optional metadata cannot block
+answer persistence. Usage counters remain authoritative.
+
 Every project request receives an explicit immutable `ResolvedProjectContext`
 captured by `App.tsx` before the user turn is added. The request always sends
 the snapshot's project instructions, including with `previous_response_id`,
@@ -577,7 +589,14 @@ static model name used for historical labels and may carry an ordered
 `final_answer` phase. Aggregate `content` remains required even when
 `outputMessages` is present. `outputMessages` is optional within the supported
 formats; messages without it retain the aggregate representation used by
-partial/error handling. Refusal text is part of `content`; the retired
+partial/error handling. Optional `promptCacheDiagnostics` retains the SDK
+comparison result; cache misses include a known reason, a nonnegative integer
+`cache_missed_tokens`, and optional `comparison_reusable_tokens`. Other outcomes
+contain only their discriminator. These assistant-only records round-trip through
+local v5 and portable archive v3 without a version change or migration. Existing
+records may omit the field; older application versions may reject newly written
+records containing it. Normalization preserves the optional field unchanged.
+Refusal text is part of `content`; the retired
 `refusal` message field and `generatedFiles[].source` are no longer written
 but remain accepted on older records.
 

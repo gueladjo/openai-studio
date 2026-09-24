@@ -40,6 +40,7 @@ export interface ModelConfig {
   knowledgeCutoff: string;
   contextWindowTokens: number;
   supportsVerbosity: boolean;
+  supportsPromptCacheDiagnostics?: boolean;
   reasoningOptions: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;
 }
@@ -146,6 +147,7 @@ export interface Message {
   incompleteReason?: ResponseIncompleteReason;
   thinkingDuration?: number; // Time to first streamed primary output token in milliseconds
   usage?: OpenAIResponsesUsage;
+  promptCacheDiagnostics?: OpenAIPromptCacheDiagnostics;
   sources?: Source[];
   generatedFiles?: GeneratedFile[];
   timestamp: number;
@@ -284,6 +286,7 @@ export type OpenAIResponsesConfig = ResponseCreateParamsNonStreaming;
 export type OpenAIResponsesStreamingConfig = ResponseCreateParamsStreaming;
 export type OpenAIResponsesStreamEvent = ResponseStreamEvent;
 export type OpenAIResponsesUsage = ResponseUsage;
+export type OpenAIPromptCacheDiagnostics = NonNullable<Response['prompt_cache_diagnostics']>;
 
 export const DEFAULT_CONFIG: ChatConfig = {
   model: ModelId.GPT_6_ASTRA,

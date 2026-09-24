@@ -961,6 +961,21 @@ describe('storage public contracts', () => {
     warn.mockRestore();
   });
 
+  it('preserves cache diagnostics after saving and reloading a workspace', async () => {
+    const session = createSession('Cache diagnostics');
+    session.messages.push({
+      id: 'assistant-cache', role: 'assistant', content: 'Answer', timestamp: 2,
+      modelName: 'GPT-6 Astra',
+      promptCacheDiagnostics: {
+        type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
+        comparison_reusable_tokens: 3000
+      }
+    });
+    await seedWorkspace([session]);
+    await storage.synchronizeWorkspaceRevision(handle);
+    await expect(readField('sessions')).resolves.toEqual([session]);
+  });
+
   it('preserves manifest session order through repeated validation', async () => {
     const sessions = ['Alpha', 'Beta', 'Gamma', 'Delta'].map(title => createSession(title));
     await seedWorkspace(sessions);
