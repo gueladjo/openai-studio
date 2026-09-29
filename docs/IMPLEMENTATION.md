@@ -3,7 +3,7 @@
 ## Status And Authority
 
 - Status: implemented current behavior and approved constraints.
-- Last meaningful update: 2026-09-22, replacing GPT-5.6 Sol and Luna with GPT-6 equivalents.
+- Last meaningful update: 2026-09-29, replacing GPT-6 Sol with GPT-6.1 Sol.
 - Last verified against code and tests: 2026-08-03.
 
 This document is authoritative for intended application behavior, architecture,
@@ -106,8 +106,16 @@ existing chats in supported workspace formats remain loadable. GPT-6 Astra is
 the new-chat default with Max reasoning. It is selectable with Low, Medium,
 High, Xhigh, and Max reasoning; Max is its fallback for unsupported saved
 efforts.
-Saved chats configured for GPT-5.6 Sol or Luna select the corresponding GPT-6
-model when loaded; historical answer labels remain as recorded.
+GPT-6.1 Sol replaces GPT-6 Sol in the picker and API requests, uses the April 30,
+2026 knowledge cutoff and 1,050,000-token context window, and supports Low,
+Medium, High, Xhigh, and Max reasoning with Medium as its default and fallback.
+The [official model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+does not support None or Minimal reasoning.
+Saved chats configured for GPT-5.6 Sol or GPT-6 Sol select GPT-6.1 Sol when
+loaded; unsupported saved efforts normalize to Medium. Saved GPT-5.6 Luna
+configurations select GPT-6 Luna. Historical answer labels remain as recorded.
+These configuration upgrades retain the supported local v5 and portable archive
+v3 formats without a schema-version change.
 
 Chat settings includes a Prompt caching switch, enabled by default. On GPT-5.6
 and GPT-6 models, turning it off disables prompt cache reads and writes for

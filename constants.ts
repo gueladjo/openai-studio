@@ -41,15 +41,15 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_ASTRA,
     defaultReasoningEffort: 'max'
   },
-  [ModelId.GPT_6_SOL]: {
-    id: ModelId.GPT_6_SOL,
+  [ModelId.GPT_6_1_SOL]: {
+    id: ModelId.GPT_6_1_SOL,
     supportsPromptCacheDiagnostics: true,
     supportsPromptCacheControl: true,
-    name: 'GPT-6 Sol',
-    knowledgeCutoff: 'April 20, 2026',
+    name: 'GPT-6.1 Sol',
+    knowledgeCutoff: 'April 30, 2026',
     contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
-    reasoningOptions: REASONING_EFFORT_GPT_5_6,
+    reasoningOptions: REASONING_EFFORT_ASTRA,
     defaultReasoningEffort: 'medium'
   },
   [ModelId.GPT_5_6_TERRA]: {
@@ -174,8 +174,8 @@ export const normalizeWebSearchOptions = (value: unknown): WebSearchOptions => {
 };
 
 export const getModelConfig = (model: ModelId | string): ModelConfig => {
-  const migratedModel = model === 'gpt-5.6-sol'
-    ? ModelId.GPT_6_SOL
+  const migratedModel = (model === 'gpt-5.6-sol' || model === 'gpt-6-sol')
+    ? ModelId.GPT_6_1_SOL
     : model === 'gpt-5.6-luna'
       ? ModelId.GPT_6_LUNA
       : model;

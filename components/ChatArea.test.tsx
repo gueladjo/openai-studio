@@ -53,7 +53,7 @@ const createSessionWithUsage = (
 describe('ChatArea context window usage', () => {
   it('uses total response tokens and the selected model context window', () => {
     const solHtml = renderToStaticMarkup(
-      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_6_SOL, 200_000, 10_000)} />
+      <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_6_1_SOL, 200_000, 10_000)} />
     );
     const lunaHtml = renderToStaticMarkup(
       <ContextWindowUsage session={createSessionWithUsage(ModelId.GPT_6_LUNA, 150_000, 50_000)} />

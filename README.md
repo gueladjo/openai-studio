@@ -15,7 +15,7 @@ rules, task routing, and verification commands.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
 - Local projects with names, icons, live project instructions, grouped chats, and reusable source libraries.
 - Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.
-- Configured model picker for GPT-6 Astra, GPT-6 Sol, GPT-5.6 Terra, GPT-6 Luna, GPT-5.5, GPT-5 Nano, and o3. New chats default to GPT-6 Astra with Max reasoning. Model availability depends on the API account.
+- Configured model picker for GPT-6 Astra, GPT-6.1 Sol, GPT-5.6 Terra, GPT-6 Luna, GPT-5.5, GPT-5 Nano, and o3. New chats default to GPT-6 Astra with Max reasoning. Model availability depends on the API account.
 - Model-specific reasoning effort and text verbosity controls.
 - **Chat settings → Prompt caching** toggles caching on GPT-5.6 and GPT-6 models.
   It starts on; turn it off to avoid cache-write costs for short chats. The choice

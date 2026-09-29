@@ -255,7 +255,7 @@ describe('ConfigPanel', () => {
       <ConfigPanelHarness
         initialConfig={{
           ...DEFAULT_CONFIG,
-          model: ModelId.GPT_6_SOL,
+          model: ModelId.GPT_5_6_TERRA,
           reasoningEffort: 'none'
         }}
         onConfigChange={onConfigChange}
@@ -279,13 +279,37 @@ describe('ConfigPanel', () => {
     expect(getButton('max')).toBeDefined();
   });
 
+  it('replaces Sol in the picker and normalizes effort when selecting GPT-6.1 Sol', async () => {
+    const onConfigChange = vi.fn();
+    container = await view.render(
+      <ConfigPanelHarness
+        initialConfig={{ ...DEFAULT_CONFIG, model: ModelId.GPT_5_6_TERRA, reasoningEffort: 'none' }}
+        onConfigChange={onConfigChange}
+      />
+    );
+    const picker = Array.from(container.querySelectorAll('select')).find(
+      select => select.querySelector('option[value="gpt-6.1-sol"]')
+    )!;
+    expect(picker.querySelector('option[value="gpt-6-sol"]')).toBeNull();
+    expect(picker.querySelector('option[value="gpt-6.1-sol"]')?.textContent).toBe('GPT-6.1 Sol');
+
+    await changeValue(picker, ModelId.GPT_6_1_SOL, 'change');
+
+    expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: ModelId.GPT_6_1_SOL, reasoningEffort: 'medium'
+    }));
+    expect(getButton('none')).toBeUndefined();
+    expect(getButton('minimal')).toBeUndefined();
+    expect(getButton('max')).toBeDefined();
+  });
+
   it('renders every reasoning effort as an equal-width step of the level scale', async () => {
     const onConfigChange = vi.fn();
     container = await view.render(
       <ConfigPanelHarness
         initialConfig={{
           ...DEFAULT_CONFIG,
-          model: ModelId.GPT_6_SOL,
+          model: ModelId.GPT_6_1_SOL,
           reasoningEffort: 'medium'
         }}
         onConfigChange={onConfigChange}
@@ -296,30 +320,30 @@ describe('ConfigPanel', () => {
     )!;
     const steps = Array.from(scale.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
 
-    expect(scale.style.gridTemplateColumns).toBe('repeat(6, minmax(0, 1fr))');
+    expect(scale.style.gridTemplateColumns).toBe('repeat(5, minmax(0, 1fr))');
     expect(steps.map(step => step.textContent?.trim())).toEqual([
-      'none', 'low', 'medium', 'high', 'xhigh', 'max'
+      'low', 'medium', 'high', 'xhigh', 'max'
     ]);
     expect(steps.map(step => step.getAttribute('aria-checked'))).toEqual([
-      'false', 'false', 'true', 'false', 'false', 'false'
+      'false', 'true', 'false', 'false', 'false'
     ]);
     const bars = steps.map(step => step.querySelector<HTMLSpanElement>('[aria-hidden="true"]')!);
     expect(bars.map(bar => bar.classList.contains('bg-accent'))).toEqual([
-      false, false, true, false, false, false
+      false, true, false, false, false
     ]);
     expect(bars.map(bar => bar.classList.contains('bg-line-strong'))).toEqual([
-      true, true, false, true, true, true
+      true, false, true, true, true
     ]);
 
     await act(async () => {
-      steps[5].click();
+      steps[4].click();
     });
 
     expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
       reasoningEffort: 'max'
     }));
-    expect(steps[5].getAttribute('aria-checked')).toBe('true');
-    expect(steps[2].getAttribute('aria-checked')).toBe('false');
+    expect(steps[4].getAttribute('aria-checked')).toBe('true');
+    expect(steps[1].getAttribute('aria-checked')).toBe('false');
   });
 
   it('keeps the System instructions picker visible while its editor starts collapsed', async () => {

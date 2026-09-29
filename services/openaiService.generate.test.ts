@@ -152,7 +152,7 @@ describe('OpenAI request contracts', () => {
 
   it.each([
     [ModelId.GPT_6_ASTRA, true],
-    [ModelId.GPT_6_SOL, true],
+    [ModelId.GPT_6_1_SOL, true],
     [ModelId.GPT_6_LUNA, true],
     [ModelId.GPT_5_6_TERRA, true],
     [ModelId.GPT_5_5, false],
@@ -176,7 +176,7 @@ describe('OpenAI request contracts', () => {
 
   it.each([
     [ModelId.GPT_6_ASTRA, true],
-    [ModelId.GPT_6_SOL, true],
+    [ModelId.GPT_6_1_SOL, true],
     [ModelId.GPT_6_LUNA, true],
     [ModelId.GPT_5_6_TERRA, true],
     [ModelId.GPT_5_5, false],
@@ -906,6 +906,24 @@ describe('generateResponse reasoning summaries', () => {
     expect(result.thinking).toBe('');
   });
 
+  it.each(['gpt-5.6-sol', 'gpt-6-sol', ModelId.GPT_6_1_SOL])(
+    'sends GPT-6.1 Sol requests with normalized reasoning for %s', async model => {
+      mockCompletedStream();
+      await generateResponse(
+        [userMessage],
+        { ...DEFAULT_CONFIG, model: model as ModelId, reasoningEffort: 'none' },
+        'test-key'
+      );
+
+      expect(createResponseMock).toHaveBeenCalledTimes(1);
+      expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+        model: 'gpt-6.1-sol',
+        reasoning: { effort: 'medium', summary: 'auto' },
+        instructions: 'You are GPT-6.1 Sol, an OpenAI model. Your knowledge cutoff is April 30, 2026.'
+      });
+    }
+  );
+
   it('does not request a summary when reasoning is disabled', async () => {
     mockCompletedStream();
 
@@ -913,7 +931,7 @@ describe('generateResponse reasoning summaries', () => {
       [userMessage],
       {
         ...DEFAULT_CONFIG,
-        model: ModelId.GPT_6_SOL,
+        model: ModelId.GPT_5_6_TERRA,
         reasoningEffort: 'none'
       },
       'reasoning-disabled-key'

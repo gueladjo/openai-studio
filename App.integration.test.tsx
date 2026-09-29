@@ -692,6 +692,30 @@ describe('App workspace and request lifecycle', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['gpt-5.6-sol', 'gpt-6-sol'])(
+    'upgrades saved %s chats while preserving historical answer labels', async model => {
+      const historicalName = model === 'gpt-6-sol' ? 'GPT-6 Sol' : 'GPT-5.6 Sol';
+      const session = createSession('session-a', 'Saved Sol chat', [{
+        role: 'assistant', content: 'Earlier answer', timestamp: 1,
+        model, modelName: historicalName, reasoningEffort: 'none'
+      }]);
+      session.config = chatConfig({ model: model as ModelId, reasoningEffort: 'none', promptCaching: false });
+      mocks.loadedSessions = [session];
+
+      await renderApp();
+      await finishInitialization();
+
+      const upgraded = getSidebarProps().sessions[0];
+      expect(upgraded.config).toMatchObject({
+        model: ModelId.GPT_6_1_SOL, reasoningEffort: 'medium', promptCaching: false
+      });
+      expect(upgraded.messages).toEqual(session.messages);
+      const persisted = getPersistedSessionWrites().at(-1)![0];
+      expect(persisted.config).toEqual(upgraded.config);
+      expect(persisted.messages).toEqual(session.messages);
+    }
+  );
+
   it('recovers a writer pending request into a persisted retryable failure', async () => {
     const interruptedSession = createSession('session-a', 'Interrupted', [
       {
