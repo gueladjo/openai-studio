@@ -686,6 +686,10 @@ describe('OpenAI request contracts', () => {
     expect(result.content).toContain(
       '![Code Interpreter output 2](https://example.com/chart.png)'
     );
+    expect(result.outputMessages?.map(output => output.kind)).toEqual([
+      undefined,
+      'code_interpreter'
+    ]);
     expect(result.generatedFiles).toEqual([{
       filename: '/mnt/data/result.csv',
       fileId: 'file-result',
@@ -1299,6 +1303,42 @@ describe('generateResponse assistant phases', () => {
 describe('generateResponse conversation history', () => {
   beforeEach(() => {
     createResponseMock.mockReset();
+  });
+
+  it('replays Code Interpreter output as plain assistant text', async () => {
+    mockCompletedStream();
+    const messages: Message[] = [
+      userMessage,
+      {
+        id: 'assistant-code',
+        role: 'assistant',
+        content: '```python\nprint(2)\n```\n\nIt prints 2.',
+        outputMessages: [{
+          content: '```python\nprint(2)\n```',
+          kind: 'code_interpreter'
+        }, {
+          content: 'It prints 2.',
+          phase: 'final_answer'
+        }],
+        status: 'complete',
+        timestamp: 2
+      },
+      {
+        id: 'user-2',
+        role: 'user',
+        content: 'And print(3)?',
+        timestamp: 3
+      }
+    ];
+
+    await generateResponse(messages, DEFAULT_CONFIG, 'history-key');
+
+    expect(createResponseMock.mock.calls[0][0].input).toEqual([
+      { role: 'user', content: 'Solve this problem.' },
+      { role: 'assistant', content: '```python\nprint(2)\n```' },
+      { role: 'assistant', content: 'It prints 2.', phase: 'final_answer' },
+      { role: 'user', content: 'And print(3)?' }
+    ]);
   });
 
   it('does not replay local assistant error rows', async () => {

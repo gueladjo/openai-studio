@@ -990,7 +990,7 @@ const parseGenerateResponse = (
         const codeInterpreterContent = formatCodeInterpreterCall(item);
         content = appendMarkdownSection(content, codeInterpreterContent);
         if (codeInterpreterContent) {
-          outputMessages.push({ content: codeInterpreterContent });
+          outputMessages.push({ content: codeInterpreterContent, kind: 'code_interpreter' });
         }
       } else if (isWebSearchResponseItem(item)) {
         rawSources.push(...getWebSearchActionSources(item.action));

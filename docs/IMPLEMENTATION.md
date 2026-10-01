@@ -150,9 +150,11 @@ validation path.
 Responses can render GitHub Flavored Markdown, inline and display TeX math,
 citations, refusal or incomplete output, reasoning summaries, usage details
 including cache-read and cache-write token counts when reported, and generated
-Code Interpreter files. Each Code Interpreter call is stored as a `python` fence
-followed by one `output` fence per log entry, without headings; the renderer
-attaches each output fence to the preceding block as a height-capped panel.
+Code Interpreter files. Each Code Interpreter call is stored as a
+`code_interpreter` output message holding a `python` fence followed by one
+`output` fence per log entry, without headings. The UI groups these runs in a
+collapsed "Ran code" section above the answer, and the renderer attaches each
+output fence to the preceding block as a height-capped panel.
 Every fenced block has a copy button that copies its text without the
 closing fence newline.
 Math accepts dollar delimiters as well as `\(...\)`
@@ -536,13 +538,18 @@ projectSourceId?}` sources, while historical and current web citations use
 on the persisted assistant message for diagnostics.
 
 Assistant output messages retain their API order and optional `phase` value.
-Manual-history requests, including inaccessible-`previous_response_id`
-recovery, replay each retained assistant output separately with `commentary` or
-`final_answer` unchanged. Unphased output remains valid for older responses and
-non-message rendered output. The UI presents commentary in a collapsible
-Progress section and treats final-answer and unphased output as the primary
-result. Markdown conversation exports label phased output, and portable
-archives preserve the same records. This is intrinsic response metadata, not a
+Output rendered from a Code Interpreter call is unphased and carries
+`kind: "code_interpreter"`. Manual-history requests, including
+inaccessible-`previous_response_id` recovery, replay each retained assistant
+output separately with `commentary` or `final_answer` unchanged; `kind` is local
+metadata and is never sent, so Code Interpreter runs replay as unphased
+assistant text. Unphased output remains valid for older responses, and older
+Code Interpreter output without `kind` renders inline with the answer. The UI
+presents commentary in a collapsible Progress section, Code Interpreter runs in
+a collapsed "Ran code" section, and the remaining final-answer and unphased
+output as the primary result, which is also what response copying uses.
+Markdown conversation exports label phased and Code Interpreter output, and
+portable archives preserve the same records. This is intrinsic response metadata, not a
 user configuration option.
 
 Changing response storage policy requires a corresponding redesign of
@@ -616,7 +623,9 @@ messages, chat configuration, timestamps, and optional `pendingRequest`
 records. Persisted assistant messages carry the
 static model name used for historical labels and may carry an ordered
 `outputMessages` list containing content plus an optional `commentary` or
-`final_answer` phase. Aggregate `content` remains required even when
+`final_answer` phase and an optional `kind` whose only value is
+`code_interpreter`. Older application versions may reject output messages
+containing `kind`. Aggregate `content` remains required even when
 `outputMessages` is present. `outputMessages` is optional within the supported
 formats; messages without it retain the aggregate representation used by
 partial/error handling. Optional `promptCacheDiagnostics` retains the SDK

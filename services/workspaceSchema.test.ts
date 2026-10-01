@@ -354,6 +354,22 @@ describe('workspace runtime schema', () => {
         phase: 'final_answer'
       }]);
 
+    const codeRun = createBackup();
+    codeRun.sessions[0].messages[1].outputMessages!.unshift({
+      content: '```python\nprint(1)\n```',
+      kind: 'code_interpreter'
+    });
+    expect(parseWorkspace(codeRun).sessions[0].messages[1].outputMessages?.[0]).toEqual({
+      content: '```python\nprint(1)\n```',
+      kind: 'code_interpreter'
+    });
+
+    const invalidKind = createBackup();
+    invalidKind.sessions[0].messages[1].outputMessages![0].kind = 'web_search' as any;
+    expect(() => parseWorkspace(invalidKind)).toThrow(
+      'outputMessages[0].kind has an unsupported value'
+    );
+
     const invalidPhase = createBackup();
     invalidPhase.sessions[0].messages[1].outputMessages![0].phase = 'analysis' as any;
     expect(() => parseWorkspace(invalidPhase)).toThrow(

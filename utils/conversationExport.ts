@@ -29,12 +29,14 @@ export const formatConversationMarkdown = (session: Session): string => {
     const roleLabel = message.role === 'user' ? 'User' : 'Assistant';
     if (message.role === 'assistant' && message.outputMessages?.length) {
       message.outputMessages.forEach(output => {
-        const phaseLabel = output.phase === 'commentary'
-          ? ' (Progress)'
-          : output.phase === 'final_answer'
-            ? ' (Final Answer)'
-            : '';
-        sections.push(`## Assistant${phaseLabel}`);
+        const label = output.kind === 'code_interpreter'
+          ? ' (Code Interpreter)'
+          : output.phase === 'commentary'
+            ? ' (Progress)'
+            : output.phase === 'final_answer'
+              ? ' (Final Answer)'
+              : '';
+        sections.push(`## Assistant${label}`);
         sections.push(output.content);
       });
       return;

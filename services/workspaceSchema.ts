@@ -45,6 +45,7 @@ const RESERVED_LOCAL_IDS = new Set(Object.getOwnPropertyNames(Object.prototype))
 const MESSAGE_STATUSES = new Set(['streaming', 'complete', 'incomplete', 'error', 'stopped']);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
 const ASSISTANT_PHASES = new Set(['commentary', 'final_answer']);
+const ASSISTANT_OUTPUT_KINDS = new Set(['code_interpreter']);
 const PROMPT_CACHE_DIAGNOSTIC_TYPES = new Set([
   'cache_miss', 'cache_hit', 'comparison_response_not_found', 'unavailable'
 ]);
@@ -322,9 +323,10 @@ const parseAttachment = (value: unknown, path: string): FileAttachment => {
 };
 
 const parseOutputMessage = (value: unknown, path: string): void => {
-  const output = assertObject(value, path, ['content', 'phase']);
+  const output = assertObject(value, path, ['content', 'phase', 'kind']);
   assertString(output.content, `${path}.content`, MAX_MESSAGE_CONTENT_LENGTH);
   assertOptionalEnum(output.phase, `${path}.phase`, ASSISTANT_PHASES);
+  assertOptionalEnum(output.kind, `${path}.kind`, ASSISTANT_OUTPUT_KINDS);
 };
 
 const parsePromptCacheDiagnostics = (value: unknown, path: string): void => {

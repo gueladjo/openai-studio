@@ -135,6 +135,8 @@ export type AssistantPhase = NonNullable<ResponseOutputMessage['phase']>;
 export interface AssistantOutputMessage {
   content: string;
   phase?: AssistantPhase;
+  // Rendered from a Code Interpreter call rather than written by the model.
+  kind?: 'code_interpreter';
 }
 
 export interface Message {

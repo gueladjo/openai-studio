@@ -75,4 +75,20 @@ describe('conversation Markdown export', () => {
       + '## Assistant (Final Answer)\n\nSummary.\n'
     );
   });
+
+  it('labels Code Interpreter runs separately from the answer', () => {
+    const session = createSession();
+    session.messages[1].content = '```python\nprint(1)\n```\n\nSummary.';
+    session.messages[1].outputMessages = [{
+      content: '```python\nprint(1)\n```',
+      kind: 'code_interpreter'
+    }, {
+      content: 'Summary.'
+    }];
+
+    expect(formatConversationMarkdown(session)).toContain(
+      '## Assistant (Code Interpreter)\n\n```python\nprint(1)\n```\n\n'
+      + '## Assistant\n\nSummary.\n'
+    );
+  });
 });

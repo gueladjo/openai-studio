@@ -6,7 +6,15 @@ import React, {
   useReducer,
   useState
 } from 'react';
-import { GeneratedFile, Message, Project, ProjectSource, Session, Source } from '../types';
+import {
+  AssistantOutputMessage,
+  GeneratedFile,
+  Message,
+  Project,
+  ProjectSource,
+  Session,
+  Source
+} from '../types';
 import {
   AlertCircle,
   ArrowUp,
@@ -406,29 +414,34 @@ const ThinkingBlock = ({ text, durationMs }: { text: string; durationMs?: number
   <DisclosureBlock label={formatThinkingLabel(durationMs)} text={text} tone="muted" />
 );
 
+type AssistantOutputSection = 'commentary' | 'code' | 'primary';
+
+const getOutputSection = (output: AssistantOutputMessage): AssistantOutputSection => {
+  if (output.kind === 'code_interpreter') return 'code';
+  return output.phase === 'commentary' ? 'commentary' : 'primary';
+};
+
 const getAssistantContentPresentation = (message: Message): {
   commentary: string;
+  codeRuns: string[];
   primary: string;
 } => {
-  if (message.role !== 'assistant' || !message.outputMessages?.length) {
-    return { commentary: '', primary: message.content };
+  const outputs = message.outputMessages;
+  if (message.role !== 'assistant' || !outputs?.length) {
+    return { commentary: '', codeRuns: [], primary: message.content };
   }
 
-  const joinOutputs = (phase: 'commentary' | 'primary') => (
-    message.outputMessages
-      ?.filter(output => (
-        phase === 'commentary'
-          ? output.phase === 'commentary'
-          : output.phase !== 'commentary'
-      ))
+  const getSectionOutputs = (section: AssistantOutputSection) => (
+    outputs
+      .filter(output => getOutputSection(output) === section)
       .map(output => output.content.trim())
       .filter(Boolean)
-      .join('\n\n') || ''
   );
 
   return {
-    commentary: joinOutputs('commentary'),
-    primary: joinOutputs('primary')
+    commentary: getSectionOutputs('commentary').join('\n\n'),
+    codeRuns: getSectionOutputs('code'),
+    primary: getSectionOutputs('primary').join('\n\n')
   };
 };
 
@@ -1161,6 +1174,16 @@ export const MessageRow = React.memo(({
           <CommentaryBlock
             text={assistantContent.commentary}
             isStreaming={isAssistantStreaming}
+          />
+        )}
+
+        {assistantContent.codeRuns.length > 0 && (
+          <DisclosureBlock
+            label={assistantContent.codeRuns.length === 1
+              ? 'Ran code'
+              : `Ran code · ${assistantContent.codeRuns.length} runs`}
+            text={assistantContent.codeRuns.join('\n\n')}
+            tone="muted"
           />
         )}
 

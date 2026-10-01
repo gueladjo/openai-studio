@@ -466,6 +466,65 @@ describe('ChatArea assistant phases', () => {
   });
 });
 
+describe('ChatArea Code Interpreter runs', () => {
+  const view = useReactView();
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('collapses runs above the answer and copies only the answer', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue(
+      { writeText } as unknown as Clipboard
+    );
+    const message: Message = {
+      id: 'assistant-code-runs',
+      role: 'assistant',
+      content: '```python\nimport math\n```\n\n```python\nprint(2)\n```\n\n```output\n2\n```\n\nThe result is 2.',
+      outputMessages: [{
+        content: '```python\nimport math\n```',
+        kind: 'code_interpreter'
+      }, {
+        content: '```python\nprint(2)\n```\n\n```output\n2\n```',
+        kind: 'code_interpreter'
+      }, {
+        content: 'The result is 2.'
+      }],
+      status: 'complete',
+      timestamp: 1
+    };
+
+    const container = await view.render(
+      <MessageRow
+        message={message}
+        canRetry={false}
+        canRegenerate={false}
+        apiKey=""
+        onRetryFailedMessage={() => undefined}
+        onRegenerateResponse={() => undefined}
+      />
+    );
+
+    expect(container.querySelector('.message-content')?.textContent).toBe('The result is 2.');
+    expect(container.querySelector('pre')).toBeNull();
+    const runsButton = findButton(container, 'Ran code · 2 runs');
+    expect(runsButton?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      runsButton?.click();
+    });
+
+    expect(Array.from(container.querySelectorAll('pre code')).map(code => code.textContent))
+      .toEqual(['import math\n', 'print(2)\n', '2\n']);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Copy response"]')!.click();
+    });
+    expect(writeText).toHaveBeenCalledWith('The result is 2.');
+  });
+});
+
 describe('ChatArea failed attachment controls', () => {
   it('lets a failed user turn remove or replace its attachments', () => {
     const message: Message = {
