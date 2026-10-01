@@ -81,6 +81,13 @@
   --warn: #8a5a00;
   --warn-soft: #fbf1dc;
   --code: #f4f3ef;
+  --syntax-keyword: #8f3aa0;
+  --syntax-string: #0f7b62;
+  --syntax-number: #a14f00;
+  --syntax-comment: #6e6b63;
+  --syntax-title: #2556b0;
+  --syntax-builtin: #8a5a00;
+  --syntax-tag: #b3261e;
   --overlay: rgba(27, 27, 24, 0.45);
   --shadow-pop: 0 12px 32px -8px rgba(27, 27, 24, 0.22), 0 0 0 1px rgba(27, 27, 24, 0.06);
   --shadow-card: 0 1px 2px rgba(27, 27, 24, 0.05);
@@ -106,6 +113,13 @@
   --warn: #e9bb5e;
   --warn-soft: rgba(233, 187, 94, 0.14);
   --code: #111110;
+  --syntax-keyword: #d29cf0;
+  --syntax-string: #5fd1a5;
+  --syntax-number: #f0ad6a;
+  --syntax-comment: #85827a;
+  --syntax-title: #86aef7;
+  --syntax-builtin: #e5bc66;
+  --syntax-tag: #f28b80;
   --overlay: rgba(0, 0, 0, 0.6);
   --shadow-pop: 0 16px 40px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -367,6 +381,55 @@ option {
   max-width: 100%;
   white-space: pre;
   tab-size: 2;
+}
+
+/* highlight.js token classes added by rehype-highlight. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-variable.language_ {
+  color: var(--syntax-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--syntax-string);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--syntax-number);
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: var(--syntax-comment);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syntax-title);
+}
+
+.hljs-built_in,
+.hljs-type {
+  color: var(--syntax-builtin);
+}
+
+.hljs-name,
+.hljs-deletion {
+  color: var(--syntax-tag);
 }
 
 /* Code Interpreter output joins the code block it follows into one card. */

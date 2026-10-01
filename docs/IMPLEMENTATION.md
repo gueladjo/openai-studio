@@ -156,7 +156,9 @@ Code Interpreter files. Each Code Interpreter call is stored as a
 collapsed "Ran code" section above the answer, and the renderer attaches each
 output fence to the preceding block as a height-capped panel.
 Every fenced block has a copy button that copies its text without the
-closing fence newline.
+closing fence newline. Fences labeled with a language from lowlight's common
+grammar set are syntax highlighted. Unlabeled fences are not auto-detected,
+and `output` or unknown languages render plain.
 Math accepts dollar delimiters as well as `\(...\)`
 and `\[...\]`; delimiter normalization must not alter Markdown code spans or
 fenced code blocks. A single dollar sign immediately followed by a digit is

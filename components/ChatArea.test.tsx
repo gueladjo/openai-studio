@@ -186,7 +186,17 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).toContain('>Js</span>');
     expect(html).toContain('<pre');
     expect(html.match(/<pre/g)).toHaveLength(1);
-    expect(html).toContain('<code class="language-js">foo();');
+    expect(html).toContain('<code class="hljs language-js"><span class="hljs-title function_">foo</span>();');
+  });
+
+  it('highlights labeled code but leaves output and unlabeled fences plain', () => {
+    const html = renderMarkdown(
+      '```python\nimport math\n```\n\n```output\nimport math\n```\n\n```\nimport math\n```'
+    );
+
+    expect(html.match(/<span class="hljs-keyword">import<\/span>/g)).toHaveLength(1);
+    expect(html).toContain('<code class="hljs language-output">import math\n</code>');
+    expect(html).toContain('<code>import math\n</code>');
   });
 
   it('marks Code Interpreter output as a panel attached to the preceding code', () => {

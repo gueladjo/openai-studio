@@ -26,7 +26,7 @@ rules, task routing, and verification commands.
   context size and approximate location controls (default: Medium and New York,
   NY, US).
 - Multiple image and file attachments, including files pasted from the clipboard.
-- GitHub Flavored Markdown, code blocks with copy buttons, tables, citations, generated Code Interpreter files, and response copying.
+- GitHub Flavored Markdown, syntax-highlighted code blocks with copy buttons, tables, citations, generated Code Interpreter files, and response copying.
 - Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
 - Global project/chat search with membership paths, a collapsible sidebar, and light and dark themes.
