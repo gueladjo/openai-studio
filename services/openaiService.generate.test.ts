@@ -678,9 +678,11 @@ describe('OpenAI request contracts', () => {
     );
 
     expect(result.content).toContain('The analysis is ready.');
-    expect(result.content).toContain('**Code Interpreter**');
-    expect(result.content).toContain('```python\nprint("done")\n```');
-    expect(result.content).toContain('```output\ndone\n```');
+    expect(result.content).not.toContain('**Code Interpreter**');
+    expect(result.content).not.toContain('**Output**');
+    expect(result.content).toContain(
+      '```python\nprint("done")\n```\n\n```output\ndone\n```'
+    );
     expect(result.content).toContain(
       '![Code Interpreter output 2](https://example.com/chart.png)'
     );

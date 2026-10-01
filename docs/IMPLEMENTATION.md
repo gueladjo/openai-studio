@@ -150,7 +150,10 @@ validation path.
 Responses can render GitHub Flavored Markdown, inline and display TeX math,
 citations, refusal or incomplete output, reasoning summaries, usage details
 including cache-read and cache-write token counts when reported, and generated
-Code Interpreter files. Math accepts dollar delimiters as well as `\(...\)`
+Code Interpreter files. Each Code Interpreter call is stored as a `python` fence
+followed by one `output` fence per log entry, without headings; the renderer
+attaches each output fence to the preceding block as a height-capped panel.
+Math accepts dollar delimiters as well as `\(...\)`
 and `\[...\]`; delimiter normalization must not alter Markdown code spans or
 fenced code blocks. A single dollar sign immediately followed by a digit is
 treated as currency text rather than a math delimiter; `$$` display delimiters

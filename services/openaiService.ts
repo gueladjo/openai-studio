@@ -768,9 +768,7 @@ const formatCodeInterpreterOutput = (
   index: number
 ): string => {
   if (output.type === 'logs') {
-    const logs = formatMarkdownCodeBlock(output.logs, 'output');
-
-    return logs ? `**Output**\n\n${logs}` : '';
+    return formatMarkdownCodeBlock(output.logs, 'output');
   }
 
   if (output.type === 'image' && output.url.trim()) {
@@ -787,7 +785,7 @@ const formatCodeInterpreterCall = (
   const code = item.code ? formatMarkdownCodeBlock(item.code, 'python') : '';
 
   if (code) {
-    sections.push(`**Code Interpreter**\n\n${code}`);
+    sections.push(code);
   }
 
   item.outputs?.forEach((output, index) => {

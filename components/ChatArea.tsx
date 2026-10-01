@@ -883,11 +883,24 @@ export const markdownComponents = {
       children?: React.ReactNode;
     }> | undefined;
     const className = codeElement?.props.className;
+    // Code Interpreter logs; index.css attaches them to the code block above.
+    const isOutput = /(?:^|\s)language-output(?:\s|$)/.test(className ?? '');
 
     return (
-      <div className="my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-line bg-code">
+      <div className={cx(
+        'code-card my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-line',
+        isOutput ? 'code-card-output bg-surface-2' : 'bg-code'
+      )}>
         <div className="flex items-center justify-between border-b border-line px-3 py-1.5 font-mono text-[11px] text-ink-3">{getCodeBlockLabel(className)}</div>
-        <pre className="overflow-x-auto p-3.5 font-mono text-[12.5px] leading-relaxed text-ink" {...props}>
+        <pre
+          className={cx(
+            'overflow-x-auto font-mono leading-relaxed',
+            isOutput
+              ? 'max-h-80 overflow-y-auto px-3.5 py-2.5 text-[12px] text-ink-2'
+              : 'p-3.5 text-[12.5px] text-ink'
+          )}
+          {...props}
+        >
           <code className={className}>{codeElement?.props.children ?? children}</code>
         </pre>
       </div>

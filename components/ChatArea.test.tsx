@@ -189,6 +189,18 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).toContain('<code class="language-js">foo();');
   });
 
+  it('marks Code Interpreter output as a panel attached to the preceding code', () => {
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown('```python\nprint(1)\n```\n\n```output\n1\n```');
+    const [codeCard, outputCard] = Array.from(container.querySelectorAll('.code-card'));
+
+    expect(codeCard.textContent).toBe('Pythonprint(1)\n');
+    expect(codeCard.classList.contains('code-card-output')).toBe(false);
+    expect(outputCard.textContent).toBe('Output1\n');
+    expect(outputCard.classList.contains('code-card-output')).toBe(true);
+    expect(codeCard.nextElementSibling).toBe(outputCard);
+  });
+
   it('renders bracket-delimited TeX, including a currency dollar sign', () => {
     const html = renderMarkdown(
       String.raw`\[ 8{,}100 \times \max(\text{NVDA price}-$170,0) \]`

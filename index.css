@@ -369,6 +369,20 @@ option {
   tab-size: 2;
 }
 
+/* Code Interpreter output joins the code block it follows into one card. */
+.markdown-content .code-card:has(+ .code-card-output) {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.markdown-content .code-card + .code-card-output {
+  margin-top: 0;
+  border-top-width: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 .markdown-content .katex-display {
   max-width: 100%;
   overflow-x: auto;
