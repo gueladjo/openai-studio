@@ -183,7 +183,7 @@ describe('ChatArea markdown code rendering', () => {
   it('renders fenced code as one labeled block', () => {
     const html = renderMarkdown('```js\nfoo();\n```');
 
-    expect(html).toContain('>Js</div>');
+    expect(html).toContain('>Js</span>');
     expect(html).toContain('<pre');
     expect(html.match(/<pre/g)).toHaveLength(1);
     expect(html).toContain('<code class="language-js">foo();');
@@ -269,6 +269,37 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).not.toContain('class="katex"');
     expect(html).toContain('\\(x\\)');
     expect(html).toContain('\\[y\\]');
+  });
+});
+
+describe('ChatArea code block copy', () => {
+  const view = useReactView();
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('copies code and output without the closing fence newline', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue(
+      { writeText } as unknown as Clipboard
+    );
+    const container = await view.render(
+      <AssistantMarkdown>
+        {'```python\nprint(1)\nprint(2)\n```\n\n```output\n1\n2\n```'}
+      </AssistantMarkdown>
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!.click();
+    });
+    expect(writeText).toHaveBeenLastCalledWith('print(1)\nprint(2)');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Copy output"]')!.click();
+    });
+    expect(writeText).toHaveBeenLastCalledWith('1\n2');
+    expect(container.querySelectorAll('button[aria-label="Copied"]')).toHaveLength(2);
   });
 });
 

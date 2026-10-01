@@ -75,9 +75,10 @@ export const Button: React.FC<ButtonProps> = ({
 );
 
 type IconButtonTone = 'default' | 'accent' | 'danger';
-type IconButtonSize = 'sm' | 'md';
+type IconButtonSize = 'xs' | 'sm' | 'md';
 
 const ICON_BUTTON_SIZES: Record<IconButtonSize, string> = {
+  xs: 'h-7 w-7',
   sm: 'h-8 w-8',
   md: 'h-9 w-9'
 };

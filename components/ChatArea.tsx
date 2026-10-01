@@ -565,7 +565,19 @@ const ResponseDetailsMenu = ({ message }: { message: Message }) => {
   );
 };
 
-const CopyResponseButton = ({ text }: { text: string }) => {
+const CopyButton = ({
+  label,
+  getText,
+  size = 'sm',
+  iconSize = 15,
+  disabled
+}: {
+  label: string;
+  getText: () => string;
+  size?: React.ComponentProps<typeof IconButton>['size'];
+  iconSize?: number;
+  disabled?: boolean;
+}) => {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const timeoutRef = useRef<number | null>(null);
 
@@ -574,12 +586,13 @@ const CopyResponseButton = ({ text }: { text: string }) => {
   }, []);
 
   const handleCopy = async () => {
+    const text = getText();
     if (!text) return;
     let nextState: 'copied' | 'error' = 'copied';
     try {
       await copyTextToClipboard(text);
     } catch (error) {
-      console.error('Failed to copy response.', error);
+      console.error('Failed to copy to the clipboard.', error);
       nextState = 'error';
     }
     setCopyState(nextState);
@@ -592,13 +605,13 @@ const CopyResponseButton = ({ text }: { text: string }) => {
 
   return (
     <IconButton
-      size="sm"
-      iconSize={15}
-      label={copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy response'}
+      size={size}
+      iconSize={iconSize}
+      label={copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : label}
       icon={copyState === 'copied' ? Check : copyState === 'error' ? AlertCircle : Copy}
       tone={copyState === 'error' ? 'danger' : 'default'}
       className={copyState === 'copied' ? 'text-accent' : undefined}
-      disabled={!text}
+      disabled={disabled}
       onClick={handleCopy}
     />
   );
@@ -876,36 +889,49 @@ const ConversationHeader = ({
   </ViewHeader>
 );
 
-export const markdownComponents = {
-  pre: ({node, children, ...props}: any) => {
-    const codeElement = React.Children.toArray(children).find(React.isValidElement) as React.ReactElement<{
-      className?: string;
-      children?: React.ReactNode;
-    }> | undefined;
-    const className = codeElement?.props.className;
-    // Code Interpreter logs; index.css attaches them to the code block above.
-    const isOutput = /(?:^|\s)language-output(?:\s|$)/.test(className ?? '');
+const CodeBlock = ({node, children, ...props}: any) => {
+  const preRef = useRef<HTMLPreElement>(null);
+  const codeElement = React.Children.toArray(children).find(React.isValidElement) as React.ReactElement<{
+    className?: string;
+    children?: React.ReactNode;
+  }> | undefined;
+  const className = codeElement?.props.className;
+  // Code Interpreter logs; index.css attaches them to the code block above.
+  const isOutput = /(?:^|\s)language-output(?:\s|$)/.test(className ?? '');
 
-    return (
-      <div className={cx(
-        'code-card my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-line',
-        isOutput ? 'code-card-output bg-surface-2' : 'bg-code'
-      )}>
-        <div className="flex items-center justify-between border-b border-line px-3 py-1.5 font-mono text-[11px] text-ink-3">{getCodeBlockLabel(className)}</div>
-        <pre
-          className={cx(
-            'overflow-x-auto font-mono leading-relaxed',
-            isOutput
-              ? 'max-h-80 overflow-y-auto px-3.5 py-2.5 text-[12px] text-ink-2'
-              : 'p-3.5 text-[12.5px] text-ink'
-          )}
-          {...props}
-        >
-          <code className={className}>{codeElement?.props.children ?? children}</code>
-        </pre>
+  return (
+    <div className={cx(
+      'code-card my-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-line',
+      isOutput ? 'code-card-output bg-surface-2' : 'bg-code'
+    )}>
+      <div className="flex items-center justify-between gap-2 border-b border-line py-0.5 pl-3 pr-1 font-mono text-[11px] text-ink-3">
+        <span className="min-w-0 truncate">{getCodeBlockLabel(className)}</span>
+        <CopyButton
+          label={isOutput ? 'Copy output' : 'Copy code'}
+          size="xs"
+          iconSize={13}
+          // Markdown code text ends with the fence's closing newline.
+          getText={() => preRef.current?.textContent?.replace(/\n$/, '') ?? ''}
+        />
       </div>
-    );
-  },
+      <pre
+        className={cx(
+          'overflow-x-auto font-mono leading-relaxed',
+          isOutput
+            ? 'max-h-80 overflow-y-auto px-3.5 py-2.5 text-[12px] text-ink-2'
+            : 'p-3.5 text-[12.5px] text-ink'
+        )}
+        {...props}
+        ref={preRef}
+      >
+        <code className={className}>{codeElement?.props.children ?? children}</code>
+      </pre>
+    </div>
+  );
+};
+
+export const markdownComponents = {
+  pre: CodeBlock,
   code: ({node, children, ...props}: any) => {
     return (
       <code className="rounded-md bg-surface-3 px-1.5 py-0.5 font-mono text-[0.85em] text-ink" {...props}>
@@ -1048,6 +1074,7 @@ export const MessageRow = React.memo(({
 }: MessageRowProps) => {
   const isAssistantStreaming = message.status === 'streaming';
   const assistantContent = getAssistantContentPresentation(message);
+  const responseText = assistantContent.primary || message.content;
   const replacementInputRef = useRef<HTMLInputElement>(null);
   const [attachmentEditError, setAttachmentEditError] = useState<string | null>(null);
 
@@ -1177,7 +1204,11 @@ export const MessageRow = React.memo(({
 
         {!isAssistantStreaming && (
           <div className="flex select-none items-center gap-0.5 pt-0.5">
-            <CopyResponseButton text={assistantContent.primary || message.content} />
+            <CopyButton
+              label="Copy response"
+              getText={() => responseText}
+              disabled={!responseText}
+            />
             {canRegenerate && (
               <IconButton
                 size="sm"
