@@ -32,6 +32,7 @@ import {
   Hash,
   Info,
   Paperclip,
+  Pencil,
   RefreshCw,
   RotateCcw,
   SlidersHorizontal,
@@ -82,6 +83,11 @@ interface ChatAreaProps {
     sessionId: string,
     content: string,
     attachments: File[]
+  ) => Promise<boolean>;
+  onEditUserMessage: (
+    sessionId: string,
+    userMessageIndex: number,
+    content: string
   ) => Promise<boolean>;
   onStopGenerating: () => void;
   onRetryFailedMessage: (assistantMessageId: string) => void;
@@ -998,6 +1004,8 @@ interface MessageRowProps {
   message: Message;
   canRetry: boolean;
   canRegenerate: boolean;
+  canEditMessage?: boolean;
+  onEditMessage?: (content: string) => Promise<boolean>;
   canEditAttachments?: boolean;
   apiKey: string;
   onDownloadGeneratedFile?: (file: GeneratedFile) => Promise<Blob>;
@@ -1078,6 +1086,8 @@ export const MessageRow = React.memo(({
   message,
   canRetry,
   canRegenerate,
+  canEditMessage = false,
+  onEditMessage,
   canEditAttachments = false,
   apiKey,
   onDownloadGeneratedFile,
@@ -1089,6 +1099,32 @@ export const MessageRow = React.memo(({
   const isAssistantStreaming = message.status === 'streaming';
   const assistantContent = getAssistantContentPresentation(message);
   const responseText = assistantContent.primary || message.content;
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState('');
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    setIsEditing(false);
+  }, [canEditMessage, message]);
+
+  useLayoutEffect(() => {
+    if (isEditing && editTextareaRef.current) {
+      resizePromptTextarea(editTextareaRef.current);
+      editTextareaRef.current.focus();
+    }
+  }, [isEditing]);
+
+  const cancelEdit = () => {
+    setIsEditing(false);
+    window.requestAnimationFrame(() => editButtonRef.current?.focus());
+  };
+
+  const saveEdit = async () => {
+    if (!canEditMessage || !onEditMessage) return;
+    if (await onEditMessage(editedContent)) setIsEditing(false);
+  };
+
   const replacementInputRef = useRef<HTMLInputElement>(null);
   const [attachmentEditError, setAttachmentEditError] = useState<string | null>(null);
 
@@ -1153,10 +1189,61 @@ export const MessageRow = React.memo(({
             )}
           </div>
         )}
-        {message.content && (
+        {isEditing && canEditMessage ? (
+          <div className="w-full min-w-0 max-w-[85%] space-y-2 rounded-2xl border border-line bg-surface-3 p-3">
+            <textarea
+              ref={editTextareaRef}
+              aria-label="Edit message"
+              value={editedContent}
+              rows={3}
+              onChange={event => {
+                setEditedContent(event.target.value);
+                resizePromptTextarea(event.target);
+              }}
+              onKeyDown={event => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  cancelEdit();
+                } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  if (editedContent.trim() || hasAttachments) void saveEdit();
+                }
+              }}
+              className="block w-full min-w-0 resize-none bg-transparent text-[15px] leading-relaxed text-ink outline-none"
+            />
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button size="sm" onClick={cancelEdit}>Cancel</Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={!editedContent.trim() && !hasAttachments}
+                onClick={() => void saveEdit()}
+              >
+                Save &amp; resend
+              </Button>
+            </div>
+          </div>
+        ) : message.content && (
           <div className="message-content min-w-0 max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-surface-3 px-4 py-2.5 text-[15px] leading-relaxed text-ink">
             {message.content}
           </div>
+        )}
+        {canEditMessage && onEditMessage && (
+          <button
+            ref={editButtonRef}
+            type="button"
+            aria-label="Edit latest message"
+            title="Edit latest message"
+            hidden={isEditing}
+            onClick={() => {
+              setEditedContent(message.content);
+              setIsEditing(true);
+            }}
+            className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <Pencil size={15} aria-hidden="true" />
+          </button>
         )}
       </div>
     );
@@ -1366,6 +1453,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   session,
   availableSessionIds,
   onSendMessage,
+  onEditUserMessage,
   onStopGenerating,
   onRetryFailedMessage,
   onRemoveFailedAttachment,
@@ -1401,6 +1489,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const previousMessageCountRef = useRef(0);
   const latestMessage = session?.messages[session.messages.length - 1];
   const activeSessionId = session?.id || null;
+  const latestUserMessageIndex = session
+    ? session.messages.length - (latestMessage?.role === 'user' ? 1 : 2)
+    : -1;
   const activeDraft = getChatDraft(drafts, activeSessionId);
   const inputValue = activeDraft.content;
   const attachments = activeDraft.attachments;
@@ -1409,17 +1500,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   // App recreates these handlers on every render; hand memoized rows
   // stable wrappers instead so streaming updates don't defeat React.memo.
+  const onEditUserMessageRef = useRef(onEditUserMessage);
   const onRetryFailedMessageRef = useRef(onRetryFailedMessage);
   const onRegenerateResponseRef = useRef(onRegenerateResponse);
   const onRemoveFailedAttachmentRef = useRef(onRemoveFailedAttachment);
   const onReplaceFailedAttachmentsRef = useRef(onReplaceFailedAttachments);
 
   useLayoutEffect(() => {
+    onEditUserMessageRef.current = onEditUserMessage;
     onRetryFailedMessageRef.current = onRetryFailedMessage;
     onRegenerateResponseRef.current = onRegenerateResponse;
     onRemoveFailedAttachmentRef.current = onRemoveFailedAttachment;
     onReplaceFailedAttachmentsRef.current = onReplaceFailedAttachments;
   });
+
+  const handleEditMessage = useCallback((content: string) => (
+    activeSessionId
+      ? onEditUserMessageRef.current(activeSessionId, latestUserMessageIndex, content)
+      : Promise.resolve(false)
+  ), [activeSessionId, latestUserMessageIndex]);
 
   const handleRetryFailedMessage = useCallback((assistantMessageId: string) => {
     onRetryFailedMessageRef.current(assistantMessageId);
@@ -1732,6 +1831,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 !readOnly &&
                 hasPrecedingUserMessage
               );
+              const canEditMessage = (
+                msg.role === 'user' &&
+                idx === latestUserMessageIndex &&
+                !isLoading &&
+                !readOnly &&
+                latestMessage?.status !== 'streaming'
+              );
               const canEditAttachments = (
                 msg.role === 'user' &&
                 msg.attachments !== undefined &&
@@ -1745,10 +1851,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
               return (
                 <MessageRow
-                  key={msg.id || idx}
+                  key={`${session.id}:${msg.id || idx}`}
                   message={msg}
                   canRetry={canRetry}
                   canRegenerate={canRegenerate}
+                  canEditMessage={canEditMessage}
+                  onEditMessage={handleEditMessage}
                   canEditAttachments={canEditAttachments}
                   apiKey={apiKey}
                   onDownloadGeneratedFile={onDownloadGeneratedFile}

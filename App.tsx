@@ -2326,36 +2326,46 @@ function App() {
     }
   };
 
-  const restartAssistantResponse = async (assistantMessageIndex: number) => {
-    if (!canMutateWorkspace() || !currentSessionIdRef.current) return;
-
-    const targetSessionId = currentSessionIdRef.current;
-    if (processingSessionIdsRef.current.has(targetSessionId)) return;
+  const restartLatestTurn = async (
+    targetSessionId: string,
+    userMessageIndex: number,
+    editedContent?: string
+  ): Promise<boolean> => {
+    if (!canMutateWorkspace()) return false;
+    if (processingSessionIdsRef.current.has(targetSessionId)) return false;
 
     const session = sessionsRef.current.find(s => s.id === targetSessionId);
-    if (!session) return;
-    const projectContext = getProjectContextForRequest(session);
-    if (projectContext === null) return;
-
-    const assistantMessage = session.messages[assistantMessageIndex];
-    const userMessage = session.messages[assistantMessageIndex - 1];
+    if (!session) return false;
+    const userMessage = session.messages[userMessageIndex];
+    const assistantMessage = session.messages[userMessageIndex + 1];
+    const isEdit = editedContent !== undefined;
 
     if (
-      assistantMessageIndex < 1 ||
-      assistantMessageIndex !== session.messages.length - 1 ||
-      assistantMessage?.role !== 'assistant' ||
-      userMessage?.role !== 'user'
+      userMessage?.role !== 'user' ||
+      userMessageIndex < session.messages.length - 2 ||
+      (assistantMessage && assistantMessage.role !== 'assistant') ||
+      assistantMessage?.status === 'streaming' ||
+      (!isEdit && !assistantMessage) ||
+      (isEdit && !editedContent.trim() && !userMessage.attachments?.length)
     ) {
-      return;
+      return false;
     }
+    const projectContext = getProjectContextForRequest(session);
+    if (projectContext === null) return false;
 
-    const requestId = userMessage.requestId || assistantMessage.requestId || crypto.randomUUID();
+    const requestId = isEdit
+      ? crypto.randomUUID()
+      : userMessage.requestId || assistantMessage?.requestId || crypto.randomUUID();
     const userMessageId = userMessage.id || crypto.randomUUID();
     const newAssistantMessageId = crypto.randomUUID();
     const requestTimestamp = Date.now();
-    const messagesForApi = session.messages.slice(0, assistantMessageIndex).map((message, index) => (
-      index === assistantMessageIndex - 1 && !message.id
-        ? { ...message, id: userMessageId }
+    const messagesForApi = session.messages.slice(0, userMessageIndex + 1).map((message, index) => (
+      index === userMessageIndex
+        ? {
+          ...message,
+          id: userMessageId,
+          ...(isEdit ? { content: editedContent, requestId, timestamp: requestTimestamp } : {})
+        }
         : message
     ));
     const operation = operationRegistryRef.current.begin({
@@ -2365,7 +2375,7 @@ function App() {
     });
 
     addProcessingSession(targetSessionId, operation.id);
-    await launchAssistantTurn({
+    void launchAssistantTurn({
       operation,
       session,
       messagesForApi,
@@ -2375,6 +2385,7 @@ function App() {
       requestTimestamp,
       projectContext
     });
+    return true;
   };
 
   const handleRetryFailedMessage = async (assistantMessageId: string) => {
@@ -2385,12 +2396,12 @@ function App() {
       message.id === assistantMessageId
     ));
 
-    if (assistantMessageIndex === undefined) return;
-    await restartAssistantResponse(assistantMessageIndex);
+    if (!session || assistantMessageIndex !== session.messages.length - 1) return;
+    await restartLatestTurn(session.id, assistantMessageIndex - 1);
   };
 
-  // The only editable turn is the final failed assistant reply and the user
-  // message right before it.
+  // Attachment replacement is limited to the user message before a final
+  // failed assistant reply.
   const findEditableFailedTurn = (
     sessionId: string,
     userMessageId: string
@@ -2487,7 +2498,7 @@ function App() {
     const session = sessionsRef.current.find(
       s => s.id === currentSessionIdRef.current
     );
-    await restartAssistantResponse((session?.messages.length ?? 0) - 1);
+    if (session) await restartLatestTurn(session.id, session.messages.length - 2);
   };
 
   const handleStopGenerating = () => {
@@ -3151,6 +3162,7 @@ function App() {
               session={currentSession}
               availableSessionIds={sessions.map(session => session.id)}
               onSendMessage={handleSendMessage}
+              onEditUserMessage={restartLatestTurn}
               onStopGenerating={handleStopGenerating}
               onRetryFailedMessage={handleRetryFailedMessage}
               onRemoveFailedAttachment={handleRemoveFailedAttachment}

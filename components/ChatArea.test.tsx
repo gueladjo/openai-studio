@@ -12,6 +12,7 @@ import {
   MessageRow
 } from './ChatArea';
 import { DEFAULT_CONFIG, Message, ModelId, Session } from '../types';
+import { sessionFixture } from '../test/fixtures';
 
 const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
   <AssistantMarkdown>{markdown}</AssistantMarkdown>
@@ -359,6 +360,7 @@ describe('ChatArea conversation header', () => {
       <ChatArea
         session={createSessionWithUsage(ModelId.GPT_5_NANO)}
         availableSessionIds={['session-gpt-5-nano']}
+        onEditUserMessage={async () => true}
         onSendMessage={async () => true}
         onStopGenerating={() => undefined}
         onRetryFailedMessage={() => undefined}
@@ -583,6 +585,7 @@ describe('ChatArea composer', () => {
       <ChatArea
         session={createSessionWithUsage(ModelId.GPT_5_NANO)}
         availableSessionIds={['session-gpt-5-nano']}
+        onEditUserMessage={async () => true}
         onSendMessage={onSendMessage}
         onStopGenerating={() => undefined}
         onRetryFailedMessage={() => undefined}
@@ -648,5 +651,118 @@ describe('ChatArea composer', () => {
     const preview = container.querySelector<HTMLImageElement>('img[alt="photo.png"]')!;
     expect(preview.getAttribute('src')).toMatch(/^blob:preview-/);
     expect(revoked.has(preview.getAttribute('src')!)).toBe(false);
+  });
+});
+
+describe('editing the latest user message', () => {
+  const view = useReactView();
+  const messages: Message[] = [
+    { id: 'u1', role: 'user', content: 'Earlier prompt', timestamp: 1 },
+    { id: 'a1', role: 'assistant', content: 'Earlier answer', timestamp: 2 },
+    { id: 'u2', role: 'user', content: 'Latest typo', timestamp: 3 },
+    { id: 'a2', role: 'assistant', content: 'Latest answer', timestamp: 4, status: 'complete' }
+  ];
+  const renderChat = (overrides: Partial<React.ComponentProps<typeof ChatArea>> = {}) => view.render(
+    <ChatArea
+      session={sessionFixture({ messages })}
+      availableSessionIds={['session-1', 'session-2']}
+      onSendMessage={async () => true}
+      onEditUserMessage={async () => true}
+      onStopGenerating={() => undefined}
+      onRetryFailedMessage={() => undefined}
+      onRemoveFailedAttachment={() => undefined}
+      onReplaceFailedAttachments={async () => undefined}
+      onRegenerateResponse={() => undefined}
+      onShareConversation={() => undefined}
+      apiKey=""
+      isLoading={false}
+      {...overrides}
+    />
+  );
+  const openEdit = async (container: HTMLElement) => {
+    const buttons = container.querySelectorAll<HTMLButtonElement>('[aria-label="Edit latest message"]');
+    expect(buttons).toHaveLength(1);
+    await act(async () => buttons[0].click());
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="Edit message"]')!;
+    expect(document.activeElement).toBe(input);
+    return input;
+  };
+
+  it('edits only the latest prompt and leaves the composer draft intact', async () => {
+    const onEditUserMessage = vi.fn(async () => true);
+    const container = await renderChat({ onEditUserMessage });
+    const composer = container.querySelector('textarea')!;
+    await changeValue(composer, 'Unsent next prompt');
+    const input = await openEdit(container);
+    expect(input.value).toBe('Latest typo');
+    await changeValue(input, 'Corrected prompt');
+    await act(async () => findButton(container, 'Save & resend')!.click());
+    expect(onEditUserMessage).toHaveBeenCalledExactlyOnceWith('session-1', 2, 'Corrected prompt');
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull();
+    expect(composer.value).toBe('Unsent next prompt');
+  });
+
+  it('cancels without saving and rejects whitespace-only text', async () => {
+    const onEditUserMessage = vi.fn(async () => true);
+    const container = await renderChat({ onEditUserMessage });
+    const input = await openEdit(container);
+    await changeValue(input, '   ');
+    expect(findButton(container, 'Save & resend')!.disabled).toBe(true);
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true
+    })));
+    expect(onEditUserMessage).not.toHaveBeenCalled();
+    await act(async () => findButton(container, 'Cancel')!.click());
+    expect(container.textContent).toContain('Latest typo');
+    const reopened = await openEdit(container);
+    expect(reopened.value).toBe('Latest typo');
+    await act(async () => reopened.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true
+    })));
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull();
+    expect(onEditUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('preserves the edit when resend is declined and allows text removal with attachments', async () => {
+    const onEditUserMessage = vi.fn(async () => false);
+    const session = sessionFixture({ messages: [
+      { ...messages[0], attachments: [{ name: 'notes.txt', type: 'text/plain', content: 'data:text/plain;base64,WA==', size: 1 }] },
+      messages[1]
+    ] });
+    const container = await renderChat({ session, onEditUserMessage });
+    const input = await openEdit(container);
+    await changeValue(input, '');
+    expect(findButton(container, 'Save & resend')!.disabled).toBe(false);
+    await act(async () => findButton(container, 'Save & resend')!.click());
+    expect(onEditUserMessage).toHaveBeenCalledExactlyOnceWith('session-1', 0, '');
+    expect(container.querySelector('[aria-label="Edit message"]')).toBe(input);
+    expect(container.textContent).toContain('notes.txt');
+  });
+
+  it.each([{ isLoading: true }, { readOnly: true }])('closes and disables editing when unavailable: %j', async overrides => {
+    const session = sessionFixture({ messages });
+    const container = await renderChat({ session });
+    await openEdit(container);
+    await renderChat({ session, ...overrides });
+    expect(container.querySelector('[aria-label="Edit latest message"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull();
+    await renderChat({ session });
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull();
+  });
+
+  it('discards an open edit on session changes, even with matching message IDs', async () => {
+    const container = await renderChat();
+    const input = await openEdit(container);
+    await changeValue(input, 'Unsubmitted correction');
+    await renderChat({ session: sessionFixture({ id: 'session-2', messages }) });
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull();
+    expect((await openEdit(container)).value).toBe('Latest typo');
+  });
+
+  it.each(['error', 'stopped', 'incomplete', undefined] as const)('allows editing after a %s answer', async status => {
+    const container = await renderChat({ session: sessionFixture({ messages: [
+      messages[0], { ...messages[1], status }
+    ] }) });
+    expect((await openEdit(container)).value).toBe('Earlier prompt');
   });
 });

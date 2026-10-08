@@ -35,6 +35,9 @@ interface CapturedChatAreaProps {
     content: string,
     attachments: File[]
   ) => Promise<boolean>;
+  onEditUserMessage: (sessionId: string, userMessageIndex: number, content: string) => Promise<boolean>;
+  onRegenerateResponse: () => Promise<void>;
+  onRetryFailedMessage: (assistantMessageId: string) => Promise<void>;
   onStopGenerating: () => void;
   onDownloadGeneratedFile: (file: GeneratedFile) => Promise<Blob>;
 }
@@ -1283,6 +1286,127 @@ describe('App workspace and request lifecycle', () => {
       'Non-authoritative streamed text.'
     );
     expect(sessionB?.messages).toEqual([]);
+  });
+
+  it('replaces only the latest turn, preserves attachments and persists the pending edit before completion', async () => {
+    const response = createDeferred<GenerateResult>();
+    mocks.generateResponse.mockReturnValue(response.promise);
+    const earlier: Message[] = [
+      { id: 'u1', role: 'user', content: 'Earlier question', timestamp: 1 },
+      { id: 'a1', role: 'assistant', content: 'Earlier answer', timestamp: 2,
+        status: 'complete', openaiResponseId: 'resp-earlier' }
+    ];
+    const attachments = [{ name: 'notes.txt', type: 'text/plain', size: 1,
+      content: 'data:text/plain;base64,WA==' }];
+    mocks.loadedSessions[0].messages = [...earlier,
+      { id: 'u2', requestId: 'old-request', role: 'user', content: 'Typo', timestamp: 3, attachments },
+      { id: 'a2', requestId: 'old-request', role: 'assistant', content: 'Discarded answer', timestamp: 4,
+        status: 'complete', openaiResponseId: 'resp-discarded', generatedFiles: [] }
+    ];
+    await renderApp();
+    await finishInitialization();
+    await drainInitialSaves();
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 2, 'Corrected')).toBe(true);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await flushMicrotasks();
+
+    const pending = getChatAreaProps().session!;
+    expect(pending.messages).toHaveLength(4);
+    expect(pending.messages.slice(0, 2)).toEqual(earlier);
+    expect(pending.messages[2]).toMatchObject({ id: 'u2', content: 'Corrected', attachments });
+    expect(pending.messages[3]).toMatchObject({ role: 'assistant', content: '', status: 'streaming' });
+    expect(pending.messages[3].id).not.toBe('a2');
+    expect(pending.messages[3].openaiResponseId).toBeUndefined();
+    expect(pending.pendingRequest).toMatchObject({ userMessageId: 'u2', assistantMessageId: pending.messages[3].id });
+    expect(pending.pendingRequest?.id).not.toBe('old-request');
+    expect(pending.messages[2].requestId).toBe(pending.pendingRequest?.id);
+    expect(mocks.generateResponse.mock.calls[0][0]).toEqual(pending.messages.slice(0, 3));
+    expect(getPersistedSessionWrites().some(sessions => sessions.some(session => (
+      session.id === 'session-a' && session.pendingRequest?.id === pending.pendingRequest?.id &&
+      session.messages[2]?.content === 'Corrected'
+    )))).toBe(true);
+
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 2, 'Duplicate')).toBe(false);
+      getSidebarProps().onSelectSession('session-b');
+      response.resolve(completedResult('Corrected answer'));
+      await response.promise;
+    });
+    await flushMicrotasks();
+    const completed = getSidebarProps().sessions.find(session => session.id === 'session-a')!;
+    expect(completed.messages.slice(0, 2)).toEqual(earlier);
+    expect(completed.messages[3].content).toBe('Corrected answer');
+    expect(completed.pendingRequest).toBeUndefined();
+    expect(getChatAreaProps().session?.messages).toEqual([]);
+    expect(mocks.generateResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['complete', 'error', 'stopped', 'incomplete', undefined] as const)(
+    'resends the first prompt after a %s answer and retains the edit if generation fails', async status => {
+      mocks.loadedSessions[0].messages = [
+        { id: 'u1', role: 'user', content: 'Typo', timestamp: 1 },
+        { id: 'a1', role: 'assistant', content: 'Old answer', timestamp: 2, status }
+      ];
+      mocks.generateResponse.mockRejectedValue(new Error('Request failed'));
+      await renderApp();
+      await finishInitialization();
+      await act(async () => {
+        expect(await getChatAreaProps().onEditUserMessage('session-a', 0, 'Fixed')).toBe(true);
+      });
+      await flushMicrotasks();
+      expect(mocks.generateResponse.mock.calls[0][0]).toEqual([
+        expect.objectContaining({ id: 'u1', role: 'user', content: 'Fixed' })
+      ]);
+      expect(getChatAreaProps().session?.messages).toEqual([
+        expect.objectContaining({ content: 'Fixed' }),
+        expect.objectContaining({ status: 'error' })
+      ]);
+    }
+  );
+
+  it('rejects older turns, empty prompts and reader edits without changing history', async () => {
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'First', timestamp: 1 },
+      { id: 'a1', role: 'assistant', content: 'First answer', timestamp: 2 },
+      { id: 'u2', role: 'user', content: 'Latest', timestamp: 3 },
+      { id: 'a2', role: 'assistant', content: 'Latest answer', timestamp: 4 }
+    ];
+    mocks.loadedSessions[0].messages = messages;
+    await renderApp();
+    await finishInitialization();
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 0, 'Older')).toBe(false);
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 2, '   ')).toBe(false);
+      expect(await getChatAreaProps().onEditUserMessage('missing-session', 2, 'Missing')).toBe(false);
+      mocks.coordinator.canWrite = false;
+      mocks.coordinator.currentRole = 'reader';
+      mocks.coordinator.subscribeToRole.mock.calls[0][0]('reader');
+    });
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 2, 'Reader')).toBe(false);
+    });
+    expect(getChatAreaProps().session?.messages).toEqual(messages);
+    expect(mocks.generateResponse).not.toHaveBeenCalled();
+  });
+
+  it.each(['regenerate', 'retry'])('preserves the prompt when using %s', async action => {
+    const user: Message = { id: 'u1', role: 'user', content: 'Original', timestamp: 1 };
+    mocks.loadedSessions[0].messages = [user,
+      { id: 'a1', role: 'assistant', content: 'Old answer', timestamp: 2,
+        status: action === 'retry' ? 'error' : 'complete' }
+    ];
+    mocks.generateResponse.mockResolvedValue(completedResult('New answer'));
+    await renderApp();
+    await finishInitialization();
+    await act(async () => {
+      if (action === 'retry') await getChatAreaProps().onRetryFailedMessage('a1');
+      else await getChatAreaProps().onRegenerateResponse();
+    });
+    await flushMicrotasks();
+    expect(mocks.generateResponse.mock.calls[0][0]).toEqual([user]);
+    expect(getChatAreaProps().session?.messages[1].content).toBe('New answer');
   });
 
   it('retains partial output and clears the pending marker after a stream failure', async () => {

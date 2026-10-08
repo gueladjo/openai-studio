@@ -12,6 +12,7 @@ rules, task routing, and verification commands.
 ## Features
 
 - Streaming Responses API conversations with stop, failed-turn retry, and latest-response regenerate controls. A stream dropped by a suspended mobile page or a network change resumes when the page returns.
+- Edit the latest user message with **Edit latest message → Save & resend**. Attachments stay attached; the following answer is replaced with no undo. Earlier turns cannot be edited.
 - Independent in-flight requests across sessions, so a response can continue while another chat is open.
 - Local projects with names, icons, live project instructions, grouped chats, and reusable source libraries.
 - Automatic project File Search, Code Interpreter data sources, explicit attach-when-needed files, file citations, indexed-usage visibility, and durable remote cleanup.

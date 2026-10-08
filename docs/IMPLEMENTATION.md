@@ -73,6 +73,17 @@ text, output-index/phase messages, and reasoning are accumulated by one
 per-request stream state and checkpointed atomically for frame flushes, page
 suspension, explicit stop, failure, and Electron close.
 
+The latest user message can be edited inline and resent while its session is
+idle and the workspace is writable. Cancel leaves history untouched. Save &
+resend preserves that message's ID and attachments, replaces its text, discards
+the following assistant answer, and starts a new request with a new assistant
+placeholder. Empty text requires an attachment. Earlier turns stay unchanged;
+there is no branching or undo. The request uses the retained preceding answer's
+response ID (or local history), never the discarded answer's ID. The edit and
+pending marker are saved immediately through the same lifecycle as regeneration;
+a failed resend retains the corrected prompt and a retryable failed answer.
+Switching chats discards an unsubmitted edit without changing composer drafts.
+
 On writer startup, a persisted `pendingRequest` is converted to a failed,
 retryable turn. Reader tabs do not mutate pending requests. Chat deletion asks
 for confirmation and has no undo; a late completion must never recreate a
@@ -1012,7 +1023,7 @@ The following tests are the executable contracts for this specification:
 
 | Area | Primary contracts |
 | --- | --- |
-| App startup and PWA theme metadata, request routing, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
+| App startup and PWA theme metadata, request routing, latest-message edit/resend, regenerate/retry, stop/failure, pending recovery, project creation/defaults/instruction snapshots/source override/permanent deletion, destructive races, generated-file caching, merge UI, and close flushing | [App.integration.test.tsx](../App.integration.test.tsx) |
 | Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, dropped-stream resumption, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
