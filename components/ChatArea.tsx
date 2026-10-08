@@ -1201,7 +1201,7 @@ export const MessageRow = React.memo(({
                 resizePromptTextarea(event.target);
               }}
               onKeyDown={event => {
-                if (event.nativeEvent.isComposing) return;
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                 if (event.key === 'Escape') {
                   event.preventDefault();
                   cancelEdit();
@@ -1229,21 +1229,18 @@ export const MessageRow = React.memo(({
             {message.content}
           </div>
         )}
-        {canEditMessage && onEditMessage && (
-          <button
+        {canEditMessage && onEditMessage && !isEditing && (
+          <IconButton
             ref={editButtonRef}
-            type="button"
-            aria-label="Edit latest message"
-            title="Edit latest message"
-            hidden={isEditing}
+            label="Edit latest message"
+            icon={Pencil}
+            size="sm"
+            iconSize={15}
             onClick={() => {
               setEditedContent(message.content);
               setIsEditing(true);
             }}
-            className="rounded-md p-1.5 text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <Pencil size={15} aria-hidden="true" />
-          </button>
+          />
         )}
       </div>
     );
@@ -1514,12 +1511,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     onReplaceFailedAttachmentsRef.current = onReplaceFailedAttachments;
   });
 
-  const handleEditMessage = useCallback((content: string) => (
-    activeSessionId
-      ? onEditUserMessageRef.current(activeSessionId, latestUserMessageIndex, content)
-      : Promise.resolve(false)
-  ), [activeSessionId, latestUserMessageIndex]);
-
   const handleRetryFailedMessage = useCallback((assistantMessageId: string) => {
     onRetryFailedMessageRef.current(assistantMessageId);
   }, []);
@@ -1544,7 +1535,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     return element.scrollHeight - element.scrollTop - element.clientHeight < AUTO_SCROLL_THRESHOLD_PX;
   };
 
-  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
@@ -1559,7 +1550,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       });
       scrollFrameRef.current = null;
     });
-  };
+  }, []);
+
+  const handleEditMessage = useCallback(async (content: string) => {
+    if (!activeSessionId) return false;
+    const wasPinnedToBottom = isPinnedToBottomRef.current;
+    isPinnedToBottomRef.current = true;
+    const accepted = await onEditUserMessageRef.current(activeSessionId, latestUserMessageIndex, content);
+    if (previousSessionIdRef.current === activeSessionId) {
+      if (accepted) scrollToBottom('auto');
+      else isPinnedToBottomRef.current = wasPinnedToBottom;
+    }
+    return accepted;
+  }, [activeSessionId, latestUserMessageIndex, scrollToBottom]);
 
   const handleMessagesScroll = () => {
     const container = messagesContainerRef.current;
@@ -1856,7 +1859,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   canRetry={canRetry}
                   canRegenerate={canRegenerate}
                   canEditMessage={canEditMessage}
-                  onEditMessage={handleEditMessage}
+                  onEditMessage={canEditMessage ? handleEditMessage : undefined}
                   canEditAttachments={canEditAttachments}
                   apiKey={apiKey}
                   onDownloadGeneratedFile={onDownloadGeneratedFile}

@@ -759,6 +759,69 @@ describe('editing the latest user message', () => {
     expect((await openEdit(container)).value).toBe('Latest typo');
   });
 
+  it.each([true, false])('only follows a replacement response after an accepted resend: %s', async accepted => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => {
+      frames.delete(id);
+    });
+    const flushFrames = async () => act(async () => {
+      const callbacks = Array.from(frames.values());
+      frames.clear();
+      callbacks.forEach(callback => callback(0));
+    });
+    try {
+      const session = sessionFixture({ messages });
+      const container = await renderChat({ session, onEditUserMessage: async () => accepted });
+      const scroller = container.querySelector<HTMLElement>('.overflow-y-auto')!;
+      const scrollTo = vi.fn();
+      Object.defineProperties(scroller, {
+        scrollHeight: { configurable: true, value: 2000 },
+        clientHeight: { configurable: true, value: 500 },
+        scrollTo: { configurable: true, value: scrollTo }
+      });
+      await flushFrames();
+      scrollTo.mockClear();
+      scroller.scrollTop = 100;
+      await act(async () => scroller.dispatchEvent(new Event('scroll')));
+      const input = await openEdit(container);
+      await changeValue(input, 'Corrected prompt');
+      await act(async () => findButton(container, 'Save & resend')!.click());
+      await flushFrames();
+      // A replacement keeps the same message count, including fast completions.
+      expect(scrollTo).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      scrollTo.mockClear();
+      await renderChat({ session: { ...session, messages: [
+        ...messages.slice(0, -1), { ...messages[3], content: 'New delta', status: 'streaming' }
+      ] } });
+      await flushFrames();
+      expect(scrollTo).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      if (accepted) expect(scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: 'auto' });
+    } finally {
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+    }
+  });
+
+  it.each(['ctrlKey', 'metaKey'] as const)('resends a trailing user message with %s+Enter, outside IME composition', async modifier => {
+    const onEditUserMessage = vi.fn(async () => true);
+    const container = await renderChat({ session: sessionFixture({ messages: [messages[0]] }), onEditUserMessage });
+    const input = await openEdit(container);
+    await changeValue(input, 'Correction');
+    const press = async (extra: KeyboardEventInit = {}) => act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', [modifier]: true, bubbles: true, ...extra })
+    ));
+    await press({ isComposing: true });
+    await press({ keyCode: 229 });
+    expect(onEditUserMessage).not.toHaveBeenCalled();
+    await press();
+    expect(onEditUserMessage).toHaveBeenCalledExactlyOnceWith('session-1', 0, 'Correction');
+  });
+
   it.each(['error', 'stopped', 'incomplete', undefined] as const)('allows editing after a %s answer', async status => {
     const container = await renderChat({ session: sessionFixture({ messages: [
       messages[0], { ...messages[1], status }

@@ -90,6 +90,7 @@ const ICON_BUTTON_TONES: Record<IconButtonTone, string> = {
 };
 
 export interface IconButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  ref?: React.Ref<HTMLButtonElement>;
   label: string;
   icon: LucideIcon;
   iconSize?: number;

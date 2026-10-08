@@ -2117,6 +2117,24 @@ function App() {
     }
   };
 
+  const startChatTitleGeneration = (targetSessionId: string, message: Message): string => {
+    const titlePrompt = message.content.trim() || (
+      message.attachments?.length
+        ? `File analysis of ${message.attachments[0].name}`
+        : 'New Chat'
+    );
+    operationRegistryRef.current.abortWhere(operation => (
+      operation.kind === 'title' && operation.sessionId === targetSessionId
+    ));
+    const operation = operationRegistryRef.current.begin({
+      id: crypto.randomUUID(),
+      kind: 'title',
+      sessionId: targetSessionId
+    });
+    void runChatTitleGeneration(operation, targetSessionId, titlePrompt);
+    return titlePrompt.slice(0, 30) + (titlePrompt.length > 30 ? '...' : '');
+  };
+
   const getProjectContextForRequest = (
     session: Session
   ): ResolvedProjectContext | undefined | null => {
@@ -2200,7 +2218,7 @@ function App() {
           assistantMessageId,
           createdAt: requestTimestamp
         },
-        ...(draftTitle !== undefined && s.messages.length === 0 ? { title: draftTitle } : {})
+        ...(draftTitle !== undefined ? { title: draftTitle } : {})
       }
     )));
     return startAssistantResponse({
@@ -2262,19 +2280,9 @@ function App() {
           : {})
       };
 
-      if (session.messages.length === 0) {
-        const titlePrompt = content || (
-          attachments.length > 0
-            ? `File analysis of ${attachments[0].name}`
-            : 'New Chat'
-        );
-        const titleOperation = operationRegistryRef.current.begin({
-          id: crypto.randomUUID(),
-          kind: 'title',
-          sessionId: targetSessionId
-        });
-        void runChatTitleGeneration(titleOperation, targetSessionId, titlePrompt);
-      }
+      const draftTitle = session.messages.length === 0
+        ? startChatTitleGeneration(targetSessionId, newUserMessage)
+        : undefined;
 
       didStartResponse = true;
       void launchAssistantTurn({
@@ -2286,7 +2294,7 @@ function App() {
         assistantMessageId,
         requestTimestamp,
         projectContext,
-        draftTitle: content.slice(0, 30) + (content.length > 30 ? '...' : '')
+        draftTitle
       });
       return true;
 
@@ -2374,6 +2382,9 @@ function App() {
       sessionId: targetSessionId
     });
 
+    const draftTitle = isEdit && userMessageIndex === 0
+      ? startChatTitleGeneration(targetSessionId, messagesForApi[0])
+      : undefined;
     addProcessingSession(targetSessionId, operation.id);
     void launchAssistantTurn({
       operation,
@@ -2383,7 +2394,8 @@ function App() {
       userMessageId,
       assistantMessageId: newAssistantMessageId,
       requestTimestamp,
-      projectContext
+      projectContext,
+      draftTitle
     });
     return true;
   };

@@ -18,6 +18,7 @@ import {
   type AssistantOutputMessage,
   type AssistantPhase,
   type GeneratedFile,
+  type FileAttachment,
   type Message,
   type Project,
   type ProjectEdit,
@@ -74,6 +75,7 @@ interface CapturedProjectHomeProps {
 }
 
 interface GenerateOptions {
+  resolveAttachmentContent?: (attachment: FileAttachment) => Promise<string>;
   signal?: AbortSignal;
   onTextDelta?: (
     delta: string,
@@ -1341,6 +1343,8 @@ describe('App workspace and request lifecycle', () => {
     expect(completed.pendingRequest).toBeUndefined();
     expect(getChatAreaProps().session?.messages).toEqual([]);
     expect(mocks.generateResponse).toHaveBeenCalledTimes(1);
+    expect(mocks.generateChatTitle).not.toHaveBeenCalled();
+    expect(completed.title).toBe('Session A');
   });
 
   it.each(['complete', 'error', 'stopped', 'incomplete', undefined] as const)(
@@ -1365,6 +1369,69 @@ describe('App workspace and request lifecycle', () => {
       ]);
     }
   );
+
+  it('refreshes the first-prompt title and ignores a late title from the discarded prompt', async () => {
+    const oldTitle = createDeferred<string>();
+    const newTitle = createDeferred<string>();
+    mocks.generateChatTitle.mockReturnValueOnce(oldTitle.promise).mockReturnValueOnce(newTitle.promise);
+    mocks.generateResponse.mockResolvedValue(completedResult());
+    await renderApp();
+    await finishInitialization();
+    await act(async () => {
+      await getChatAreaProps().onSendMessage('session-a', 'Original topic', []);
+    });
+    await flushMicrotasks();
+    const oldSignal = mocks.generateChatTitle.mock.calls[0][2].signal as AbortSignal;
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 0, 'Corrected topic')).toBe(true);
+    });
+    expect(oldSignal.aborted).toBe(true);
+    expect(getChatAreaProps().session?.title).toBe('Corrected topic');
+    expect(mocks.generateChatTitle.mock.calls[1][0]).toBe('Corrected topic');
+    await act(async () => {
+      newTitle.resolve('New generated title');
+      await newTitle.promise;
+    });
+    await act(async () => {
+      oldTitle.resolve('Stale title');
+      await oldTitle.promise;
+    });
+    expect(getChatAreaProps().session?.title).toBe('New generated title');
+  });
+
+  it('edits a trailing user message and resolves its stored attachment without uploading it again', async () => {
+    const attachment: FileAttachment = {
+      name: 'notes.txt', type: 'text/plain', size: 1,
+      localBlob: { sha256: 'a'.repeat(64), byteSize: 1, mimeType: 'text/plain' }
+    };
+    mocks.loadedSessions[0].messages = [{
+      id: 'u1', role: 'user', content: 'Old prompt', timestamp: 1, attachments: [attachment]
+    }];
+    mocks.getAttachmentDataUrl.mockResolvedValue('data:text/plain;base64,WA==');
+    mocks.generateChatTitle.mockRejectedValue(new Error('Title unavailable'));
+    const resolvedContents: string[] = [];
+    mocks.generateResponse.mockImplementation(async (
+      messages: Message[], _config: unknown, _key: unknown, _instructions: unknown, options: GenerateOptions
+    ) => {
+      resolvedContents.push(await options.resolveAttachmentContent!(messages[0].attachments![0]));
+      return completedResult();
+    });
+    await renderApp();
+    await finishInitialization();
+    await act(async () => {
+      expect(await getChatAreaProps().onEditUserMessage('session-a', 0, '')).toBe(true);
+    });
+    await flushMicrotasks();
+    expect(resolvedContents).toEqual(['data:text/plain;base64,WA==']);
+    expect(mocks.getAttachmentDataUrl).toHaveBeenCalledExactlyOnceWith(expect.anything(), attachment);
+    expect(mocks.storeAttachment).not.toHaveBeenCalled();
+    expect(getChatAreaProps().session?.messages).toEqual([
+      expect.objectContaining({ id: 'u1', content: '', timestamp: Date.now(), attachments: [attachment] }),
+      expect.objectContaining({ role: 'assistant', status: 'complete' })
+    ]);
+    expect(getChatAreaProps().session?.title).toBe('File analysis of notes.txt');
+    expect(mocks.generateChatTitle.mock.calls[0][0]).toBe('File analysis of notes.txt');
+  });
 
   it('rejects older turns, empty prompts and reader edits without changing history', async () => {
     const messages: Message[] = [
@@ -1407,6 +1474,8 @@ describe('App workspace and request lifecycle', () => {
     await flushMicrotasks();
     expect(mocks.generateResponse.mock.calls[0][0]).toEqual([user]);
     expect(getChatAreaProps().session?.messages[1].content).toBe('New answer');
+    expect(mocks.generateChatTitle).not.toHaveBeenCalled();
+    expect(getChatAreaProps().session?.title).toBe('Session A');
   });
 
   it('retains partial output and clears the pending marker after a stream failure', async () => {
