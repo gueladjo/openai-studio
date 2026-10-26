@@ -52,12 +52,12 @@ export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
     reasoningOptions: REASONING_EFFORT_ASTRA,
     defaultReasoningEffort: 'medium'
   },
-  [ModelId.GPT_5_6_TERRA]: {
-    id: ModelId.GPT_5_6_TERRA,
+  [ModelId.GPT_6_1_TERRA]: {
+    id: ModelId.GPT_6_1_TERRA,
     supportsPromptCacheDiagnostics: true,
     supportsPromptCacheControl: true,
-    name: 'GPT-5.6 Terra',
-    knowledgeCutoff: 'February 16, 2026',
+    name: 'GPT-6.1 Terra',
+    knowledgeCutoff: 'June 1, 2026',
     contextWindowTokens: 1_050_000,
     supportsVerbosity: true,
     reasoningOptions: REASONING_EFFORT_GPT_5_6,
@@ -178,7 +178,9 @@ export const getModelConfig = (model: ModelId | string): ModelConfig => {
     ? ModelId.GPT_6_1_SOL
     : model === 'gpt-5.6-luna'
       ? ModelId.GPT_6_LUNA
-      : model;
+      : model === 'gpt-5.6-terra'
+        ? ModelId.GPT_6_1_TERRA
+        : model;
   return MODEL_CONFIGS[migratedModel as ModelId] || MODEL_CONFIGS[DEFAULT_CONFIG.model];
 };
 

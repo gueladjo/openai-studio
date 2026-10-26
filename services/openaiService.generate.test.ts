@@ -154,7 +154,7 @@ describe('OpenAI request contracts', () => {
     [ModelId.GPT_6_ASTRA, true],
     [ModelId.GPT_6_1_SOL, true],
     [ModelId.GPT_6_LUNA, true],
-    [ModelId.GPT_5_6_TERRA, true],
+    [ModelId.GPT_6_1_TERRA, true],
     [ModelId.GPT_5_5, false],
     [ModelId.GPT_5_NANO, false],
     [ModelId.GPT_O3, false]
@@ -178,7 +178,7 @@ describe('OpenAI request contracts', () => {
     [ModelId.GPT_6_ASTRA, true],
     [ModelId.GPT_6_1_SOL, true],
     [ModelId.GPT_6_LUNA, true],
-    [ModelId.GPT_5_6_TERRA, true],
+    [ModelId.GPT_6_1_TERRA, true],
     [ModelId.GPT_5_5, false],
     [ModelId.GPT_5_NANO, false],
     [ModelId.GPT_O3, false]
@@ -930,6 +930,28 @@ describe('generateResponse reasoning summaries', () => {
     }
   );
 
+  it.each(['gpt-5.6-terra', ModelId.GPT_6_1_TERRA].flatMap(model =>
+    ['none', 'medium', 'max', 'minimal'].map(effort => ({ model, effort }))
+  ))('sends GPT-6.1 Terra requests for $model with $effort reasoning', async ({ model, effort }) => {
+    mockCompletedStream();
+    await generateResponse(
+      [userMessage],
+      { ...DEFAULT_CONFIG, model: model as ModelId, reasoningEffort: effort },
+      'test-key'
+    );
+
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    const payload = createResponseMock.mock.calls[0][0];
+    expect(payload.model).toBe('gpt-6.1-terra');
+    expect(payload.reasoning).toEqual({
+      effort: effort === 'minimal' ? 'medium' : effort,
+      ...(effort === 'none' ? {} : { summary: 'auto' })
+    });
+    expect(payload.instructions).toBe(
+      'You are GPT-6.1 Terra, an OpenAI model. Your knowledge cutoff is June 1, 2026.'
+    );
+  });
+
   it('does not request a summary when reasoning is disabled', async () => {
     mockCompletedStream();
 
@@ -937,7 +959,7 @@ describe('generateResponse reasoning summaries', () => {
       [userMessage],
       {
         ...DEFAULT_CONFIG,
-        model: ModelId.GPT_5_6_TERRA,
+        model: ModelId.GPT_6_1_TERRA,
         reasoningEffort: 'none'
       },
       'reasoning-disabled-key'

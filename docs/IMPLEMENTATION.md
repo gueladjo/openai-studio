@@ -132,7 +132,15 @@ The [official model reference](https://developers.openai.com/api/docs/models/gpt
 does not support None or Minimal reasoning.
 Saved chats configured for GPT-5.6 Sol or GPT-6 Sol select GPT-6.1 Sol when
 loaded; unsupported saved efforts normalize to Medium. Saved GPT-5.6 Luna
-configurations select GPT-6 Luna. Historical answer labels remain as recorded.
+configurations select GPT-6 Luna.
+GPT-6.1 Terra replaces GPT-5.6 Terra in the picker and API requests, uses the
+June 1, 2026 knowledge cutoff and 1,050,000-token context window, and supports
+None, Low, Medium, High, Xhigh, and Max reasoning with Medium as its default
+and fallback, per the
+[official Terra model reference](https://developers.openai.com/api/docs/models/gpt-6.1-terra).
+Saved GPT-5.6 Terra configurations select GPT-6.1 Terra, preserving supported
+reasoning efforts and other chat preferences. Historical answer labels remain
+as recorded.
 These configuration upgrades retain the supported local v5 and portable archive
 v3 formats without a schema-version change.
 

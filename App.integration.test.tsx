@@ -697,10 +697,13 @@ describe('App workspace and request lifecycle', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['gpt-5.6-sol', 'gpt-6-sol'])(
-    'upgrades saved %s chats while preserving historical answer labels', async model => {
-      const historicalName = model === 'gpt-6-sol' ? 'GPT-6 Sol' : 'GPT-5.6 Sol';
-      const session = createSession('session-a', 'Saved Sol chat', [{
+  it.each([
+    { model: 'gpt-5.6-sol', historicalName: 'GPT-5.6 Sol', upgradedModel: ModelId.GPT_6_1_SOL, effort: 'medium' },
+    { model: 'gpt-6-sol', historicalName: 'GPT-6 Sol', upgradedModel: ModelId.GPT_6_1_SOL, effort: 'medium' },
+    { model: 'gpt-5.6-terra', historicalName: 'GPT-5.6 Terra', upgradedModel: ModelId.GPT_6_1_TERRA, effort: 'none' }
+  ])(
+    'upgrades saved $model chats while preserving historical answer labels', async ({ model, historicalName, upgradedModel, effort }) => {
+      const session = createSession('session-a', 'Saved chat', [{
         role: 'assistant', content: 'Earlier answer', timestamp: 1,
         model, modelName: historicalName, reasoningEffort: 'none'
       }]);
@@ -712,7 +715,7 @@ describe('App workspace and request lifecycle', () => {
 
       const upgraded = getSidebarProps().sessions[0];
       expect(upgraded.config).toMatchObject({
-        model: ModelId.GPT_6_1_SOL, reasoningEffort: 'medium', promptCaching: false
+        model: upgradedModel, reasoningEffort: effort, promptCaching: false
       });
       expect(upgraded.messages).toEqual(session.messages);
       const persisted = getPersistedSessionWrites().at(-1)![0];

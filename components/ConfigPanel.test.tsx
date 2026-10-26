@@ -255,7 +255,7 @@ describe('ConfigPanel', () => {
       <ConfigPanelHarness
         initialConfig={{
           ...DEFAULT_CONFIG,
-          model: ModelId.GPT_5_6_TERRA,
+          model: ModelId.GPT_6_1_TERRA,
           reasoningEffort: 'none'
         }}
         onConfigChange={onConfigChange}
@@ -283,7 +283,7 @@ describe('ConfigPanel', () => {
     const onConfigChange = vi.fn();
     container = await view.render(
       <ConfigPanelHarness
-        initialConfig={{ ...DEFAULT_CONFIG, model: ModelId.GPT_5_6_TERRA, reasoningEffort: 'none' }}
+        initialConfig={{ ...DEFAULT_CONFIG, model: ModelId.GPT_6_1_TERRA, reasoningEffort: 'none' }}
         onConfigChange={onConfigChange}
       />
     );
@@ -302,6 +302,32 @@ describe('ConfigPanel', () => {
     expect(getButton('minimal')).toBeUndefined();
     expect(getButton('max')).toBeDefined();
   });
+
+  it.each(['none', 'max'])(
+    'replaces Terra in the picker and preserves %s reasoning when selected', async effort => {
+      const onConfigChange = vi.fn();
+      container = await view.render(
+        <ConfigPanelHarness
+          initialConfig={{ ...DEFAULT_CONFIG, model: ModelId.GPT_6_LUNA, reasoningEffort: effort }}
+          onConfigChange={onConfigChange}
+        />
+      );
+      const picker = Array.from(container.querySelectorAll('select')).find(
+        select => select.querySelector('option[value="gpt-6.1-terra"]')
+      )!;
+      expect(picker.querySelector('option[value="gpt-5.6-terra"]')).toBeNull();
+      expect(picker.querySelector('option[value="gpt-6.1-terra"]')?.textContent).toBe('GPT-6.1 Terra');
+
+      await changeValue(picker, ModelId.GPT_6_1_TERRA, 'change');
+
+      expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        model: ModelId.GPT_6_1_TERRA, reasoningEffort: effort
+      }));
+      expect(getButton('none')).toBeDefined();
+      expect(getButton('max')).toBeDefined();
+      expect(getButton('minimal')).toBeUndefined();
+    }
+  );
 
   it('renders every reasoning effort as an equal-width step of the level scale', async () => {
     const onConfigChange = vi.fn();

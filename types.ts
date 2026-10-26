@@ -14,7 +14,7 @@ import type {
 export enum ModelId {
   GPT_6_ASTRA = 'gpt-6-astra',
   GPT_6_1_SOL = 'gpt-6.1-sol',
-  GPT_5_6_TERRA = 'gpt-5.6-terra',
+  GPT_6_1_TERRA = 'gpt-6.1-terra',
   GPT_6_LUNA = 'gpt-6-luna',
   GPT_5_5 = 'gpt-5.5',
   GPT_5_NANO = 'gpt-5-nano',

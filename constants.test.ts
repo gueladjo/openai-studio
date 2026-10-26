@@ -141,6 +141,27 @@ describe('normalizeChatConfig', () => {
     }
   );
 
+  it.each(['gpt-5.6-terra', ModelId.GPT_6_1_TERRA])(
+    'normalizes Terra reasoning and preserves saved preferences for %s', model => {
+      for (const effort of ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'minimal', undefined]) {
+        const config = {
+          ...DEFAULT_CONFIG,
+          model: model as ModelId,
+          reasoningEffort: effort,
+          promptCaching: false,
+          textVerbosity: 'high' as const,
+          systemInstructionId: 'instruction-1',
+          tools: { ...DEFAULT_CONFIG.tools, webSearch: false, codeInterpreter: true }
+        };
+        expect(normalizeChatConfig(config)).toEqual({
+          ...config,
+          model: ModelId.GPT_6_1_TERRA,
+          reasoningEffort: !effort || effort === 'minimal' ? 'medium' : effort
+        });
+      }
+    }
+  );
+
   it('migrates saved GPT-5.6 Sol and Luna configs to their current equivalents', () => {
     expect(normalizeChatConfig({
       model: 'gpt-5.6-sol' as ModelId,
@@ -174,7 +195,7 @@ describe('model catalog', () => {
   it('tracks the context window for each model', () => {
     expect(MODEL_CONFIGS[ModelId.GPT_6_ASTRA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_6_1_SOL].contextWindowTokens).toBe(1_050_000);
-    expect(MODEL_CONFIGS[ModelId.GPT_5_6_TERRA].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_6_1_TERRA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_6_LUNA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_5].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_5_NANO].contextWindowTokens).toBe(400_000);
@@ -185,7 +206,7 @@ describe('model catalog', () => {
     expect(MODELS.map(model => model.id)).toEqual([
       ModelId.GPT_6_ASTRA,
       ModelId.GPT_6_1_SOL,
-      ModelId.GPT_5_6_TERRA,
+      ModelId.GPT_6_1_TERRA,
       ModelId.GPT_6_LUNA,
       ModelId.GPT_5_5,
       ModelId.GPT_5_NANO,
@@ -202,6 +223,17 @@ describe('model catalog', () => {
     expect(instructions).toBe(
       'You are GPT-6.1 Sol, an OpenAI model. '
       + 'Your knowledge cutoff is April 30, 2026.\n\n'
+      + 'Respond with concise examples.'
+    );
+  });
+
+  it('uses the current Terra identity and cutoff before custom instructions', () => {
+    expect(getModelInstructions(
+      ModelId.GPT_6_1_TERRA,
+      'Respond with concise examples.'
+    )).toBe(
+      'You are GPT-6.1 Terra, an OpenAI model. '
+      + 'Your knowledge cutoff is June 1, 2026.\n\n'
       + 'Respond with concise examples.'
     );
   });
