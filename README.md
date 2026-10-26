@@ -28,7 +28,7 @@ rules, task routing, and verification commands.
   NY, US).
 - Multiple image and file attachments, including files pasted from the clipboard.
 - GitHub Flavored Markdown, syntax-highlighted code blocks with copy buttons, tables, citations, generated Code Interpreter files, and response copying.
-- Assistant progress commentary is shown in a collapsible section while final-answer output remains the primary response.
+- Assistant progress commentary and Code Interpreter runs are shown in collapsible sections above the answer, while final-answer output remains the primary response.
 - Per-response model, reasoning effort, time-to-first-token, and token-usage details. Model names are captured with each answer, so later catalog changes do not relabel conversation history.
 - Global project/chat search with membership paths, a collapsible sidebar, and light and dark themes.
 - Checksummed ZIP workspace backup/merge/restore, opt-in daily folder backups, action-aware merge/restore undo, and per-conversation Markdown export.
@@ -169,7 +169,7 @@ Run the desktop application in development:
 npm run electron:dev
 ```
 
-Electron development expects Vite on port 5173. Stop any process already using that port before starting the command.
+Electron development expects Vite on port 5173. Stop any process already using that port before starting the command. Electron waits up to 15 seconds for the dev server to answer its health check; if Vite does not start or another server holds the port, the command exits with an error instead of loading a foreign page.
 
 Package the application for the current host platform:
 

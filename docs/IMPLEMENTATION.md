@@ -4,7 +4,7 @@
 
 - Status: implemented current behavior and approved constraints.
 - Last meaningful update: 2026-10-08, latest-user-message editing and resend.
-- Last verified against code and tests: 2026-08-03.
+- Last verified against code and tests: 2026-10-11.
 
 This document is authoritative for intended application behavior, architecture,
 interfaces, invariants, failure handling, and security constraints. Code and
@@ -358,8 +358,9 @@ ChatArea user input -> App request/session state -> openaiService streaming API
 Primary boundaries are:
 
 - `components/ChatArea.tsx`: composer, per-session drafts, attachments, message
-  rendering, response details, citations, generated files, copying,
-  conversation export, and the welcome screen shown without a chat.
+  rendering, latest-message editing, response details, citations, generated
+  files, copying, conversation export, and the welcome screen shown without a
+  chat.
 - `components/Sidebar.tsx`: chat search and selection, project hierarchy and
   global search, chat/project creation shortcuts, and the Settings entry.
 - `components/SettingsDialog.tsx`: theme, API key, pending remote cleanup,
@@ -923,6 +924,15 @@ non-Electron Vite mode currently uses `/openai-studio/`; the generated PWA
 must change `vite.config.ts`, which is authoritative for the generated PWA
 manifest and service worker.
 
+In development, the unpackaged Electron main process loads
+`http://127.0.0.1:5173/` only after `electron/devServer.js` receives the
+app-specific health response that the `electron-dev-health` Vite plugin serves
+at `/__openai-studio/electron-dev-health` (a fixed header and JSON body). It
+retries for up to 15 seconds and then exits with code 1 and a console error, so
+a missing, slow, or foreign server on that port is never loaded as the
+application document. `vite.config.ts` binds that host and port with
+`strictPort`.
+
 The PWA caches the compiled shell and selected assets, including Tailwind CSS.
 Google Fonts remain external and are runtime-cached by Workbox. OpenAI requests
 remain network-dependent. The manifest and initial HTML provide a light header
@@ -1043,14 +1053,16 @@ The following tests are the executable contracts for this specification:
 | Responses payloads, project context/File Search/analysis Files/file citations, model/tool normalization, attachments, streaming terminal output, dropped-stream resumption, cancellation, fallback behavior, titles, history, and generated files | [services/openaiService.generate.test.ts](../services/openaiService.generate.test.ts) |
 | Citation marker, annotation, source ordering, deduplication, and cleanup behavior | [services/openaiService.test.ts](../services/openaiService.test.ts) |
 | Persisted runtime schema, bounds, IDs, and references | [services/workspaceSchema.test.ts](../services/workspaceSchema.test.ts) |
-| Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, replacement, recovery/undo, and retired-store refusal | [services/storage.integration.test.ts](../services/storage.integration.test.ts) |
+| Immutable schema-v5 generations, unsupported-format refusal, project blob union and double-generation deletion, whole-generation fallback, stale writers, pinning, staged-blob protection during concurrent garbage collection, replacement, recovery/undo, and retired-store refusal | [services/storage.integration.test.ts](../services/storage.integration.test.ts) and [services/workspaceGenerationStore.test.ts](../services/workspaceGenerationStore.test.ts) |
 | ZIP creation, project/source binary round trip, v3-only validation, remote-registry exclusion, strict/adversarial validation, legacy rejection, and digest checks | [services/workspaceArchive.test.ts](../services/workspaceArchive.test.ts) |
 | Chat/project ordering and reuse, project/source/membership/citation collision remapping, instruction reuse, blob selection, and limits | [services/workspaceMerge.test.ts](../services/workspaceMerge.test.ts) |
 | Project source routing/limits, operation ownership, pre-read busy state, workspace replacement exclusion, and File/vector-store upload, indexing, usage rollback, reconciliation, error classification, deletion order, and durable cleanup | [utils/projectSources.test.ts](../utils/projectSources.test.ts), [services/projectOperationOwner.test.ts](../services/projectOperationOwner.test.ts), [services/projectSourceService.test.ts](../services/projectSourceService.test.ts), and [App.integration.test.tsx](../App.integration.test.tsx) |
 | Project home source/status/destructive UI, sidebar hierarchy/icons/search/staged key controls, and project chat breadcrumbs | [components/ProjectHome.test.tsx](../components/ProjectHome.test.tsx), [components/Sidebar.test.tsx](../components/Sidebar.test.tsx), and [components/ChatArea.test.tsx](../components/ChatArea.test.tsx) |
+| Model catalog defaults and picker order, saved-configuration upgrades and reasoning fallbacks, prompt-caching and Web Search option normalization, and the chat settings panel (prompt caching switch, Web Search disclosure, model-specific reasoning, inline instruction management) | [constants.test.ts](../constants.test.ts) and [components/ConfigPanel.test.tsx](../components/ConfigPanel.test.tsx) |
+| Attachment format/MIME/size validation, per-session draft isolation and restoration, chat-deletion confirmation, Markdown transcript export, citation URL safety, and atomic stream-state checkpoints | [utils/attachmentValidation.test.ts](../utils/attachmentValidation.test.ts), [utils/chatDrafts.test.ts](../utils/chatDrafts.test.ts), [utils/chatDeletion.test.ts](../utils/chatDeletion.test.ts), [utils/conversationExport.test.ts](../utils/conversationExport.test.ts), [utils/sourceUrls.test.ts](../utils/sourceUrls.test.ts), and [services/responseStreamState.test.ts](../services/responseStreamState.test.ts) |
 | Daily eligibility, destination read-back, close failure, corruption handling, and three-valid-file retention | [services/backupScheduler.test.ts](../services/backupScheduler.test.ts) |
 | Save versioning, retry, flush, cross-tab coordination, operation ownership, and destructive serialization | [saveQueue.test.ts](../services/saveQueue.test.ts), [workspaceSync.test.ts](../services/workspaceSync.test.ts), [operationRegistry.test.ts](../services/operationRegistry.test.ts), and [serializedOperationQueue.test.ts](../services/serializedOperationQueue.test.ts) |
-| Electron navigation, window isolation, close coordination, managed IPC, streamed file publication, and partial cleanup | [urlPolicy.test.js](../electron/urlPolicy.test.js), [main.test.js](../electron/main.test.js), and [backupFiles.test.js](../electron/backupFiles.test.js) |
+| Electron navigation, window isolation, development-server verification, preload bridge contract, close coordination, managed IPC, streamed file publication, and partial cleanup | [urlPolicy.test.js](../electron/urlPolicy.test.js), [devServer.test.js](../electron/devServer.test.js), [main.test.js](../electron/main.test.js), [preload.test.ts](../electron/preload.test.ts), and [backupFiles.test.js](../electron/backupFiles.test.js) |
 | Web/Electron base paths, PWA navigation/manifest caching, and production secret exclusion | [buildPolicy.test.ts](../buildPolicy.test.ts) |
 
 Use this table to select tests for affected contracts, not as a checklist for

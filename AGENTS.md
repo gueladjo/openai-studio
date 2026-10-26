@@ -9,6 +9,8 @@ require a full specification read or repository map.
 | --- | --- |
 | Setup, usage, deployment, user warnings | [README](README.md) |
 | Module ownership or cross-component changes | [Architecture](docs/IMPLEMENTATION.md#architecture-and-responsibilities) |
+| Sending, latest-message edit/resend, stop, retry, regenerate, chat titles | [Conversations](docs/IMPLEMENTATION.md#conversations) |
+| Model catalog, reasoning/verbosity, prompt caching, Web Search options, attachments, Markdown/math/code rendering, transcript export | [Instructions, tools, and output](docs/IMPLEMENTATION.md#instructions-tools-attachments-and-output) |
 | Responses payloads, streaming, tools, history, cancellation | [Responses API](docs/IMPLEMENTATION.md#responses-api-contract) |
 | Project sources, indexing, cleanup, API-key changes | [Projects and sources](docs/IMPLEMENTATION.md#projects-and-reusable-sources) |
 | Persisted fields, formats, backend migration, recovery | [Data validation](docs/IMPLEMENTATION.md#persisted-data-and-runtime-validation) and [storage](docs/IMPLEMENTATION.md#local-storage-and-recovery) |
