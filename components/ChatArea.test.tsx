@@ -13,6 +13,7 @@ import {
 } from './ChatArea';
 import { DEFAULT_CONFIG, Message, ModelId, Session } from '../types';
 import { sessionFixture } from '../test/fixtures';
+import { applyCitationAnnotations } from '../services/openaiService';
 
 const renderMarkdown = (markdown: string): string => renderToStaticMarkup(
   <AssistantMarkdown>{markdown}</AssistantMarkdown>
@@ -270,6 +271,34 @@ describe('ChatArea markdown code rendering', () => {
     expect(html).not.toContain('<a ');
     expect(html).toContain('<span class="text-accent underline');
     expect(html).toContain('run</span>');
+  });
+
+  it('renders processed citations without losing prose, bold text, headings, or table cells', () => {
+    const url = 'https://example.com/study_(overview)';
+    const text = [
+      `A finding. ([study](<${url}>))`, '',
+      '## How I would place it in your routine', '',
+      'Your current plan includes **extended support**.', '',
+      'There was **no comparison group**.', '',
+      '| Finding | Qualification |', '|---|---|',
+      '| Some improvement | Preliminary evidence |'
+    ].join('\n');
+    const content = applyCitationAnnotations(text, [{
+      type: 'url_citation', start_index: 0,
+      end_index: text.indexOf(' in your routine'), title: 'Study', url
+    }], { sources: [], sourceIndexByUrl: new Map() });
+    const container = document.createElement('div');
+    container.innerHTML = renderMarkdown(content);
+
+    expect(container.querySelector('h2')?.textContent).toBe('How I would place it in your routine');
+    expect(Array.from(container.querySelectorAll('strong'), element => element.textContent))
+      .toEqual(['extended support', 'no comparison group']);
+    expect(container.textContent).toContain('Your current plan includes extended support.');
+    expect(container.textContent).toContain('There was no comparison group.');
+    expect(Array.from(container.querySelectorAll('td'), element => element.textContent))
+      .toEqual(['Some improvement', 'Preliminary evidence']);
+    expect(container.querySelectorAll('a')).toHaveLength(1);
+    expect(container.querySelector('a')?.getAttribute('href')).toBe(url);
   });
 
   it('does not interpret TeX delimiters inside Markdown code', () => {

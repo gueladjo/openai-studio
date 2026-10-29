@@ -56,7 +56,8 @@ describe('isCitationMarkerSpan', () => {
     '[source]',
     'example',
     'https://example dot com',
-    '【unclosed marker'
+    '【unclosed marker',
+    '\uE200cite\uE202turn0search0\uE201 ordinary prose \uE200cite\uE202turn0search1\uE201'
   ])('rejects non-marker text %j', (text) => {
     expect(isCitationMarkerSpan(text)).toBe(false);
   });
@@ -89,9 +90,96 @@ describe('stripAdjacentCitationSourceLabels', () => {
 
     expect(stripAdjacentCitationSourceLabels(content)).toBe(content);
   });
+
+  it('preserves source label examples inside inline and fenced code', () => {
+    const example = `(example.com) ${FIRST_MARKER}`;
+    const text = `Keep \`${example}\` and:\n\n\`\`\`md\n${example}\n\`\`\``;
+    expect(stripAdjacentCitationSourceLabels(text)).toBe(text);
+  });
 });
 
 describe('applyCitationAnnotations', () => {
+  it('never deletes prose between separate citation tokens in an annotation span', () => {
+    const first = '\uE200cite\uE202turn0search0\uE201';
+    const second = '\uE200cite\uE202turn0search1\uE201';
+    const text = `Earlier ${first} There was **no comparison group**. ${second}`;
+
+    const result = applyCitationAnnotations(
+      text,
+      [createAnnotation(text, `${first} There was **no comparison group**. ${second}`)],
+      createRegistry()
+    );
+
+    expect(result).toContain('There was **no comparison group**.');
+  });
+
+  it.each([
+    '## How I would place it in your routine',
+    'Your current plan includes **extended support**.',
+    '| Finding | Qualification |'
+  ])('uses the existing source link instead of stale offsets in %j', (followingText) => {
+    const text = `A finding. ([source](${FIRST_URL}))\n\n${followingText}`;
+    // An apparently valid boundary can still be in unrelated prose or Markdown.
+    const endIndex = text.indexOf(followingText) + followingText.indexOf(' ');
+    const annotation = { ...createAnnotation(text, 'A finding.'), end_index: endIndex };
+
+    expect(applyCitationAnnotations(text, [annotation], createRegistry())).toBe(
+      `A finding. ${FIRST_MARKER}\n\n${followingText}`
+    );
+  });
+
+  it('normalizes complete Markdown links with angle brackets and balanced URL parentheses', () => {
+    const url = 'https://example.com/study_(overview)';
+    const text = `See [study](<${url}>) and [details](${url}).`;
+    const annotation = createAnnotation(text, 'See', url);
+
+    expect(applyCitationAnnotations(text, [annotation], createRegistry())).toBe(
+      `See [[1]](<${url}>) and [[1]](<${url}>).`
+    );
+  });
+
+  it.each([
+    '`[source](https://example.com/articles/first)`',
+    '```md\n[source](https://example.com/articles/first)\n```',
+    '![source](https://example.com/articles/first)',
+    '[![Chart](https://example.com/chart.png)](https://example.com/articles/first)',
+    '## A heading with several words',
+    '**A bold phrase with several words**'
+  ])('preserves protected Markdown when an annotation points into %j', (text) => {
+    expect(applyCitationAnnotations(
+      text,
+      [createAnnotation(text, text.slice(0, text.length - 1))],
+      createRegistry()
+    )).toBe(text);
+  });
+
+  it.each([
+    ['Your current plan includes **extended support**.', 'Your'],
+    ['## How I would place it in your routine', '## How I would place it'],
+    ['There was **no comparison group**, among other limitations.', 'There was **no comparison group'],
+    ['The first sentence. The second sentence.', 'The first sentence. '],
+    ['A sentence with 🧪 supplementary characters.', 'A sentence with \uD83E']
+  ])('retains prose and sources when an offset ends after %j / %j', (text, span) => {
+    const registry = createRegistry();
+    expect(applyCitationAnnotations(text, [createAnnotation(text, span)], registry)).toBe(text);
+    expect(registry.sources).toEqual([
+      { kind: 'web', title: 'Example source', url: FIRST_URL }
+    ]);
+  });
+
+  it('preserves whitespace around a replaced citation marker', () => {
+    const text = 'First [1] next.';
+    expect(applyCitationAnnotations(text, [createAnnotation(text, ' [1] ')], createRegistry()))
+      .toBe(`First ${FIRST_MARKER} next.`);
+  });
+
+  it.each([
+    ['The release is v1.2.', 'v1.2'],
+    ['Use myexample.com for this.', 'example.com']
+  ])('does not delete domain-like prose selected by a stale offset: %s', (text, span) => {
+    expect(applyCitationAnnotations(text, [createAnnotation(text, span)], createRegistry())).toBe(text);
+  });
+
   it('appends a Markdown citation to an annotated prose span', () => {
     const text = 'Cats are mammals.';
     const registry = createRegistry();

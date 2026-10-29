@@ -1118,6 +1118,70 @@ describe('generateResponse terminal output', () => {
     });
   });
 
+  it.each([ModelId.GPT_6_ASTRA, ModelId.GPT_6_1_SOL])(
+    'preserves formatted streamed prose on completion despite stale citation offsets: %s',
+    async (model) => {
+      const url = 'https://example.com/study_(overview)';
+      const text = [
+        `A finding. ([study](<${url}>))`,
+        '',
+        '## How I would place it in your routine',
+        '',
+        'There was **no comparison group**.',
+        '',
+        '| Finding | Qualification |',
+        '|---|---|',
+        '| Some improvement | Preliminary evidence |'
+      ].join('\n');
+      const output = {
+        ...createPhasedMessageOutput('msg-final', text, 'final_answer'),
+        content: [{
+          type: 'output_text', text, logprobs: [],
+          annotations: [{
+            type: 'url_citation', start_index: 0,
+            end_index: text.indexOf(' in your routine'),
+            url, title: 'Study'
+          }]
+        }]
+      } as OpenAIResponse['output'][number];
+      createResponseMock.mockResolvedValue(createStream([
+        {
+          type: 'response.output_text.delta', sequence_number: 1,
+          item_id: 'msg-final', output_index: 0, content_index: 0,
+          delta: text, logprobs: []
+        },
+        { type: 'response.completed', sequence_number: 2, response: createCompletedResponse([output]) }
+      ]));
+      const onTextDelta = vi.fn();
+      const result = await generateResponse(
+        [userMessage], { ...DEFAULT_CONFIG, model }, 'test-key', undefined, { onTextDelta }
+      );
+      const expected = text.replace(`([study](<${url}>))`, `[[1]](<${url}>)`);
+
+      expect(onTextDelta).toHaveBeenCalledWith(text, 0, undefined);
+      expect(result.content).toBe(expected);
+      expect(result.outputMessages).toEqual([{ phase: 'final_answer', content: expected }]);
+      expect(result.sources).toEqual([{ kind: 'web', title: 'Study', url }]);
+    }
+  );
+
+  it('extracts complete source links without changing code, images, or URL parentheses', async () => {
+    const url = 'https://example.com/study_(overview)';
+    const text = [
+      `Read [study](<${url}>).`,
+      `Keep \`[study](${url})\` as code.`,
+      `![Chart](${url})`,
+      `\`\`\`md\n[study](${url})\n\`\`\``
+    ].join('\n\n');
+    mockCompletedStream([createPhasedMessageOutput('msg-final', text, 'final_answer')]);
+    const result = await generateResponse([userMessage], {
+      ...DEFAULT_CONFIG, tools: { ...DEFAULT_CONFIG.tools, webSearch: false }
+    }, 'test-key');
+
+    expect(result.content).toBe(text.replace(`[study](<${url}>)`, `[[1]](<${url}>)`));
+    expect(result.sources).toEqual([{ kind: 'web', title: 'study', url }]);
+  });
+
   it('preserves incomplete status, reason, partial output, citations, and usage', async () => {
     const partialText = 'Partial answer.';
     const sourceUrl = 'https://example.com/partial';

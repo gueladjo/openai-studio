@@ -34,8 +34,12 @@ import {
   Source,
   WebCitationSource
 } from '../types';
-import { createSourceRecord } from '../utils/sourceUrls';
+import { createSourceRecord, parseSourceUrl } from '../utils/sourceUrls';
 import { normalizePromptCacheDiagnostics } from '../utils/promptCacheDiagnostics';
+import {
+  inspectCitationMarkdown,
+  transformOutsideMarkdownLiterals
+} from '../utils/citationMarkdown';
 import {
   getAttachmentFormat,
   getDataUrlByteLength,
@@ -338,7 +342,7 @@ export const isCitationMarkerSpan = (text: string): boolean => {
 
   return (
     /^\u3010[^\u3011]+\u3011$/.test(trimmedText) ||
-    /^\uE200cite\uE202.+?\uE201$/.test(trimmedText) ||
+    /^\uE200cite\uE202[^\uE200\uE201\r\n]+\uE201$/.test(trimmedText) ||
     /^\[\d+(?:\s*[-,]\s*\d+)*\]$/.test(trimmedText) ||
     /^(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(sourceLabel)
   );
@@ -359,7 +363,7 @@ const isDomainLikeSourceLabel = (label: string): boolean => (
   /^(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(normalizeSourceLabel(label))
 );
 
-export const stripAdjacentCitationSourceLabels = (content: string): string => {
+const stripCitationSourceLabels = (content: string): string => {
   const withoutAdjacentLabels = content
     .replace(
       /(^|[ \t])\(([^()\n]{3,160})\)([ \t]*(?:\[\[\d+\]\]\((?:<[^>\n]+>|https?:\/\/[^\s)\n]+)\)(?:[ \t]*)?)+)/g,
@@ -392,32 +396,9 @@ export const stripAdjacentCitationSourceLabels = (content: string): string => {
   );
 };
 
-const replaceInlineCitationSourceLabels = (
-  text: string,
-  markerText: string
-): {
-  text: string;
-  replaced: boolean;
-} => {
-  let replaced = false;
-
-  const updatedText = text.replace(
-    /\(([^()\n]{3,160})\)/g,
-    (match, label) => {
-      if (!isDomainLikeSourceLabel(label)) {
-        return match;
-      }
-
-      replaced = true;
-      return markerText;
-    }
-  );
-
-  return {
-    text: updatedText,
-    replaced
-  };
-};
+export const stripAdjacentCitationSourceLabels = (content: string): string => (
+  transformOutsideMarkdownLiterals(content, stripCitationSourceLabels)
+);
 
 const mapSources = (sources: OpenAIResponseSource[] = []): Source[] => {
   const seenUrls = new Set<string>();
@@ -450,17 +431,16 @@ const extractMarkdownLinkCitations = (
   content: string;
   sources: Source[];
 } => {
-  const linkRegex = /(^|[^!])\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
-
-  const updatedContent = content.replace(linkRegex, (match, prefix, title, url) => {
+  const replacements: CitationReplacement[] = [];
+  for (const link of inspectCitationMarkdown(content).links) {
     const extractedSource = createSourceRecord(
-      title,
-      url,
+      link.title,
+      link.url,
       `Assistant citation #${extractedSources.length + 1}`
     );
 
     if (!extractedSource) {
-      return match;
+      continue;
     }
 
     const sourceKey = getSourceKey(extractedSource.url);
@@ -472,30 +452,17 @@ const extractMarkdownLinkCitations = (
       sourceIndexByUrl.set(sourceKey, citationNumber);
     }
 
-    return `${prefix}${formatCitationMarkdownLink(citationNumber, extractedSource.url)}`;
-  });
+    replacements.push({
+      ...link,
+      citationNumbers: [citationNumber],
+      urls: [extractedSource.url]
+    });
+  }
 
   return {
-    content: updatedContent,
+    content: applyCitationReplacements(content, replacements),
     sources: extractedSources
   };
-};
-
-const normalizeKnownMarkdownLinkCitations = (
-  content: string,
-  registry: CitationRegistry
-): string => {
-  const linkRegex = /(^|[^!])\[([^\]]+?)\]\((https?:\/\/[^\)]+?)\)/g;
-
-  return content.replace(linkRegex, (match, prefix, _title, url) => {
-    const citationNumber = registry.sourceIndexByUrl.get(getSourceKey(url));
-
-    if (!citationNumber) {
-      return match;
-    }
-
-    return `${prefix}${formatCitationMarkdownLink(citationNumber, url)}`;
-  });
 };
 
 export interface CitationRegistry {
@@ -538,33 +505,6 @@ interface CitationReplacement {
   citationNumbers: number[];
   urls: string[];
 }
-
-const WORD_CHARACTER = /[\p{L}\p{N}]/u;
-const MARKDOWN_DELIMITER = /[*_~`]/;
-
-const hasUnsafeCitationBoundary = (
-  text: string,
-  endIndex: number,
-  spanText: string
-): boolean => {
-  if (isCitationMarkerSpan(spanText) || endIndex >= text.length) {
-    return false;
-  }
-
-  const before = text[endIndex - 1] || '';
-  const after = text[endIndex] || '';
-  const startsMarkdownDelimitedWord = /^[*_~`]+[\p{L}\p{N}]/u.test(
-    text.slice(endIndex)
-  );
-
-  return (
-    (WORD_CHARACTER.test(before) && WORD_CHARACTER.test(after)) ||
-    (/\s/.test(before) && (
-      WORD_CHARACTER.test(after) || startsMarkdownDelimitedWord
-    )) ||
-    (before === after && MARKDOWN_DELIMITER.test(before))
-  );
-};
 
 const getOrAddCitationSource = (
   registry: CitationRegistry,
@@ -619,50 +559,79 @@ const buildCitationReplacements = (
   annotations: unknown[] | undefined,
   registry: CitationRegistry
 ): CitationReplacement[] => {
-  if (!annotations || annotations.length === 0) return [];
-
+  const markdown = inspectCitationMarkdown(text);
   const replacementsBySpan = new Map<string, CitationReplacement>();
-
-  annotations.forEach((annotation) => {
-    if (!isUrlCitationAnnotation(annotation)) return;
-
-    const spanKey = getAnnotationSpanKey(annotation);
-    if (!spanKey) return;
-
-    const startIndex = annotation.start_index as number;
-    const endIndex = annotation.end_index as number;
-
-    if (
-      startIndex < 0 ||
-      endIndex <= startIndex ||
-      startIndex >= text.length ||
-      endIndex > text.length
-    ) {
-      return;
-    }
-
-    const citationSource = getOrAddCitationSource(registry, annotation);
-    if (!citationSource) return;
-
-    const spanText = text.slice(startIndex, endIndex);
-    if (hasUnsafeCitationBoundary(text, endIndex, spanText)) return;
-
+  const addReplacement = (
+    startIndex: number,
+    endIndex: number,
+    citationNumber: number,
+    url: string
+  ) => {
+    const spanKey = `${startIndex}:${endIndex}`;
     const existingReplacement = replacementsBySpan.get(spanKey);
-
     if (existingReplacement) {
-      if (!existingReplacement.citationNumbers.includes(citationSource.citationNumber)) {
-        existingReplacement.citationNumbers.push(citationSource.citationNumber);
-        existingReplacement.urls.push(citationSource.source.url);
+      if (!existingReplacement.citationNumbers.includes(citationNumber)) {
+        existingReplacement.citationNumbers.push(citationNumber);
+        existingReplacement.urls.push(url);
       }
       return;
     }
-
     replacementsBySpan.set(spanKey, {
       startIndex,
       endIndex,
-      citationNumbers: [citationSource.citationNumber],
-      urls: [citationSource.source.url]
+      citationNumbers: [citationNumber],
+      urls: [url]
     });
+  };
+
+  // Register sources first, so a real source link takes precedence over a stale
+  // annotation offset anywhere else in this content part.
+  const validAnnotations = (annotations || []).flatMap(annotation => {
+    if (!isUrlCitationAnnotation(annotation) || !getAnnotationSpanKey(annotation)) return [];
+    const startIndex = annotation.start_index as number;
+    const endIndex = annotation.end_index as number;
+    if (startIndex < 0 || endIndex <= startIndex || endIndex > text.length) return [];
+    const citation = getOrAddCitationSource(registry, annotation);
+    return citation ? [{ startIndex, endIndex, ...citation }] : [];
+  });
+  const linkedSources = new Set<string>();
+  for (const link of markdown.links) {
+    const sourceKey = getSourceKey(link.url);
+    const citationNumber = registry.sourceIndexByUrl.get(sourceKey);
+    if (!citationNumber) continue;
+    linkedSources.add(sourceKey);
+    addReplacement(link.startIndex, link.endIndex, citationNumber, link.url);
+  }
+
+  validAnnotations.forEach(({ startIndex, endIndex, citationNumber, source }) => {
+    const spanText = text.slice(startIndex, endIndex);
+    if (isCitationMarkerSpan(spanText)) {
+      const markerStart = startIndex + spanText.length - spanText.trimStart().length;
+      const markerEnd = endIndex - (spanText.length - spanText.trimEnd().length);
+      if (isDomainLikeSourceLabel(spanText)) {
+        // A stale span may select a version number or only part of a domain.
+        // Domain labels are replaceable only when they identify this source.
+        const label = normalizeSourceLabel(spanText);
+        const hostname = parseSourceUrl(source.url)?.hostname;
+        if (
+          (label !== normalizeSourceLabel(source.url) &&
+            (!hostname || label !== normalizeSourceLabel(hostname))) ||
+          /[\p{L}\p{N}]/u.test(text[markerStart - 1] || '') ||
+          /[\p{L}\p{N}]/u.test(text[markerEnd] || '')
+        ) return;
+      }
+      if (markdown.canReplaceMarker(markerStart, markerEnd)) {
+        addReplacement(markerStart, markerEnd, citationNumber, source.url);
+      }
+    } else if (
+      !linkedSources.has(getSourceKey(source.url)) &&
+      !/[\uE200\uE201\u3010\u3011]/.test(spanText) &&
+      markdown.canAppendCitation(endIndex)
+    ) {
+      // Prose is never replaced. Unverifiable offsets leave it untouched and
+      // retain the source in the Sources section.
+      addReplacement(endIndex, endIndex, citationNumber, source.url);
+    }
   });
 
   return Array.from(replacementsBySpan.values()).sort((a, b) => (
@@ -672,21 +641,16 @@ const buildCitationReplacements = (
   ));
 };
 
-export const applyCitationAnnotations = (
+const applyCitationReplacements = (
   text: string,
-  annotations: unknown[] | undefined,
-  registry: CitationRegistry
+  replacements: CitationReplacement[]
 ): string => {
-  addFileCitationSources(annotations, registry);
-  const replacements = buildCitationReplacements(text, annotations, registry);
-
   let updatedText = '';
   let cursor = 0;
 
   replacements.forEach((replacement) => {
     if (replacement.startIndex < cursor) return;
 
-    const spanText = text.slice(replacement.startIndex, replacement.endIndex);
     const markerText = replacement.citationNumbers
       .map((citationNumber, index) => (
         formatCitationMarkdownLink(citationNumber, replacement.urls[index])
@@ -694,23 +658,23 @@ export const applyCitationAnnotations = (
       .join(' ');
 
     updatedText += text.slice(cursor, replacement.startIndex);
-    const spanWithCitationMarkers = replaceInlineCitationSourceLabels(spanText, markerText);
-
-    if (spanWithCitationMarkers.replaced) {
-      updatedText += spanWithCitationMarkers.text;
-    } else {
-      updatedText += isCitationMarkerSpan(spanText)
-        ? markerText
-        : `${spanText}${markerText}`;
-    }
+    updatedText += markerText;
     cursor = replacement.endIndex;
   });
 
   updatedText += text.slice(cursor);
 
-  updatedText = normalizeKnownMarkdownLinkCitations(updatedText, registry);
+  return updatedText;
+};
 
-  return stripAdjacentCitationSourceLabels(updatedText);
+export const applyCitationAnnotations = (
+  text: string,
+  annotations: unknown[] | undefined,
+  registry: CitationRegistry
+): string => {
+  addFileCitationSources(annotations, registry);
+  const replacements = buildCitationReplacements(text, annotations, registry);
+  return stripAdjacentCitationSourceLabels(applyCitationReplacements(text, replacements));
 };
 
 // Refusal parts are rendered inline as ordinary content.

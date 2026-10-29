@@ -631,11 +631,19 @@ response stops generating; a stop before the first stream event has no ID to
 cancel, and cancel failures are only logged.
 
 Citation post-processing is pure. It recognizes supported markers and
-annotations, assigns stable source numbers, deduplicates sources, and removes
-redundant adjacent labels without corrupting surrounding prose. Annotation
-offsets that would split a word or Markdown delimiter do not modify the text;
-matching Markdown source links still normalize to the annotation's stable
-citation number.
+annotations, assigns stable source numbers, and deduplicates sources. It parses
+Markdown to locate complete source links and protected literal content, then
+edits source spans without reserializing the document. Matching links take
+precedence over annotation offsets, including angle-bracket destinations and
+URLs with parentheses. A replaceable citation token must be a single marker;
+an annotation spanning several markers must never delete intervening prose.
+Prose annotations may only append a citation at a sentence or paragraph end
+outside headings, formatting, links, tables, and literal content. Unverifiable
+placements retain source metadata without changing the text. Redundant adjacent
+source labels are removed outside code and other literal content. Link extraction
+when Web Search is disabled uses the same structural parsing, preserving code
+examples and images. These rules apply to every model and to terminal complete
+and incomplete responses; streamed deltas remain unmodified.
 
 Enabled Web Search requests use the normalized per-chat options for
 `search_context_size` and `user_location`. API-facing option types derive from
