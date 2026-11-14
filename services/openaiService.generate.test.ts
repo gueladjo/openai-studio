@@ -11,6 +11,8 @@ import {
   type OpenAIResponsesStreamEvent
 } from '../types';
 import { MAX_ATTACHMENT_BYTES } from '../utils/attachmentValidation';
+import { sessionFixture } from '../test/fixtures';
+import { parseStoredSessions } from './workspaceSchema';
 
 const {
   cancelResponseMock,
@@ -149,6 +151,76 @@ describe('OpenAI request contracts', () => {
       else process.env.OPENAI_API_KEY = previousApiKey;
     }
   });
+
+  it.each(['response.completed', 'response.incomplete'] as const)(
+    'keeps new cache usage saveable after %s and strips future API metadata', async type => {
+      const usage = {
+        input_tokens: 12000,
+        input_tokens_details: {
+          cached_tokens: 4000,
+          cache_write_tokens: 7000,
+          cache_write_tokens_details: {
+            ttl_30m_tokens: 3000, ttl_12h_tokens: 4000, future_breakdown: 1
+          },
+          future_input_details: 1
+        },
+        output_tokens: 50,
+        output_tokens_details: { reasoning_tokens: 10, future_output_details: 1 },
+        total_tokens: 12050,
+        future_usage: 1
+      };
+      createResponseMock.mockResolvedValue(createStream([{
+        type, sequence_number: 1,
+        response: { ...createCompletedResponse([messageOutput]), usage }
+      }]));
+
+      const result = await generateResponse([userMessage], DEFAULT_CONFIG, 'test-key');
+      expect(result.usage).toEqual({
+        input_tokens: 12000,
+        input_tokens_details: {
+          cached_tokens: 4000,
+          cache_write_tokens: 7000,
+          cache_write_tokens_details: { ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 }
+        },
+        output_tokens: 50,
+        output_tokens_details: { reasoning_tokens: 10 },
+        total_tokens: 12050
+      });
+      expect(() => parseStoredSessions([sessionFixture({ messages: [{
+        role: 'assistant', content: result.content, timestamp: 1, usage: result.usage,
+        modelName: 'GPT-6 Astra'
+      }] })])).not.toThrow();
+      expect(usage.input_tokens_details.future_input_details).toBe(1);
+    }
+  );
+
+  it.each([ModelId.GPT_6_ASTRA, ModelId.GPT_6_1_SOL, ModelId.GPT_6_1_TERRA, ModelId.GPT_6_LUNA])(
+    'preserves the growing conversation and stable cache prefix for %s', async model => {
+      const config = { ...DEFAULT_CONFIG, model };
+      const messages: Message[] = [{ ...userMessage, content: 'Stable reference material. '.repeat(1500) }];
+      for (let turn = 0; turn < 3; turn++) {
+        const id = `resp-cache-${turn}`;
+        createResponseMock.mockResolvedValueOnce(createStream([{
+          type: 'response.completed', sequence_number: 1,
+          response: { ...createCompletedResponse([messageOutput]), id }
+        }]));
+        const result = await generateResponse(messages, config, 'test-key', 'Stable instructions');
+        const payload = createResponseMock.mock.calls.at(-1)![0];
+        const firstPayload = createResponseMock.mock.calls[0][0];
+        for (const key of ['model', 'instructions', 'tools', 'reasoning', 'text']) {
+          expect(payload[key]).toEqual(firstPayload[key]);
+        }
+        expect(payload.input).toEqual([{ role: 'user', content: messages.at(-1)!.content }]);
+        expect(payload.previous_response_id).toBe(turn ? `resp-cache-${turn - 1}` : undefined);
+        expect(payload.prompt_cache_options).toEqual(turn
+          ? { comparison_response_id: `resp-cache-${turn - 1}` }
+          : undefined);
+        messages.push({ role: 'assistant', content: result.content, timestamp: 2,
+          status: 'complete', openaiResponseId: result.responseId },
+        { role: 'user', content: `Follow up ${turn}`, timestamp: 3 });
+      }
+    }
+  );
 
   it.each([
     [ModelId.GPT_6_ASTRA, true],
@@ -1860,6 +1932,16 @@ describe('background stream resumption', () => {
   });
 
   it('resumes a dropped stream after the last received event', async () => {
+    const usage = {
+      input_tokens: 5000,
+      input_tokens_details: {
+        cached_tokens: 2000, cache_write_tokens: 3000,
+        cache_write_tokens_details: { ttl_30m_tokens: 3000, ttl_12h_tokens: 0 }
+      },
+      output_tokens: 50,
+      output_tokens_details: { reasoning_tokens: 10 },
+      total_tokens: 5050
+    };
     createResponseMock.mockResolvedValue(createInterruptedStream(
       [createdEvent, textDelta(1, 'The ')],
       new TypeError('network error')
@@ -1870,6 +1952,7 @@ describe('background stream resumption', () => {
         ...completedEvent(3),
         response: {
           ...createCompletedResponse([messageOutput]),
+          usage,
           prompt_cache_diagnostics: { type: 'cache_miss', reason: 'input_changed', cache_missed_tokens: 2000 }
         }
       } as OpenAIResponsesStreamEvent
@@ -1904,6 +1987,7 @@ describe('background stream resumption', () => {
     expect(result.promptCacheDiagnostics).toEqual({
       type: 'cache_miss', reason: 'input_changed', cache_missed_tokens: 2000
     });
+    expect(result.usage).toEqual(usage);
     expect(result).toMatchObject({
       content: 'The answer is 42.',
       status: 'complete'

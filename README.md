@@ -22,6 +22,12 @@ rules, task routing, and verification commands.
   It starts on; turn it off to avoid cache-write costs for short chats. The choice
   is saved per chat and inherited by new chats. Older models use automatic
   caching and show the switch as unavailable.
+  On GPT-5.6 and later, caching needs an unchanged prefix of at least 1,024
+  input tokens; the default cache lifetime is 30 minutes. Short chats, long
+  gaps, and changes to instructions, models, or tool settings can yield little
+  reuse. Response details show **Cache write** when reported and **Cached
+  input** for cache reads; keeping conversation history does not guarantee a
+  cache hit. See the [OpenAI caching guide](https://developers.openai.com/api/docs/guides/prompt-caching).
 - Automatic model identity and knowledge-cutoff preambles, followed by any reusable system instruction selected by the user and applied through the Responses API `instructions` field.
 - Optional Web Search and Code Interpreter tools, with per-chat Web Search
   context size and approximate location controls (default: Medium and New York,

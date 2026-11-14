@@ -534,6 +534,15 @@ Enabled caching keeps the API's implicit default. Earlier models omit caching
 options because they do not support disabling automatic caching. Response
 storage and history chaining are independent of this setting. Both the
 reasoning-summary and manual-history retry paths preserve the caching mode.
+No prewarm requests or longer-lived cache writes are added. For GPT-5.6 and
+later, an eligible prefix needs at least 1,024 visible input tokens and the
+default lifetime is 30 minutes. A response ID preserves conversation history;
+it does not guarantee a cache hit. Repeated turns keep instructions, tool
+definitions, reasoning effort, and verbosity stable unless the user changes
+settings or project context. Changing those settings, rewriting prior input,
+or replaying only the local visible transcript after a response expires can
+reduce reuse. A cache key is optional on these models, not required to enable
+caching or optimize routing.
 
 GPT-5.6 and GPT-6 conversation requests with caching enabled and a preceding
 completed response ID also send `prompt_cache_options.comparison_response_id`. First turns, incomplete
@@ -546,6 +555,12 @@ only a compact cache-miss reason; hits, unavailable/expired comparisons, and raw
 diagnostic token estimates add no UI. Unknown/malformed API diagnostics are
 omitted and extra API fields are stripped so optional metadata cannot block
 answer persistence. Usage counters remain authoritative.
+Terminal usage passes through `utils/responseUsage.ts` on both initial and
+resumed streams. Only supported fields are copied, including the optional
+cache-write lifetime breakdown. Unknown API fields are stripped at every usage
+level. Invalid required usage omits usage rather than losing the answer;
+invalid optional counters/breakdowns are omitted without inventing zeros.
+Persisted records and archive imports retain strict runtime validation.
 
 Every project request receives an explicit immutable `ResolvedProjectContext`
 captured by `App.tsx` before the user turn is added. The request always sends
@@ -673,6 +688,14 @@ contain only their discriminator. These assistant-only records round-trip throug
 local v5 and portable archive v3 without a version change or migration. Existing
 records may omit the field; older application versions may reject newly written
 records containing it. Normalization preserves the optional field unchanged.
+Usage may also carry `input_tokens_details.cache_write_tokens_details` with
+bounded nonnegative integer `ttl_30m_tokens` and `ttl_12h_tokens` counters. Both
+are required when the optional breakdown is present; zero values are valid.
+The breakdown round-trips through local v5 and archive v3 without a format
+version change. Older records may omit it and `cache_write_tokens`; older app
+versions may reject records containing the new breakdown. Responses API type
+aliases continue to use the installed SDK exports; runtime handling accepts
+this documented additive field even while the SDK lacks its declaration.
 Refusal text is part of `content`; the retired
 `refusal` message field and `generatedFiles[].source` are no longer written
 but remain accepted on older records.

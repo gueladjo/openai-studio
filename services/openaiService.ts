@@ -36,6 +36,7 @@ import {
 } from '../types';
 import { createSourceRecord, parseSourceUrl } from '../utils/sourceUrls';
 import { normalizePromptCacheDiagnostics } from '../utils/promptCacheDiagnostics';
+import { normalizeResponseUsage } from '../utils/responseUsage';
 import {
   inspectCitationMarkdown,
   transformOutsideMarkdownLiterals
@@ -1018,7 +1019,7 @@ const parseGenerateResponse = (
     generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
     thinkingDuration,
     responseId: response.id,
-    usage: response.usage,
+    usage: normalizeResponseUsage(response.usage),
     promptCacheDiagnostics: normalizePromptCacheDiagnostics(response.prompt_cache_diagnostics),
     ...(fileSearchCallCount > 0 ? { fileSearchCallCount } : {})
   };

@@ -101,6 +101,32 @@ describe('workspace runtime schema', () => {
       .toEqual({ cached_tokens: 2, cache_write_tokens: 1 });
   });
 
+  it('preserves the API cache-write lifetime breakdown, including zero counts', () => {
+    const workspace = createBackup();
+    Object.assign(workspace.sessions[0].messages[1].usage!.input_tokens_details, {
+      cache_write_tokens_details: { ttl_30m_tokens: 1, ttl_12h_tokens: 0 }
+    });
+    expect(parseWorkspace(workspace).sessions[0].messages[1].usage)
+      .toEqual(workspace.sessions[0].messages[1].usage);
+  });
+
+  it.each([
+    null,
+    {},
+    { ttl_30m_tokens: 1 },
+    { ttl_30m_tokens: -1, ttl_12h_tokens: 0 },
+    { ttl_30m_tokens: 1, ttl_12h_tokens: 0.5 },
+    { ttl_30m_tokens: 1, ttl_12h_tokens: Infinity },
+    { ttl_30m_tokens: 1, ttl_12h_tokens: 1_000_000_000_001 },
+    { ttl_30m_tokens: 1, ttl_12h_tokens: 0, extra: 2 }
+  ])('rejects malformed persisted cache-write details: %j', details => {
+    const workspace = createBackup();
+    Object.assign(workspace.sessions[0].messages[1].usage!.input_tokens_details, {
+      cache_write_tokens_details: details
+    });
+    expect(() => parseWorkspace(workspace)).toThrow('cache_write_tokens_details');
+  });
+
   it.each([
     { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
       comparison_reusable_tokens: 3000 },

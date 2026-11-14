@@ -232,7 +232,8 @@ const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
   const inputPath = `${path}.input_tokens_details`;
   const inputDetails = assertObject(usage.input_tokens_details, inputPath, [
     'cached_tokens',
-    'cache_write_tokens'
+    'cache_write_tokens',
+    'cache_write_tokens_details'
   ]);
   assertSafeInteger(inputDetails.cached_tokens, `${inputPath}.cached_tokens`, 0, MAX_TOKEN_COUNT);
   assertOptionalSafeInteger(
@@ -241,6 +242,15 @@ const parseUsage = (value: unknown, path: string): OpenAIResponsesUsage => {
     0,
     MAX_TOKEN_COUNT
   );
+
+  if (inputDetails.cache_write_tokens_details !== undefined) {
+    const writePath = `${inputPath}.cache_write_tokens_details`;
+    const writes = assertObject(inputDetails.cache_write_tokens_details, writePath, [
+      'ttl_30m_tokens', 'ttl_12h_tokens'
+    ]);
+    assertSafeInteger(writes.ttl_30m_tokens, `${writePath}.ttl_30m_tokens`, 0, MAX_TOKEN_COUNT);
+    assertSafeInteger(writes.ttl_12h_tokens, `${writePath}.ttl_12h_tokens`, 0, MAX_TOKEN_COUNT);
+  }
 
   const outputPath = `${path}.output_tokens_details`;
   const outputDetails = assertObject(usage.output_tokens_details, outputPath, ['reasoning_tokens']);

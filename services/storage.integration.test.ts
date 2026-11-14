@@ -984,6 +984,29 @@ describe('storage public contracts', () => {
     await expect(readField('sessions')).resolves.toEqual([session]);
   });
 
+  it('saves new API cache usage and subsequent edits without blocking the workspace', async () => {
+    const session = createSession('Cache usage');
+    const usage = {
+      input_tokens: 12000,
+      input_tokens_details: {
+        cached_tokens: 4000, cache_write_tokens: 7000,
+        cache_write_tokens_details: { ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 }
+      },
+      output_tokens: 50,
+      output_tokens_details: { reasoning_tokens: 10 },
+      total_tokens: 12050
+    };
+    session.messages.push({
+      id: 'assistant-usage', role: 'assistant', content: 'Answer', timestamp: 2, usage,
+      modelName: 'GPT-6 Astra'
+    });
+    await seedWorkspace([session]);
+    session.title = 'Edited after response';
+    await writeField('sessions', [session]);
+    await storage.synchronizeWorkspaceRevision(handle);
+    await expect(readField('sessions')).resolves.toEqual([session]);
+  });
+
   it('preserves manifest session order through repeated validation', async () => {
     const sessions = ['Alpha', 'Beta', 'Gamma', 'Delta'].map(title => createSession(title));
     await seedWorkspace(sessions);

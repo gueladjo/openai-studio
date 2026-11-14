@@ -169,6 +169,9 @@ describe('response token usage details', () => {
     const cacheWriteLabel = Array.from(container.querySelectorAll('span'))
       .find(element => element.textContent === 'Cache write');
     expect(cacheWriteLabel?.parentElement?.textContent).toBe('Cache write1,234');
+    const cacheReadLabel = Array.from(container.querySelectorAll('span'))
+      .find(element => element.textContent === 'Cached input');
+    expect(cacheReadLabel?.parentElement?.textContent).toBe('Cached input567');
   });
 });
 

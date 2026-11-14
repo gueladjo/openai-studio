@@ -26,6 +26,16 @@ const generatedBlob = new Blob(['cached generated output'], {
 const generatedHash = await sha256Blob(generatedBlob);
 const projectBlob = new Blob(['project knowledge'], { type: 'text/plain' });
 const projectHash = await sha256Blob(projectBlob);
+const cacheUsage = {
+  input_tokens: 12000,
+  input_tokens_details: {
+    cached_tokens: 4000, cache_write_tokens: 7000,
+    cache_write_tokens_details: { ttl_30m_tokens: 3000, ttl_12h_tokens: 4000 }
+  },
+  output_tokens: 50,
+  output_tokens_details: { reasoning_tokens: 10 },
+  total_tokens: 12050
+};
 
 const sessions: Session[] = [{
   id: 'session-1',
@@ -77,6 +87,7 @@ const sessions: Session[] = [{
       }],
       timestamp: 11,
       modelName: 'GPT-5.6 Sol',
+      usage: cacheUsage,
       promptCacheDiagnostics: {
         type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000,
         comparison_reusable_tokens: 3000
@@ -214,6 +225,8 @@ describe('portable workspace archive', () => {
       });
     expect(inspected.replacement.sessions[0].messages[1].promptCacheDiagnostics)
       .toEqual(sessions[0].messages[1].promptCacheDiagnostics);
+    expect(inspected.replacement.sessions[0].messages[1].usage)
+      .toEqual(sessions[0].messages[1].usage);
     expect(inspected.replacement.sessions[0].messages[1].outputMessages).toEqual([
       { content: 'Reading the notes.', phase: 'commentary' },
       { content: 'Done.', phase: 'final_answer' }
