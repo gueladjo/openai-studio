@@ -121,18 +121,19 @@ chats hide this picker because their project instructions are resolved live.
 
 Model catalog changes must verify identity and knowledge-cutoff metadata against
 the official model reference and normalize persisted chat configurations so
-existing chats in supported workspace formats remain loadable. GPT-6 Astra is
-the new-chat default with Max reasoning. It is selectable with Low, Medium,
-High, Xhigh, and Max reasoning; Max is its fallback for unsupported saved
-efforts.
+existing chats in supported workspace formats remain loadable. GPT-6 Astra
+supports Low, Medium, High, Xhigh, and Max reasoning, with Max as its fallback
+for unsupported saved efforts.
 
 [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra)
 and [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol)
 appear first in the picker. Each has a 1,050,000-token context window and
 supports Low, Medium, High, Xhigh, and Max reasoning, text verbosity, and
-prompt caching controls and diagnostics. Astra uses the May 18, 2026 cutoff
-and defaults to Max reasoning. Sol uses the June 1, 2026 cutoff and defaults
-to Medium. Each default is also the fallback for unsupported saved efforts.
+prompt caching controls and diagnostics. GPT-6.2 Astra with Max reasoning is
+the application default when a new chat has no prior configuration to inherit.
+It uses the May 18, 2026 cutoff. GPT-6.2 Sol uses the June 1, 2026 cutoff and
+defaults to Medium reasoning. Each model's default effort is also its fallback
+for unsupported saved efforts.
 
 GPT-6.1 Sol replaces GPT-6 Sol in the picker and API requests, uses the April 30,
 2026 knowledge cutoff and 1,050,000-token context window, and supports Low,

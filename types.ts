@@ -295,7 +295,7 @@ export type OpenAIResponsesUsage = ResponseUsage;
 export type OpenAIPromptCacheDiagnostics = NonNullable<Response['prompt_cache_diagnostics']>;
 
 export const DEFAULT_CONFIG: ChatConfig = {
-  model: ModelId.GPT_6_ASTRA,
+  model: ModelId.GPT_6_2_ASTRA,
   reasoningEffort: 'max',
   textVerbosity: 'medium',
   promptCaching: true,

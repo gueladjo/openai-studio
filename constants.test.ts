@@ -175,10 +175,10 @@ describe('normalizeChatConfig', () => {
 });
 
 describe('model catalog', () => {
-  it('defaults new chats to GPT-6 Astra with Max reasoning', () => {
-    expect(DEFAULT_CONFIG.model).toBe(ModelId.GPT_6_ASTRA);
+  it('defaults new chats to GPT-6.2 Astra with Max reasoning', () => {
+    expect(DEFAULT_CONFIG.model).toBe(ModelId.GPT_6_2_ASTRA);
     expect(DEFAULT_CONFIG.reasoningEffort).toBe('max');
-    expect(MODEL_CONFIGS[ModelId.GPT_6_ASTRA].defaultReasoningEffort).toBe('max');
+    expect(MODEL_CONFIGS[ModelId.GPT_6_2_ASTRA].defaultReasoningEffort).toBe('max');
   });
 
   it('contains every ModelId exactly once with a valid default effort', () => {

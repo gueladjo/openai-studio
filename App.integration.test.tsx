@@ -790,7 +790,7 @@ describe('App workspace and request lifecycle', () => {
       role: 'assistant',
       status: 'error',
       model: DEFAULT_CONFIG.model,
-      modelName: 'GPT-6 Astra',
+      modelName: 'GPT-6.2 Astra',
       reasoningEffort: DEFAULT_CONFIG.reasoningEffort
     });
   });
@@ -838,6 +838,21 @@ describe('App workspace and request lifecycle', () => {
       expect.objectContaining({ readOnly: true })
     );
     expect(mocks.writeWorkspaceState).not.toHaveBeenCalled();
+  });
+
+  it('starts the first chat with GPT-6.2 Astra and Max reasoning', async () => {
+    mocks.loadedSessions = [];
+    await renderApp();
+    await finishInitialization();
+
+    await act(async () => {
+      getSidebarProps().onNewSession();
+    });
+
+    expect(getChatAreaProps().session?.config).toMatchObject({
+      model: ModelId.GPT_6_2_ASTRA,
+      reasoningEffort: 'max'
+    });
   });
 
   it('creates chats from the last used configuration across projects and standalone chats', async () => {
@@ -1284,7 +1299,7 @@ describe('App workspace and request lifecycle', () => {
         status: 'complete',
         openaiResponseId: 'resp-complete',
         promptCacheDiagnostics: { type: 'cache_miss', reason: 'tools_changed', cache_missed_tokens: 2000 },
-        modelName: 'GPT-6 Astra'
+        modelName: 'GPT-6.2 Astra'
       })
     ]);
     expect(sessionA?.messages.at(-1)?.content).not.toContain(
@@ -1510,7 +1525,7 @@ describe('App workspace and request lifecycle', () => {
     expect(failedSession?.messages.at(-1)).toMatchObject({
       content: 'Useful partial output.\n\nError: Connection lost.',
       status: 'error',
-      modelName: 'GPT-6 Astra'
+      modelName: 'GPT-6.2 Astra'
     });
   });
 
@@ -1604,7 +1619,7 @@ describe('App workspace and request lifecycle', () => {
       }],
       thinking: 'Unflushed reasoning.',
       status: 'stopped',
-      modelName: 'GPT-6 Astra'
+      modelName: 'GPT-6.2 Astra'
     });
 
     await act(async () => {
