@@ -249,7 +249,11 @@ describe('ConfigPanel', () => {
     expect(onConfigChange).not.toHaveBeenCalled();
   });
 
-  it('selects Astra with its model-specific reasoning options', async () => {
+  it.each([
+    { model: ModelId.GPT_6_2_ASTRA, name: 'GPT-6.2 Astra', fallback: 'max' },
+    { model: ModelId.GPT_6_2_SOL, name: 'GPT-6.2 Sol', fallback: 'medium' },
+    { model: ModelId.GPT_6_ASTRA, name: 'GPT-6 Astra', fallback: 'max' }
+  ])('selects $name with its model-specific reasoning options', async ({ model, name, fallback }) => {
     const onConfigChange = vi.fn();
     container = await view.render(
       <ConfigPanelHarness
@@ -262,20 +266,19 @@ describe('ConfigPanel', () => {
       />
     );
     const modelPicker = Array.from(container.querySelectorAll('select')).find(
-      select => select.querySelector(`option[value="${ModelId.GPT_6_ASTRA}"]`)
+      select => select.querySelector(`option[value="${model}"]`)
     )!;
 
-    expect(modelPicker.querySelector(
-      `option[value="${ModelId.GPT_6_ASTRA}"]`
-    )?.textContent).toBe('GPT-6 Astra');
+    expect(modelPicker.querySelector(`option[value="${model}"]`)?.textContent).toBe(name);
 
-    await changeValue(modelPicker, ModelId.GPT_6_ASTRA, 'change');
+    await changeValue(modelPicker, model, 'change');
 
     expect(onConfigChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      model: ModelId.GPT_6_ASTRA,
-      reasoningEffort: 'max'
+      model,
+      reasoningEffort: fallback
     }));
     expect(getButton('none')).toBeUndefined();
+    expect(getButton('minimal')).toBeUndefined();
     expect(getButton('max')).toBeDefined();
   });
 

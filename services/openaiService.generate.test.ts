@@ -984,6 +984,37 @@ describe('generateResponse reasoning summaries', () => {
     expect(result.thinking).toBe('');
   });
 
+  it.each([
+    {
+      model: ModelId.GPT_6_2_ASTRA,
+      apiId: 'gpt-6.2-astra',
+      identity: 'You are GPT-6.2 Astra, an OpenAI model. Your knowledge cutoff is May 18, 2026.',
+      fallback: 'max'
+    },
+    {
+      model: ModelId.GPT_6_2_SOL,
+      apiId: 'gpt-6.2-sol',
+      identity: 'You are GPT-6.2 Sol, an OpenAI model. Your knowledge cutoff is June 1, 2026.',
+      fallback: 'medium'
+    }
+  ])('sends the GPT-6.2 Responses API settings for $apiId', async ({ model, apiId, identity, fallback }) => {
+    mockCompletedStream();
+    await generateResponse(
+      [userMessage],
+      { ...DEFAULT_CONFIG, model, reasoningEffort: 'none', textVerbosity: 'high', promptCaching: false },
+      'test-key'
+    );
+
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock.mock.calls[0][0]).toMatchObject({
+      model: apiId,
+      instructions: identity,
+      reasoning: { effort: fallback, summary: 'auto' },
+      text: { verbosity: 'high' },
+      prompt_cache_options: { mode: 'explicit' }
+    });
+  });
+
   it.each(['gpt-5.6-sol', 'gpt-6-sol', ModelId.GPT_6_1_SOL])(
     'sends GPT-6.1 Sol requests with normalized reasoning for %s', async model => {
       mockCompletedStream();

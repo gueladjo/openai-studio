@@ -193,6 +193,8 @@ describe('model catalog', () => {
   });
 
   it('tracks the context window for each model', () => {
+    expect(MODEL_CONFIGS[ModelId.GPT_6_2_ASTRA].contextWindowTokens).toBe(1_050_000);
+    expect(MODEL_CONFIGS[ModelId.GPT_6_2_SOL].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_6_ASTRA].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_6_1_SOL].contextWindowTokens).toBe(1_050_000);
     expect(MODEL_CONFIGS[ModelId.GPT_6_1_TERRA].contextWindowTokens).toBe(1_050_000);
@@ -202,8 +204,10 @@ describe('model catalog', () => {
     expect(MODEL_CONFIGS[ModelId.GPT_O3].contextWindowTokens).toBe(200_000);
   });
 
-  it('orders the picker with Astra first and Luna between Terra and GPT-5.5', () => {
+  it('orders the picker with GPT-6.2 models first and Luna between Terra and GPT-5.5', () => {
     expect(MODELS.map(model => model.id)).toEqual([
+      ModelId.GPT_6_2_ASTRA,
+      ModelId.GPT_6_2_SOL,
       ModelId.GPT_6_ASTRA,
       ModelId.GPT_6_1_SOL,
       ModelId.GPT_6_1_TERRA,

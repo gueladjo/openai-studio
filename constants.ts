@@ -30,6 +30,28 @@ export const REASONING_EFFORT_NANO: ReasoningEffortNano[] = ['minimal', 'low', '
 export const REASONING_EFFORT_O3: ReasoningEffortO3[] = ['low', 'medium', 'high'];
 
 export const MODEL_CONFIGS: Record<ModelId, ModelConfig> = {
+  [ModelId.GPT_6_2_ASTRA]: {
+    id: ModelId.GPT_6_2_ASTRA,
+    supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
+    name: 'GPT-6.2 Astra',
+    knowledgeCutoff: 'May 18, 2026',
+    contextWindowTokens: 1_050_000,
+    supportsVerbosity: true,
+    reasoningOptions: REASONING_EFFORT_ASTRA,
+    defaultReasoningEffort: 'max'
+  },
+  [ModelId.GPT_6_2_SOL]: {
+    id: ModelId.GPT_6_2_SOL,
+    supportsPromptCacheDiagnostics: true,
+    supportsPromptCacheControl: true,
+    name: 'GPT-6.2 Sol',
+    knowledgeCutoff: 'June 1, 2026',
+    contextWindowTokens: 1_050_000,
+    supportsVerbosity: true,
+    reasoningOptions: REASONING_EFFORT_ASTRA,
+    defaultReasoningEffort: 'medium'
+  },
   [ModelId.GPT_6_ASTRA]: {
     id: ModelId.GPT_6_ASTRA,
     supportsPromptCacheDiagnostics: true,
